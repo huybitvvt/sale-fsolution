@@ -1,0 +1,2131 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FB Group Monitor</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; color: #1c1e21; min-height: 100vh; }
+
+/* ── Header ── */
+.header {
+  background: linear-gradient(135deg, #1877f2 0%, #0d5cc7 100%);
+  color: white; padding: 0 24px;
+  height: 56px; display: flex; align-items: center; gap: 14px;
+  position: sticky; top: 0; z-index: 200;
+  box-shadow: 0 2px 12px rgba(24,119,242,.35);
+}
+.header-icon { font-size: 26px; line-height: 1; }
+.header-title { font-size: 18px; font-weight: 700; letter-spacing: -.2px; }
+.header-sub { font-size: 12px; opacity: .75; margin-top: 1px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.header-spacer { flex: 1; }
+.header-status { font-size: 12px; opacity: .8; white-space: nowrap; }
+.header-user { font-size: 12px; opacity: .9; white-space: nowrap; }
+.header-logout { border: 1px solid rgba(255,255,255,.45); background: rgba(255,255,255,.14); color: white; border-radius: 8px; padding: 5px 9px; font-size: 12px; cursor: pointer; }
+
+/* ── Main layout ── */
+.main { max-width: 700px; margin: 0 auto; padding: 16px 12px 40px; }
+
+/* ── Auth ── */
+.auth-wrap { max-width: 440px; margin: 70px auto 0; padding: 0 14px; }
+.auth-card { background: white; border-radius: 14px; padding: 18px; box-shadow: 0 1px 10px rgba(0,0,0,.1); }
+.auth-title { font-size: 18px; font-weight: 800; margin-bottom: 5px; }
+.auth-sub { font-size: 13px; color: #65676b; margin-bottom: 14px; line-height: 1.4; }
+.auth-field { margin-bottom: 10px; }
+.auth-field label { display: block; font-size: 11px; font-weight: 700; color: #65676b; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 5px; }
+.auth-field input, .auth-field textarea { width: 100%; border: 1.5px solid #e4e6eb; border-radius: 10px; padding: 9px 11px; font-size: 14px; font-family: inherit; outline: none; }
+.auth-field textarea { min-height: 88px; resize: vertical; }
+.auth-field input:focus, .auth-field textarea:focus { border-color: #1877f2; }
+.auth-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.auth-status { font-size: 12px; color: #65676b; margin-top: 10px; min-height: 16px; }
+
+/* ── Panel (group/kw/tg bars) ── */
+.panel {
+  background: white; border-radius: 14px; padding: 12px 16px;
+  box-shadow: 0 1px 6px rgba(0,0,0,.08); margin-bottom: 10px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+}
+.panel-label { font-size: 12px; font-weight: 700; color: #65676b; text-transform: uppercase; letter-spacing: .5px; white-space: nowrap; min-width: 70px; }
+
+/* ── Chips ── */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  border-radius: 20px; padding: 4px 10px; font-size: 13px; font-weight: 500;
+  cursor: default; max-width: 200px;
+}
+.chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-remove { cursor: pointer; opacity: .55; font-size: 13px; line-height: 1; flex-shrink: 0; }
+.chip-remove:hover { opacity: 1; }
+
+.chip-group { background: #e7f3ff; color: #1877f2; }
+.chip-kw    { background: #fff0e6; color: #d4700a; }
+.chip-tg    { background: #e8f5fd; color: #1a7fc1; }
+
+.chip-action { display: inline-flex; align-items: center; cursor: pointer; font-size: 11px; background: rgba(0,0,0,.08); border-radius: 8px; padding: 1px 7px; margin-left: 2px; }
+.chip-action:hover { background: rgba(0,0,0,.16); }
+
+/* ── Input row ── */
+.input-row { display: flex; gap: 6px; align-items: center; }
+.input-row input {
+  padding: 6px 11px; border-radius: 20px; border: 1.5px solid #e4e6eb;
+  font-size: 13px; width: 160px; outline: none; transition: border .15s;
+}
+.input-row input:focus { border-color: #1877f2; }
+.btn-add {
+  width: 28px; height: 28px; border-radius: 50%; border: none;
+  font-size: 18px; font-weight: 700; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  transition: opacity .15s;
+}
+.btn-add:hover { opacity: .85; }
+.btn-add-blue { background: #1877f2; color: white; }
+.btn-add-orange { background: #d4700a; color: white; }
+.btn-add-tg { background: #1a7fc1; color: white; }
+
+.panel-hint { font-size: 11px; color: #999; width: 100%; }
+
+/* ── Toolbar ── */
+.toolbar {
+  background: white; border-radius: 14px; padding: 10px 16px;
+  box-shadow: 0 1px 6px rgba(0,0,0,.08); margin-bottom: 10px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.toolbar select {
+  padding: 7px 12px; border-radius: 20px; border: 1.5px solid #e4e6eb;
+  font-size: 13px; cursor: pointer; background: white; outline: none;
+}
+.btn {
+  padding: 7px 16px; border-radius: 20px; border: none;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px; transition: opacity .15s;
+}
+.btn:hover { opacity: .88; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary  { background: #1877f2; color: white; }
+.btn-success  { background: #2dba4e; color: white; }
+.btn-auto     { background: white; color: #1877f2; border: 1.5px solid #1877f2; }
+.btn-auto.on  { background: #1877f2; color: white; }
+.interval-wrap { display: flex; align-items: center; gap: 4px; }
+.interval-wrap input { width: 44px; padding: 6px 6px; border-radius: 8px; border: 1.5px solid #e4e6eb; font-size: 13px; text-align: center; outline: none; }
+.interval-wrap .unit { font-size: 12px; color: #65676b; }
+.toolbar-spacer { flex: 1; }
+.toolbar-status { font-size: 12px; color: #65676b; white-space: nowrap; }
+
+/* ── Feed ── */
+.feed { display: flex; flex-direction: column; gap: 12px; }
+
+/* ── Card ── */
+.card { background: white; border-radius: 14px; box-shadow: 0 1px 6px rgba(0,0,0,.08); overflow: hidden; animation: fadeUp .25s ease; }
+@keyframes fadeUp { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+
+.card-header { padding: 14px 16px 10px; display: flex; gap: 11px; }
+.avatar {
+  width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: white; font-weight: 700; font-size: 15px;
+}
+.author-info { flex: 1; min-width: 0; }
+.author-name { font-weight: 700; font-size: 14px; color: #050505; }
+
+.post-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
+.meta-time { font-size: 12px; color: #65676b; }
+.meta-dot { width: 3px; height: 3px; border-radius: 50%; background: #bcc0c4; flex-shrink: 0; }
+
+.badge { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; white-space: nowrap; }
+.badge-ok      { background: #e6f4ea; color: #1a7f37; }
+.badge-pending { background: #fff8e1; color: #b45309; }
+.badge-group   { background: #e7f3ff; color: #1877f2; max-width: 150px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+
+.card-body { padding: 4px 16px 12px; }
+.post-text { font-size: 14px; line-height: 1.55; color: #1c1e21; white-space: pre-wrap; word-break: break-word; }
+.post-text.collapsed { display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+.see-more { color: #1877f2; cursor: pointer; font-size: 13px; margin-top: 4px; display: inline-block; }
+.see-more:hover { text-decoration: underline; }
+
+.attachment { margin-top: 8px; border-radius: 10px; overflow: hidden; background: #f0f2f5; }
+.attachment img { width: 100%; max-height: 380px; object-fit: cover; display: block; cursor: zoom-in; }
+.attachment-link { padding: 10px 12px; font-size: 13px; }
+.attachment-link a { color: #1877f2; text-decoration: none; }
+
+.card-stats {
+  padding: 8px 16px; border-top: 1px solid #f0f2f5; border-bottom: 1px solid #f0f2f5;
+  display: flex; gap: 18px;
+}
+.stat { display: flex; align-items: center; gap: 5px; font-size: 13px; color: #65676b; }
+.stat-icon { font-size: 15px; }
+
+.comments-wrap { padding: 10px 16px; }
+.comments-toggle { font-size: 13px; font-weight: 600; color: #1877f2; cursor: pointer; display: inline-block; }
+.comments-toggle:hover { text-decoration: underline; }
+.comments-list { margin-top: 8px; display: flex; flex-direction: column; gap: 7px; }
+.comment { display: flex; gap: 8px; }
+.comment-av { width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg,#f7971e,#ffd200); display: flex; align-items: center; justify-content: center; color: white; font-size: 11px; font-weight: 700; flex-shrink: 0; }
+.comment-bubble { background: #f0f2f5; border-radius: 16px; padding: 7px 11px; flex: 1; }
+.comment-name { font-weight: 700; font-size: 12px; margin-bottom: 2px; }
+.comment-msg { font-size: 13px; line-height: 1.4; }
+
+.card-footer { padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.post-link a { font-size: 12px; color: #65676b; text-decoration: none; }
+.post-link a:hover { color: #1877f2; }
+.btn-write-comment { font-size: 13px; font-weight: 600; color: #1877f2; cursor: pointer; border: none; background: none; padding: 0; }
+.btn-write-comment:hover { text-decoration: underline; }
+
+.comment-box { padding: 0 16px 14px; display: none; flex-direction: column; gap: 8px; }
+.comment-box.open { display: flex; }
+.comment-textarea { width: 100%; padding: 9px 13px; border-radius: 20px; border: 1.5px solid #e4e6eb; font-size: 13px; font-family: inherit; resize: none; min-height: 60px; outline: none; transition: border .15s; }
+.comment-textarea:focus { border-color: #1877f2; }
+.comment-image-input { width: 100%; padding: 8px 13px; border-radius: 20px; border: 1.5px solid #e4e6eb; font-size: 13px; font-family: inherit; outline: none; }
+.comment-image-input:focus { border-color: #1877f2; }
+.comment-file-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btn-image-upload { display: inline-flex; align-items: center; justify-content: center; padding: 7px 12px; border-radius: 999px; border: 1.5px solid #e4e6eb; font-size: 12px; font-weight: 700; color: #1877f2; cursor: pointer; background: white; }
+.btn-image-upload input { display: none; }
+.comment-file-hint { font-size: 11px; color: #65676b; }
+.comment-image-preview { display: none; align-items: center; gap: 8px; border: 1px solid #e4e6eb; border-radius: 12px; padding: 8px; background: #f8fafc; }
+.comment-image-preview img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; background: #e4e6eb; }
+.comment-image-preview button { border: none; background: #fee2e2; color: #b91c1c; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.comment-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.comment-as { padding: 6px 10px; border-radius: 20px; border: 1.5px solid #e4e6eb; font-size: 12px; background: white; flex: 1; min-width: 130px; outline: none; cursor: pointer; }
+.btn-send { padding: 7px 18px; border-radius: 20px; border: none; background: #1877f2; color: white; font-size: 13px; font-weight: 600; cursor: pointer; }
+.btn-send:hover { background: #1464d8; }
+.btn-send:disabled { opacity: .5; cursor: not-allowed; }
+.comment-msg-result { font-size: 12px; color: #65676b; }
+.comment-summary-wrap { border-left: 3px solid #0ea5e9; }
+.summary-list { margin-top: 8px; }
+.summary-line { font-size: 12px; color: #374151; line-height: 1.45; padding: 3px 0; }
+
+/* ── Skeleton ── */
+.skeleton { background: white; border-radius: 14px; padding: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.08); }
+.skel { background: linear-gradient(90deg, #e4e6eb 25%, #f0f2f5 50%, #e4e6eb 75%); background-size: 200% 100%; border-radius: 6px; animation: shimmer 1.4s infinite; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+/* ── Empty ── */
+.empty { text-align: center; padding: 60px 20px; color: #65676b; }
+.empty-icon { font-size: 44px; margin-bottom: 10px; }
+.empty-title { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+.empty-sub { font-size: 13px; }
+
+/* ── Lightbox ── */
+.lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.9); z-index: 1000; align-items: center; justify-content: center; }
+.lightbox.open { display: flex; }
+.lightbox img { max-width: 92vw; max-height: 92vh; object-fit: contain; border-radius: 6px; }
+.lightbox-close { position: absolute; top: 14px; right: 18px; color: white; font-size: 30px; cursor: pointer; line-height: 1; }
+
+/* ── Post modal ── */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 500; align-items: center; justify-content: center; }
+.modal-overlay.open { display: flex; }
+.modal { background: white; border-radius: 18px; padding: 24px; width: 520px; max-width: 95vw; max-height: 92vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,.18); }
+.modal-hd { font-size: 17px; font-weight: 700; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: center; }
+.modal-close { cursor: pointer; font-size: 20px; color: #65676b; line-height: 1; }
+.modal-close:hover { color: #1c1e21; }
+.field { margin-bottom: 14px; }
+.field label { font-size: 12px; font-weight: 700; color: #65676b; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 6px; display: block; }
+.field select, .field textarea { width: 100%; padding: 10px 13px; border-radius: 10px; border: 1.5px solid #e4e6eb; font-size: 14px; font-family: inherit; outline: none; transition: border .15s; }
+.field select:focus, .field textarea:focus { border-color: #1877f2; }
+.field textarea { min-height: 130px; resize: vertical; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.btn-cancel { padding: 9px 20px; border-radius: 10px; border: 1.5px solid #e4e6eb; background: white; font-size: 14px; cursor: pointer; }
+.btn-cancel:hover { background: #f5f5f5; }
+.btn-submit { padding: 9px 24px; border-radius: 10px; border: none; background: #1877f2; color: white; font-size: 14px; font-weight: 600; cursor: pointer; }
+.btn-submit:hover { background: #1464d8; }
+.btn-submit:disabled { opacity: .5; cursor: not-allowed; }
+.modal-result { font-size: 13px; margin-top: 8px; min-height: 18px; }
+
+/* ── Highlight ── */
+.hl { background: #fff3cd; border-radius: 3px; padding: 0 2px; font-weight: 600; }
+.new-badge { display: inline-block; background: #e41e3f; color: white; border-radius: 10px; padding: 1px 7px; font-size: 11px; font-weight: 700; margin-left: 6px; }
+
+/* ── Join prompt ── */
+.join-prompt {
+  background: #fff8e1; border: 1.5px solid #ffc107; border-radius: 14px;
+  padding: 12px 16px; margin-bottom: 10px;
+  display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap;
+  animation: fadeUp .2s ease;
+}
+.join-prompt-icon { font-size: 22px; flex-shrink: 0; }
+.join-prompt-body { flex: 1; min-width: 0; }
+.join-prompt-title { font-size: 14px; font-weight: 600; color: #7a4f00; margin-bottom: 6px; }
+.join-prompt-sub { font-size: 12px; color: #9a6700; margin-bottom: 10px; }
+.join-prompt-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn-join { padding: 7px 16px; border-radius: 20px; border: none; background: #1877f2; color: white; font-size: 13px; font-weight: 600; cursor: pointer; }
+.btn-join:hover { background: #1464d8; }
+.btn-join:disabled { opacity: .55; cursor: not-allowed; }
+.btn-join-fb { padding: 7px 16px; border-radius: 20px; border: 1.5px solid #1877f2; background: white; color: #1877f2; font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; }
+.btn-join-fb:hover { background: #e7f3ff; }
+.join-prompt-close { cursor: pointer; font-size: 18px; color: #999; line-height: 1; flex-shrink: 0; }
+.join-prompt-close:hover { color: #555; }
+.join-msg { font-size: 13px; margin-top: 6px; }
+
+/* ── AI Panel ── */
+.ai-panel { background: white; border-radius: 14px; padding: 14px 16px; box-shadow: 0 1px 6px rgba(0,0,0,.08); margin-bottom: 10px; }
+.ai-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ai-row + .ai-row { margin-top: 8px; }
+.ai-row select { padding: 6px 10px; border-radius: 10px; border: 1.5px solid #e4e6eb; font-size: 13px; background: white; outline: none; cursor: pointer; }
+.ai-row select:focus { border-color: #8b5cf6; }
+.ai-key-input { flex: 1; min-width: 120px; padding: 6px 11px; border-radius: 10px; border: 1.5px solid #e4e6eb; font-size: 13px; outline: none; font-family: monospace; }
+.ai-key-input:focus { border-color: #8b5cf6; }
+.btn-ai-sm { padding: 5px 12px; border-radius: 10px; border: none; font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; transition: all .15s; }
+.btn-ai-save { background: #8b5cf6; color: white; }
+.btn-ai-save:hover { background: #7c3aed; }
+.btn-ai-test { background: #e0e7ff; color: #4338ca; }
+.btn-ai-test:hover { background: #c7d2fe; }
+.btn-ai-del { background: #fee2e2; color: #dc2626; }
+.btn-ai-del:hover { background: #fecaca; }
+.ai-status { font-size: 12px; color: #65676b; }
+.ai-auto-label { font-size: 12px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; color: #65676b; }
+.ai-auto-label input { accent-color: #8b5cf6; }
+.ai-key-display { font-size: 12px; font-family: monospace; color: #65676b; background: #f3f4f6; padding: 4px 10px; border-radius: 8px; letter-spacing: 1px; }
+.profile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+.profile-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.profile-field.full { grid-column: 1 / -1; }
+.profile-field label { font-size: 11px; font-weight: 700; color: #65676b; text-transform: uppercase; letter-spacing: .35px; }
+.profile-field input, .profile-field textarea {
+  width: 100%; padding: 8px 10px; border-radius: 10px; border: 1.5px solid #e4e6eb;
+  font-size: 13px; font-family: inherit; outline: none; resize: vertical; background: white;
+}
+.profile-field input:focus, .profile-field textarea:focus { border-color: #8b5cf6; }
+.profile-field textarea { min-height: 58px; line-height: 1.35; }
+.profile-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; }
+.profile-status { font-size: 12px; color: #65676b; }
+@media (max-width: 560px) { .profile-grid { grid-template-columns: 1fr; } }
+.staff-cookie-list { display: flex; flex-direction: column; gap: 7px; width: 100%; }
+.staff-cookie-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  border: 1px solid #e4e6eb; border-radius: 10px; padding: 8px 10px; background: #fff;
+}
+.staff-cookie-main { min-width: 0; }
+.staff-cookie-name { font-size: 13px; font-weight: 700; color: #1f2937; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.staff-cookie-meta { font-size: 11px; color: #6b7280; margin-top: 2px; word-break: break-word; }
+.staff-cookie-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.staff-active-badge { font-size: 11px; color: #047857; background: #d1fae5; border-radius: 999px; padding: 1px 7px; }
+.staff-cookie-empty { width: 100%; font-size: 12px; color: #6b7280; }
+
+/* ── Category badge ── */
+.badge-cat { cursor: default; }
+.badge-lead { background: #ecfdf5; color: #047857; cursor: default; }
+.btn-classify { background: linear-gradient(135deg, #8b5cf6, #6d28d9); color: white; }
+.btn-classify:hover { opacity: .9; }
+.btn-classify:disabled { opacity: .5; cursor: not-allowed; }
+.btn-leads { background: #047857; color: white; }
+.btn-leads:hover { opacity: .9; }
+.btn-leads:disabled { opacity: .5; cursor: not-allowed; }
+.cat-filter { padding: 7px 10px; border-radius: 20px; border: 1.5px solid #e4e6eb; font-size: 13px; background: white; outline: none; cursor: pointer; }
+.cat-filter:focus { border-color: #8b5cf6; }
+
+/* ── Leads ── */
+.lead-wrap { margin: 0 16px 12px; border: 1px solid #d1fae5; border-radius: 10px; overflow: hidden; background: #f8fffc; }
+.lead-head { padding: 8px 11px; background: #ecfdf5; color: #047857; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lead-list { display: flex; flex-direction: column; }
+.lead-item { padding: 9px 11px; border-top: 1px solid #d1fae5; }
+.lead-main { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 5px; }
+.lead-name { font-size: 13px; font-weight: 700; color: #064e3b; }
+.lead-source { font-size: 11px; color: #047857; background: #d1fae5; border-radius: 999px; padding: 1px 7px; }
+.lead-phone { font-size: 12px; font-weight: 700; color: #1d4ed8; background: #dbeafe; border-radius: 999px; padding: 1px 7px; }
+.lead-no-phone { font-size: 11px; color: #92400e; background: #fef3c7; border-radius: 999px; padding: 1px 7px; }
+.lead-need { font-size: 13px; line-height: 1.4; color: #1f2937; }
+.lead-sub { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: #6b7280; }
+.lead-evidence { margin-top: 5px; font-size: 12px; color: #4b5563; line-height: 1.35; }
+
+/* ── AI reply suggestions ── */
+.reply-wrap { margin: 0 16px 12px; border: 1px solid #bfdbfe; border-radius: 10px; overflow: hidden; background: #f8fbff; }
+.reply-head { padding: 8px 11px; background: #dbeafe; color: #1e40af; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.reply-meta { padding: 9px 11px; border-top: 1px solid #bfdbfe; font-size: 12px; color: #1f2937; display: grid; gap: 5px; }
+.reply-meta b { color: #1e3a8a; }
+.reply-list { display: flex; flex-direction: column; border-top: 1px solid #bfdbfe; }
+.reply-item { padding: 10px 11px; border-top: 1px solid #dbeafe; }
+.reply-item:first-child { border-top: none; }
+.reply-label { font-size: 12px; font-weight: 700; color: #1d4ed8; margin-bottom: 5px; }
+.reply-text { font-size: 13px; line-height: 1.45; color: #111827; white-space: pre-wrap; }
+.reply-actions { margin-top: 7px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btn-copy-reply { padding: 5px 11px; border-radius: 8px; border: none; background: #1877f2; color: white; font-size: 12px; font-weight: 600; cursor: pointer; }
+.btn-copy-reply:hover { background: #1464d8; }
+.reply-save-note { font-size: 11px; color: #6b7280; }
+.btn-reply-ai { font-size: 13px; font-weight: 600; color: #1d4ed8; cursor: pointer; border: none; background: none; padding: 0; }
+.btn-reply-ai:hover { text-decoration: underline; }
+.badge-reply { background: #dbeafe; color: #1e40af; cursor: default; }
+
+/* ── Multi-select groups ── */
+.multi-group-list { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; border: 1.5px solid #e4e6eb; border-radius: 10px; padding: 8px 10px; }
+.multi-group-item { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 8px; cursor: pointer; font-size: 13px; transition: background .1s; }
+.multi-group-item:hover { background: #f5f6f8; }
+.multi-group-item input { accent-color: #1877f2; flex-shrink: 0; }
+.multi-group-item label { cursor: pointer; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.multi-select-actions { display: flex; gap: 8px; margin-top: 6px; }
+.multi-select-actions a { font-size: 12px; color: #1877f2; cursor: pointer; text-decoration: none; }
+.multi-select-actions a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-icon">👥</div>
+  <div>
+    <div class="header-title">FB Group Monitor</div>
+    <div class="header-sub" id="headerSub">Đang tải...</div>
+  </div>
+  <div class="header-spacer"></div>
+  <div class="header-user" id="authUser"></div>
+  <button class="header-logout" id="logoutBtn" onclick="logout()" style="display:none">Đăng xuất</button>
+  <div class="header-status" id="headerStatus"></div>
+</div>
+
+<div class="auth-wrap" id="authWrap">
+  <div class="auth-card" id="loginCard">
+    <div class="auth-title">Đăng nhập</div>
+    <div class="auth-sub">Mỗi nhân sự dùng tài khoản riêng. Cookie Facebook sẽ tự gắn theo tài khoản đăng nhập.</div>
+    <div class="auth-field">
+      <label>Tài khoản</label>
+      <input type="text" id="loginUsername" autocomplete="username">
+    </div>
+    <div class="auth-field">
+      <label>Mật khẩu</label>
+      <input type="password" id="loginPassword" autocomplete="current-password">
+    </div>
+    <div class="auth-actions">
+      <button class="btn btn-primary" onclick="login()">Đăng nhập</button>
+    </div>
+    <div class="auth-status" id="loginStatus"></div>
+  </div>
+
+  <div class="auth-card" id="setupCard" style="display:none">
+    <div class="auth-title">Setup tài khoản đầu tiên</div>
+    <div class="auth-sub">Tài khoản đầu tiên là admin. Sau đó admin thêm nhân sự, mỗi người có cookie riêng và không tự sửa cookie.</div>
+    <div class="auth-field">
+      <label>Tên nhân sự</label>
+      <input type="text" id="setupName" placeholder="Ví dụ: Sale A">
+    </div>
+    <div class="auth-field">
+      <label>Tài khoản đăng nhập</label>
+      <input type="text" id="setupUsername" autocomplete="username">
+    </div>
+    <div class="auth-field">
+      <label>Mật khẩu</label>
+      <input type="password" id="setupPassword" autocomplete="new-password">
+    </div>
+    <div class="auth-field">
+      <label>Cookie Facebook</label>
+      <textarea id="setupCookie" placeholder="Dán cookie có c_user=..."></textarea>
+    </div>
+    <div class="auth-actions">
+      <button class="btn btn-primary" onclick="setupFirstAccount()">Tạo admin</button>
+    </div>
+    <div class="auth-status" id="setupStatus"></div>
+  </div>
+</div>
+
+<div class="main" id="appMain" style="display:none">
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <select id="limitSel">
+      <option value="5">5 bài</option>
+      <option value="10" selected>10 bài</option>
+      <option value="20">20 bài</option>
+      <option value="50">50 bài</option>
+    </select>
+    <button class="btn btn-primary" onclick="loadPosts()"><span id="refIcon">🔄</span> Tải lại</button>
+    <button class="btn btn-success" onclick="openPostModal()">✍️ Đăng bài</button>
+    <button class="btn btn-classify" id="btnClassify" onclick="classifyAll()">🤖 Phân loại</button>
+    <button class="btn btn-leads" id="btnLeads" onclick="extractLeadsAll()">🧲 Tách lead</button>
+    <select class="cat-filter" id="catFilter" onchange="applyFilter()">
+      <option value="">🏷️ Tất cả</option>
+    </select>
+    <div class="interval-wrap">
+      <button class="btn btn-auto" id="btnAuto" onclick="toggleAuto()">⏱ Tự động</button>
+      <input type="number" id="intervalInp" value="5" min="1" max="60">
+      <span class="unit">phút</span>
+    </div>
+    <div class="toolbar-spacer"></div>
+    <span class="toolbar-status" id="commentTodayCount"></span>
+    <span class="toolbar-status" id="toolStatus"></span>
+  </div>
+
+  <!-- Group bar -->
+  <div class="panel">
+    <div class="panel-label">📋 Nhóm</div>
+    <div class="chips" id="groupChips"></div>
+    <div class="input-row">
+      <input type="text" id="groupInp" placeholder="ID / URL nhóm">
+      <button class="btn-add btn-add-blue" onclick="addGroup()" title="Thêm nhóm">+</button>
+    </div>
+  </div>
+
+  <!-- Join prompt (shown dynamically) -->
+  <div id="joinPromptWrap"></div>
+
+  <!-- Keyword bar -->
+  <div class="panel">
+    <div class="panel-label">🔍 Từ khoá</div>
+    <div class="chips" id="kwChips"></div>
+    <div class="input-row">
+      <input type="text" id="kwInp" placeholder="Nhập từ khoá">
+      <button class="btn-add btn-add-orange" onclick="addKw()" title="Thêm từ khoá">+</button>
+    </div>
+    <div class="panel-hint" id="kwHint"></div>
+  </div>
+
+  <!-- Telegram bar -->
+  <div class="panel">
+    <div class="panel-label">✈️ Telegram</div>
+    <div class="chips" id="tgChips"></div>
+    <div class="input-row">
+      <input type="text" id="tgInp" placeholder="Chat ID">
+      <button class="btn-add btn-add-tg" onclick="addTg()" title="Thêm chat ID">+</button>
+    </div>
+    <div class="panel-hint">Nhắn <b>/start</b> cho <b>@fb_noti_tai_bot</b> → nhận Chat ID tự động</div>
+    <div style="font-size:12px;color:#65676b;width:100%" id="tgStatus"></div>
+  </div>
+
+  <!-- Staff cookies -->
+  <div class="ai-panel">
+    <div class="ai-row">
+      <div class="panel-label">🍪 Cookie nhân sự</div>
+      <span class="profile-status" id="staffCookieStatus"></span>
+    </div>
+    <div class="ai-row">
+      <div class="profile-grid" id="staffCookieManage">
+        <div class="profile-field">
+          <label>Tên nhân sự</label>
+          <input type="text" id="staffNameInp" placeholder="Tên cố định của nhân sự">
+        </div>
+        <div class="profile-field">
+          <label>Tài khoản đăng nhập</label>
+          <input type="text" id="staffUsernameInp" placeholder="username">
+        </div>
+        <div class="profile-field">
+          <label>Mật khẩu</label>
+          <input type="password" id="staffPasswordInp" placeholder="Tối thiểu 6 ký tự">
+        </div>
+        <div class="profile-field full">
+          <label>Cookie Facebook</label>
+          <textarea id="staffCookieInp" placeholder="Dán cookie Facebook của nhân sự có c_user=..."></textarea>
+        </div>
+        <div class="profile-actions">
+          <button class="btn-ai-sm btn-ai-save" onclick="saveStaffCookie()">💾 Thêm nhân sự</button>
+        </div>
+      </div>
+    </div>
+    <div class="ai-row">
+      <div class="staff-cookie-list" id="staffCookieList">
+        <div class="staff-cookie-empty">Chưa có cookie nhân sự.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Panel -->
+  <div class="ai-panel">
+    <div class="ai-row">
+      <div class="panel-label">🤖 AI</div>
+      <select id="aiProvider" onchange="onProviderChange()">
+        <option value="gemini">Google Gemini</option>
+        <option value="openai">OpenAI</option>
+        <option value="claude">Claude</option>
+      </select>
+      <div style="flex:1"></div>
+      <button class="btn-ai-sm btn-ai-test" onclick="testAi()">🔌 Test</button>
+      <label class="ai-auto-label"><input type="checkbox" id="aiAutoClassify" onchange="saveAiConfig()"> Tự động</label>
+      <span class="ai-status" id="aiStatus"></span>
+    </div>
+    <div class="ai-row">
+      <span style="font-size:12px;color:#65676b;white-space:nowrap">API Key:</span>
+      <span class="ai-key-display" id="aiKeyDisplay">Chưa có</span>
+      <input type="text" class="ai-key-input" id="aiKeyInput" placeholder="Nhập API Key mới..." style="display:none">
+      <button class="btn-ai-sm btn-ai-save" id="aiKeySaveBtn" onclick="saveAiKey()" style="display:none">💾 Lưu</button>
+      <button class="btn-ai-sm btn-ai-del" id="aiKeyDelBtn" onclick="deleteAiKey()" style="display:none">🗑️ Xoá</button>
+      <button class="btn-ai-sm btn-ai-test" id="aiKeyEditBtn" onclick="showKeyInput()">✏️ Đổi key</button>
+    </div>
+  </div>
+
+  <!-- Business profile -->
+  <div class="ai-panel">
+    <div class="ai-row">
+      <div class="panel-label">🏪 Bên mình</div>
+      <div style="flex:1"></div>
+      <button class="btn-ai-sm btn-ai-test" id="profileGenBtn" onclick="generateBusinessText()">✨ AI tạo văn bản</button>
+      <button class="btn-ai-sm btn-ai-save" onclick="saveBusinessProfile()">💾 Lưu thông tin</button>
+      <span class="profile-status" id="profileStatus"></span>
+    </div>
+    <div class="ai-row">
+      <div class="profile-grid">
+        <div class="profile-field">
+          <label>Tên / thương hiệu</label>
+          <input type="text" id="bizName" placeholder="Tên bên mình">
+        </div>
+        <div class="profile-field">
+          <label>Số điện thoại</label>
+          <input type="text" id="bizPhone" placeholder="SĐT tư vấn">
+        </div>
+        <div class="profile-field full">
+          <label>Địa chỉ</label>
+          <input type="text" id="bizAddress" placeholder="Địa chỉ cửa hàng / văn phòng">
+        </div>
+        <div class="profile-field full">
+          <label>Lý do chọn mình</label>
+          <textarea id="bizWhy" placeholder="Ví dụ: tư vấn nhanh, hàng sẵn, bảo hành rõ ràng, hỗ trợ sau bán..."></textarea>
+        </div>
+        <div class="profile-field full">
+          <label>Ghi chú thêm</label>
+          <textarea id="bizNotes" placeholder="Thông tin sale cần nhớ khi trả lời khách"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Feed -->
+  <div class="feed" id="feed">
+    <div class="skeleton">
+      <div class="skel" style="width:38%;height:13px;margin-bottom:10px"></div>
+      <div class="skel" style="width:100%;height:11px;margin-bottom:7px"></div>
+      <div class="skel" style="width:78%;height:11px"></div>
+    </div>
+    <div class="skeleton">
+      <div class="skel" style="width:45%;height:13px;margin-bottom:10px"></div>
+      <div class="skel" style="width:100%;height:11px;margin-bottom:7px"></div>
+      <div class="skel" style="width:85%;height:11px"></div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<!-- Post modal -->
+<div class="modal-overlay" id="postModal" onclick="if(event.target===this)closePostModal()">
+  <div class="modal">
+    <div class="modal-hd">✍️ Đăng bài mới <span class="modal-close" onclick="closePostModal()">✕</span></div>
+    <div class="field">
+      <label>Nhóm <span style="font-size:11px;color:#65676b;font-weight:400">(chọn nhiều nhóm)</span></label>
+      <div class="multi-group-list" id="postGroupList"></div>
+      <div class="multi-select-actions">
+        <a onclick="postSelectAll(true)">Chọn tất cả</a>
+        <a onclick="postSelectAll(false)">Bỏ chọn</a>
+      </div>
+    </div>
+    <div class="field"><label>Đăng với tư cách</label><select id="postIdSel"><option value="">👤 Cá nhân</option></select></div>
+    <div class="field"><label>Nội dung</label><textarea id="postContent" placeholder="Bạn đang nghĩ gì?"></textarea></div>
+    <div class="modal-result" id="postResult"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closePostModal()">Huỷ</button>
+      <button class="btn-submit" id="btnPost" onclick="submitPost()">Đăng bài</button>
+    </div>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <span class="lightbox-close" onclick="closeLightbox()">✕</span>
+  <img id="lbImg" src="">
+</div>
+
+<script>
+// ── Helpers ────────────────────────────────────────────
+function timeAgo(iso) {
+  const d = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (d < 60) return d + 's trước';
+  if (d < 3600) return Math.floor(d/60) + ' phút trước';
+  if (d < 86400) return Math.floor(d/3600) + ' giờ trước';
+  if (d < 2592000) return Math.floor(d/86400) + ' ngày trước';
+  return new Date(iso).toLocaleDateString('vi-VN');
+}
+function initials(name) { return name ? name.trim().split(' ').pop()[0].toUpperCase() : '?'; }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+const COLORS = ['#1877f2','#e41e3f','#2dba4e','#f7a21e','#9b59b6','#1abc9c'];
+function avatarColor(name) { let h=0; for(let c of name||'?') h=(h*31+c.charCodeAt(0))&0xffff; return COLORS[h%COLORS.length]; }
+
+function openLightbox(src) { document.getElementById('lbImg').src=src; document.getElementById('lightbox').classList.add('open'); }
+function closeLightbox() { document.getElementById('lightbox').classList.remove('open'); }
+
+function pct(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '';
+  return Math.round(Math.max(0, Math.min(1, n)) * 100) + '%';
+}
+
+function renderLeadBlock(postId) {
+  const items = leads[postId] || [];
+  if (!items.length) return '';
+  const rows = items.map(lead => {
+    const source = lead.source === 'post' ? 'Bài viết' : 'Bình luận';
+    const phone = lead.phone
+      ? `<span class="lead-phone">☎ ${esc(lead.phone)}</span>`
+      : `<span class="lead-no-phone">Chưa có SĐT</span>`;
+    const product = lead.product_or_service ? `<span>${esc(lead.product_or_service)}</span>` : '';
+    const location = lead.location ? `<span>${esc(lead.location)}</span>` : '';
+    const budget = lead.budget ? `<span>${esc(lead.budget)}</span>` : '';
+    const conf = pct(lead.confidence);
+    const confidence = conf ? `<span>Độ chắc ${conf}</span>` : '';
+    const evidence = lead.evidence ? `<div class="lead-evidence">"${esc(lead.evidence)}"</div>` : '';
+    return `<div class="lead-item">
+      <div class="lead-main">
+        <span class="lead-name">${esc(lead.name || 'Ẩn danh')}</span>
+        <span class="lead-source">${source}</span>
+        ${phone}
+      </div>
+      <div class="lead-need">${esc(lead.need || '')}</div>
+      <div class="lead-sub">${[product, location, budget, confidence].filter(Boolean).join('')}</div>
+      ${evidence}
+    </div>`;
+  }).join('');
+  return `<div class="lead-wrap">
+    <div class="lead-head"><span>🧲 Nhu cầu phát hiện</span><span>${items.length}</span></div>
+    <div class="lead-list">${rows}</div>
+  </div>`;
+}
+
+function renderReplyBlock(postId) {
+  const item = replySuggestions[postId];
+  if (!item) return '';
+  const conf = pct(item.confidence);
+  const source = item.target_source === 'comment'
+    ? 'Bình luận'
+    : (item.target_source === 'manual_comment' ? 'Comment nhập tay' : 'Bài viết');
+  const replies = (item.suggested_replies || []).map(reply => `
+    <div class="reply-item">
+      <div class="reply-label">${esc(reply.label || 'Mẫu trả lời')}</div>
+      <div class="reply-text">${esc(reply.text || '')}</div>
+      <div class="reply-actions">
+        <button class="btn-copy-reply" data-copy="${esc(reply.text || '')}" onclick="copyReply(this)">Copy</button>
+      </div>
+    </div>
+  `).join('');
+  return `<div class="reply-wrap">
+    <div class="reply-head">
+      <span>🤖 Gợi ý trả lời cho sale</span>
+      <span>${esc(item.intent_label || 'khác')}${conf ? ' · ' + conf : ''}</span>
+    </div>
+    <div class="reply-meta">
+      <div><b>Nguồn:</b> ${source}${item.customer_name ? ' · ' + esc(item.customer_name) : ''}</div>
+      <div><b>Ý khách:</b> ${esc(item.customer_need || 'AI chưa xác định rõ')}</div>
+      ${item.recommended_approach ? `<div><b>Hướng xử lý:</b> ${esc(item.recommended_approach)}</div>` : ''}
+      ${item.business_phone ? `<div><b>SĐT bên mình:</b> <span class="lead-phone">☎ ${esc(item.business_phone)}</span></div>` : ''}
+      ${item.storage ? `<div class="reply-save-note">Đã lưu: ${item.storage === 'supabase' ? 'Supabase' : 'local'}</div>` : ''}
+      ${item.warning ? `<div class="reply-save-note">⚠️ ${esc(item.warning)}</div>` : ''}
+    </div>
+    <div class="reply-list">${replies}</div>
+  </div>`;
+}
+
+function renderCommentSummaryBlock(postId) {
+  const item = commentSummaries[postId];
+  if (!item) return '';
+  const topics = (item.main_topics || []).join(', ');
+  const intents = (item.customer_intents || []).slice(0, 5).map(x =>
+    `<div class="summary-line"><b>${esc(x.intent || 'khác')}</b>${x.count !== undefined ? ` (${x.count})` : ''}: ${esc(x.evidence || '')}</div>`
+  ).join('');
+  const questions = (item.top_questions || []).slice(0, 5).map(x => `<div class="summary-line">${esc(x)}</div>`).join('');
+  return `<div class="reply-wrap comment-summary-wrap">
+    <div class="reply-head">
+      <span>📊 AI tóm tắt bình luận</span>
+      <span>${item.comment_count || 0} comment · đã đọc ${item.fetched_comment_count || 0}</span>
+    </div>
+    <div class="reply-meta">
+      <div><b>Tóm tắt:</b> ${esc(item.summary || 'Chưa có tóm tắt')}</div>
+      <div><b>Sắc thái:</b> ${esc(item.sentiment || 'unknown')} · <b>Mức gấp:</b> ${esc(item.urgency || 'low')} · <b>Người tham gia:</b> ${item.comment_authors_count || 0}</div>
+      ${topics ? `<div><b>Chủ đề:</b> ${esc(topics)}</div>` : ''}
+      ${item.recommended_action ? `<div><b>Việc nên làm:</b> ${esc(item.recommended_action)}</div>` : ''}
+      ${item.storage ? `<div class="reply-save-note">Đã lưu: ${item.storage === 'supabase' ? 'Supabase' : 'local'}</div>` : ''}
+      ${item.warning ? `<div class="reply-save-note">⚠️ ${esc(item.warning)}</div>` : ''}
+    </div>
+    ${intents ? `<div class="summary-list"><div class="reply-label">Ý định khách hàng</div>${intents}</div>` : ''}
+    ${questions ? `<div class="summary-list"><div class="reply-label">Câu hỏi nổi bật</div>${questions}</div>` : ''}
+  </div>`;
+}
+
+// ── State ─────────────────────────────────────────────
+let groups     = [];      // string[]  — list of group IDs
+let groupNames = {};      // {id: name}
+let keywords   = [];
+let tgIds      = [];
+let pages      = [];
+let allPosts   = [];
+let leads      = {};
+let replySuggestions = {};
+let commentSummaries = {};
+let businessProfile = {};
+let staffCookieRows = [];
+let activeStaffId = '';
+let currentStaff = null;
+let canManageStaff = false;
+let appStarted = false;
+
+function setAuthScreen(mode) {
+  document.getElementById('authWrap').style.display = mode ? '' : 'none';
+  document.getElementById('loginCard').style.display = mode === 'login' ? '' : 'none';
+  document.getElementById('setupCard').style.display = mode === 'setup' ? '' : 'none';
+  document.getElementById('appMain').style.display = mode ? 'none' : '';
+  document.getElementById('logoutBtn').style.display = mode ? 'none' : '';
+}
+
+function setCurrentStaff(staff) {
+  currentStaff = staff || null;
+  const userEl = document.getElementById('authUser');
+  userEl.textContent = currentStaff ? `${currentStaff.name || currentStaff.username} · ${currentStaff.role === 'admin' ? 'admin' : 'nhân sự'}` : '';
+}
+
+async function checkAuth() {
+  try {
+    const r = await fetch('/api/auth/status');
+    const d = await r.json();
+    if (d.setup_required) {
+      setAuthScreen('setup');
+      return false;
+    }
+    if (!d.authenticated) {
+      setAuthScreen('login');
+      return false;
+    }
+    setCurrentStaff(d.staff);
+    setAuthScreen('');
+    return true;
+  } catch {
+    setAuthScreen('login');
+    document.getElementById('loginStatus').textContent = 'Không kết nối được server';
+    return false;
+  }
+}
+
+async function setupFirstAccount() {
+  const status = document.getElementById('setupStatus');
+  const payload = {
+    name: document.getElementById('setupName').value.trim(),
+    username: document.getElementById('setupUsername').value.trim(),
+    password: document.getElementById('setupPassword').value,
+    cookie: document.getElementById('setupCookie').value.trim(),
+  };
+  status.textContent = 'Đang tạo tài khoản...';
+  try {
+    const r = await fetch('/api/auth/setup', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      setCurrentStaff(d.staff);
+      setAuthScreen('');
+      await startApp();
+    } else {
+      status.textContent = d.error || 'Lỗi setup';
+    }
+  } catch { status.textContent = 'Lỗi kết nối server'; }
+}
+
+async function login() {
+  const status = document.getElementById('loginStatus');
+  status.textContent = 'Đang đăng nhập...';
+  try {
+    const r = await fetch('/api/auth/login', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        username: document.getElementById('loginUsername').value.trim(),
+        password: document.getElementById('loginPassword').value,
+      })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      setCurrentStaff(d.staff);
+      setAuthScreen('');
+      await startApp();
+    } else {
+      status.textContent = d.error || 'Sai tài khoản hoặc mật khẩu';
+    }
+  } catch { status.textContent = 'Lỗi kết nối server'; }
+}
+
+async function logout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  location.reload();
+}
+
+// ── Render post ────────────────────────────────────────
+function renderPost(post) {
+  const authorName = (post.from || {}).name || 'Ẩn danh';
+  const reactions  = post.reactions?.summary?.total_count || 0;
+  const shares     = post.shares?.count || 0;
+  const cData      = post.comments || {};
+  const cList      = cData.data || [];
+  const cCount     = cData.summary?.total_count ?? (cData.data || []).length;
+  const text       = post.message || '';
+  const long       = text.length > 300;
+  const pid        = (post.id.split('_')[1] || post.id);
+  const gid        = post['_group_id'] || '';
+  const gName      = (gid && groupNames[gid]) ? groupNames[gid] : gid;
+  const postLeads  = leads[post.id] || [];
+  const postReply  = replySuggestions[post.id];
+  const savedSummary = commentSummaries[post.id];
+  const postSummary = savedSummary && !(((savedSummary.fetched_comment_count || 0) === 0) && cCount > 0)
+    ? savedSummary
+    : null;
+
+  // Attachments
+  const atts = (post.attachments || {}).data || [];
+  const attHtml = atts.map(a => {
+    if (a.type === 'photo') {
+      const src = a.media?.image?.src || '';
+      return src ? `<div class="attachment"><img src="${esc(src)}" onclick="openLightbox('${esc(src)}')" loading="lazy"></div>` : '';
+    }
+    if (a.type === 'video') {
+      const src = a.media?.source || '';
+      return src ? `<div class="attachment attachment-link">🎥 <a href="${esc(src)}" target="_blank">Xem video</a></div>` : '';
+    }
+    if (['share','link'].includes(a.type)) {
+      const url = a.url || '';
+      return url ? `<div class="attachment attachment-link">🔗 <a href="${esc(url)}" target="_blank">${esc(url.substring(0,60))}…</a></div>` : '';
+    }
+    return '';
+  }).join('');
+
+  // Comments preview
+  const cHtml = cList.map(c => {
+    const cn = (c.from||{}).name || 'Ẩn danh';
+    return `<div class="comment">
+      <div class="comment-av">${initials(cn)}</div>
+      <div class="comment-bubble">
+        <div class="comment-name">${esc(cn)}</div>
+        <div class="comment-msg">${esc(c.message||'')}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const commentsSection = cCount > 0 ? `
+    <div class="comments-wrap">
+      <span class="comments-toggle" onclick="toggleCmts(this)">💬 ${cCount} bình luận ▾</span>
+      <div class="comments-list" style="display:none">${cHtml || '<div style="font-size:13px;color:#65676b">Không có bình luận</div>'}</div>
+    </div>` : '';
+
+  const statusBadge = post.is_hidden
+    ? `<span class="badge badge-pending">⏳ Chờ duyệt</span>`
+    : `<span class="badge badge-ok">✅ Đã đăng</span>`;
+
+  const groupBadge = gid
+    ? `<span class="meta-dot"></span><span class="badge badge-group" title="${esc(gName)}\nID: ${gid}">📋 ${esc(gName)}</span>`
+    : '';
+
+  const cat = classifications[post.id] || '';
+  const catBadge = cat
+    ? `<span class="meta-dot"></span><span class="badge badge-cat" style="background:${catBg(cat)};color:${catFg(cat)}">🏷️ ${esc(cat)}</span>`
+    : '';
+  const leadBadge = postLeads.length
+    ? `<span class="meta-dot"></span><span class="badge badge-lead">🧲 ${postLeads.length} lead</span>`
+    : '';
+  const replyBadge = postReply
+    ? `<span class="meta-dot"></span><span class="badge badge-reply">🤖 Có gợi ý</span>`
+    : '';
+  const summaryBadge = postSummary
+    ? `<span class="meta-dot"></span><span class="badge badge-reply">📊 Đã tóm tắt</span>`
+    : '';
+  const leadHtml = renderLeadBlock(post.id);
+  const replyHtml = renderReplyBlock(post.id);
+  const summaryHtml = renderCommentSummaryBlock(post.id);
+
+  return `<div class="card">
+  <div class="card-header">
+    <div class="avatar" style="background:${avatarColor(authorName)}">${initials(authorName)}</div>
+    <div class="author-info">
+      <div class="author-name">${esc(authorName)}</div>
+      <div class="post-meta">
+        <span class="meta-time">${timeAgo(post.created_time)}</span>
+        <span class="meta-dot"></span>
+        ${statusBadge}
+        ${groupBadge}
+        ${catBadge}
+        ${leadBadge}
+        ${replyBadge}
+        ${summaryBadge}
+      </div>
+    </div>
+  </div>
+  ${text ? `<div class="card-body">
+    <div class="post-text${long?' collapsed':''}" id="pt-${pid}">${highlight(text)}</div>
+    ${long ? `<span class="see-more" onclick="expandTxt('pt-${pid}',this)">Xem thêm ▾</span>` : ''}
+  </div>` : ''}
+  ${attHtml ? `<div class="card-body" style="padding-top:0">${attHtml}</div>` : ''}
+  ${leadHtml}
+  ${replyHtml}
+  ${summaryHtml}
+  <div class="card-stats">
+    <div class="stat"><span class="stat-icon">❤️</span> ${reactions}</div>
+    <div class="stat"><span class="stat-icon">💬</span> ${cCount}</div>
+    <div class="stat"><span class="stat-icon">↗️</span> ${shares}</div>
+  </div>
+  ${commentsSection}
+  <div class="card-footer">
+    <div class="post-link"><a href="${post.permalink_url||'#'}" target="_blank">🔗 Xem trên Facebook</a></div>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <button class="btn-reply-ai" data-post="${esc(post.id)}" onclick="suggestReply(this)">🤖 Gợi ý trả lời</button>
+      <button class="btn-reply-ai" data-post="${esc(post.id)}" onclick="summarizeComments(this)">📊 Tóm tắt CMT</button>
+      <button class="btn-write-comment" onclick="toggleCmtBox(this)">✏️ Bình luận</button>
+    </div>
+  </div>
+  <div class="comment-box" data-post="${post.id}" data-group="${gid}" data-url="${esc(post.permalink_url || '')}">
+    <textarea class="comment-textarea" rows="2" placeholder="Nhập bình luận..."></textarea>
+    <div class="comment-file-row">
+      <label class="btn-image-upload">📎 Upload ảnh
+        <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onchange="uploadCommentImage(this)">
+      </label>
+      <span class="comment-file-hint">JPG, PNG, WEBP, GIF tối đa 8MB</span>
+    </div>
+    <input class="comment-image-input" placeholder="URL ảnh public nếu muốn bình luận kèm ảnh">
+    <div class="comment-image-preview">
+      <img alt="Ảnh bình luận">
+      <button type="button" onclick="clearCommentImage(this)">Gỡ ảnh</button>
+    </div>
+    <div class="comment-row">
+      <select class="comment-as"><option value="">👤 Cá nhân</option></select>
+      <button class="btn-send" onclick="sendComment(this)">Gửi</button>
+      <span class="comment-msg-result"></span>
+    </div>
+  </div>
+</div>`;
+}
+
+function expandTxt(id, el) { document.getElementById(id).classList.remove('collapsed'); el.remove(); }
+function toggleCmts(el) {
+  const list = el.nextElementSibling;
+  const open = list.style.display === 'none';
+  list.style.display = open ? 'flex' : 'none';
+  el.textContent = el.textContent.replace(open ? '▾' : '▴', open ? '▴' : '▾');
+}
+function toggleCmtBox(btn) {
+  const box = btn.closest('.card').querySelector('.comment-box');
+  const open = !box.classList.contains('open');
+  box.classList.toggle('open', open);
+  btn.textContent = open ? '✖ Đóng' : '✏️ Bình luận';
+  if (open) {
+    fillPageOptions(box.querySelector('.comment-as'));
+    box.querySelector('.comment-textarea').focus();
+  }
+}
+
+function setCommentImagePreview(box, imageUrl) {
+  const imgInp = box.querySelector('.comment-image-input');
+  const preview = box.querySelector('.comment-image-preview');
+  const img = preview ? preview.querySelector('img') : null;
+  if (imgInp) imgInp.value = imageUrl || '';
+  if (preview && img) {
+    preview.style.display = imageUrl ? 'flex' : 'none';
+    img.src = imageUrl || '';
+  }
+}
+
+function clearCommentImage(btn) {
+  const box = btn.closest('.comment-box');
+  if (box) setCommentImagePreview(box, '');
+}
+
+async function uploadCommentImage(input) {
+  const file = input.files && input.files[0];
+  const box = input.closest('.comment-box');
+  const result = box.querySelector('.comment-msg-result');
+  if (!file || !box) return;
+  result.textContent = '⏳ Đang upload ảnh...';
+  const fd = new FormData();
+  fd.append('image', file);
+  try {
+    const r = await fetch('/api/uploads/comment-image', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.ok && d.image_url) {
+      setCommentImagePreview(box, d.image_url);
+      result.textContent = '✅ Đã upload ảnh';
+    } else {
+      result.textContent = '❌ ' + (d.error || 'Upload ảnh lỗi');
+    }
+  } catch {
+    result.textContent = '❌ Lỗi upload ảnh';
+  }
+  input.value = '';
+}
+
+// ── Comment send ───────────────────────────────────────
+async function sendComment(btn) {
+  const box     = btn.closest('.comment-box');
+  const ta      = box.querySelector('.comment-textarea');
+  const imgInp  = box.querySelector('.comment-image-input');
+  const sel     = box.querySelector('.comment-as');
+  const result  = box.querySelector('.comment-msg-result');
+  const message = ta.value.trim();
+  const image_url = imgInp ? imgInp.value.trim() : '';
+  const post_id = box.dataset.post;
+  const group_id= box.dataset.group;
+  const post_url= box.dataset.url || '';
+  if (!message && !image_url) return;
+  btn.disabled = true;
+  result.textContent = '⏳ Đang gửi…';
+  try {
+    const r = await fetch('/api/comment', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ post_id, group_id, post_url, message, image_url, page_id: sel.value })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      ta.value='';
+      setCommentImagePreview(box, '');
+      result.textContent = image_url
+        ? '✅ Đã bình luận kèm ảnh!'
+        : (d.log_storage === 'supabase' ? '✅ Đã bình luận và lưu Supabase!' : '✅ Đã bình luận, log lưu local!');
+      await loadTodayCommentStats();
+    } else {
+      result.textContent = '❌ ' + (d.error||'Lỗi') + (d.log_storage ? ` · log: ${d.log_storage}` : '');
+    }
+  } catch { result.textContent = '❌ Lỗi kết nối'; }
+  btn.disabled = false;
+  setTimeout(() => { result.textContent = ''; }, 4000);
+}
+
+async function loadTodayCommentStats() {
+  const el = document.getElementById('commentTodayCount');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/comment-stats/today');
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'Không tải được thống kê');
+    el.textContent = `✅ Comment hôm nay: ${d.success_count}`;
+    el.title = d.storage === 'supabase'
+      ? 'Đếm comment thành công trong ngày từ Supabase'
+      : 'Đếm comment thành công trong ngày từ local vì Supabase chưa đọc được';
+  } catch {
+    el.textContent = 'Comment hôm nay: --';
+    el.title = 'Không tải được thống kê comment hôm nay';
+  }
+}
+
+function findPost(postId) {
+  return allPosts.find(p => p.id === postId);
+}
+
+async function copyReply(btn) {
+  const text = btn.dataset.copy || '';
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  const prev = btn.textContent;
+  btn.textContent = 'Đã copy';
+  setTimeout(() => { btn.textContent = prev; }, 1600);
+}
+
+async function suggestReply(btn) {
+  const postId = btn.dataset.post;
+  const post = findPost(postId);
+  const st = document.getElementById('aiStatus');
+  if (!post) return;
+
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ AI đang đọc...';
+  st.textContent = 'AI đang đọc bài viết và bình luận...';
+  st.style.color = '#65676b';
+  try {
+    const r = await fetch('/api/ai/suggest-reply', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ post })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      replySuggestions[postId] = Object.assign({}, d.suggestion, {
+        storage: d.storage,
+        warning: d.warning || ''
+      });
+      applyFilter();
+      st.textContent = d.storage === 'supabase'
+        ? '✅ Đã tạo gợi ý và lưu Supabase'
+        : '✅ Đã tạo gợi ý và lưu local';
+      st.style.color = '#16a34a';
+    } else {
+      st.textContent = '❌ ' + (d.error || 'AI chưa tạo được gợi ý');
+      st.style.color = '#dc2626';
+    }
+  } catch {
+    st.textContent = '❌ Lỗi kết nối server';
+    st.style.color = '#dc2626';
+  }
+  btn.disabled = false;
+  btn.textContent = prev;
+  setTimeout(() => { st.textContent = ''; }, 7000);
+}
+
+async function summarizeComments(btn) {
+  const postId = btn.dataset.post;
+  const post = findPost(postId);
+  const st = document.getElementById('aiStatus');
+  if (!post) return;
+
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Đang tóm tắt...';
+  st.textContent = 'AI đang đọc toàn bộ bình luận của bài viết...';
+  st.style.color = '#65676b';
+  try {
+    const r = await fetch('/api/ai/summarize-comments', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ post, force: true })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      commentSummaries[postId] = Object.assign({}, d.summary, {
+        storage: d.storage,
+        warning: d.warning || ''
+      });
+      applyFilter();
+      const count = d.summary?.comment_count || 0;
+      const fetched = d.summary?.fetched_comment_count || 0;
+      st.textContent = d.storage === 'supabase'
+        ? `✅ Đã đọc ${fetched}/${count} comment và lưu Supabase`
+        : `✅ Đã đọc ${fetched}/${count} comment, lưu local`;
+      st.style.color = '#16a34a';
+    } else {
+      st.textContent = '❌ ' + (d.error || 'AI chưa tóm tắt được bình luận');
+      st.style.color = '#dc2626';
+    }
+  } catch {
+    st.textContent = '❌ Lỗi kết nối server';
+    st.style.color = '#dc2626';
+  }
+  btn.disabled = false;
+  btn.textContent = prev;
+  setTimeout(() => { st.textContent = ''; }, 9000);
+}
+
+// ── Pages ──────────────────────────────────────────────
+async function loadPages() {
+  try {
+    const r = await fetch('/api/pages');
+    const d = await r.json();
+    if (Array.isArray(d)) pages = d;
+  } catch {}
+}
+function fillPageOptions(sel) {
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">👤 Cá nhân</option>' +
+    pages.map(p => `<option value="${p.id}">📄 ${esc(p.name)}</option>`).join('');
+  sel.value = cur;
+}
+
+// ── Keyword filter ─────────────────────────────────────
+function renderKwChips() {
+  document.getElementById('kwChips').innerHTML = keywords.map(kw =>
+    `<div class="chip chip-kw"><span class="chip-text">${esc(kw)}</span><span class="chip-remove" onclick="removeKw('${esc(kw)}')">✕</span></div>`
+  ).join('');
+  document.getElementById('kwHint').textContent = keywords.length ? 'Chỉ hiển thị bài chứa ít nhất 1 từ khoá' : '';
+}
+function addKw() {
+  const inp = document.getElementById('kwInp');
+  const v = inp.value.trim();
+  if (!v || keywords.includes(v)) { inp.value=''; return; }
+  keywords.push(v); inp.value='';
+  renderKwChips(); applyFilter();
+}
+function removeKw(kw) { keywords=keywords.filter(k=>k!==kw); renderKwChips(); applyFilter(); }
+function matchKw(post) {
+  if (!keywords.length) return true;
+  const hay = ((post.message||'') + ' ' + ((post.from||{}).name||'')).toLowerCase();
+  return keywords.some(k => hay.includes(k.toLowerCase()));
+}
+function highlight(text) {
+  let s = esc(text);
+  keywords.forEach(kw => {
+    const re = new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'gi');
+    s = s.replace(re, m => `<span class="hl">${m}</span>`);
+  });
+  return s;
+}
+document.getElementById('kwInp').addEventListener('keydown', e => { if(e.key==='Enter') addKw(); });
+
+// ── Apply filter ───────────────────────────────────────
+function applyFilter() {
+  const feed = document.getElementById('feed');
+  const catVal = document.getElementById('catFilter').value;
+  const filtered = allPosts.filter(p => {
+    if (!matchKw(p)) return false;
+    if (catVal && classifications[p.id] !== catVal) return false;
+    return true;
+  });
+  if (!filtered.length) {
+    feed.innerHTML = (keywords.length || catVal)
+      ? `<div class="empty"><div class="empty-icon">🔍</div><div class="empty-title">Không có bài khớp bộ lọc</div></div>`
+      : `<div class="empty"><div class="empty-icon">📭</div><div class="empty-title">Không có bài viết nào</div></div>`;
+    return;
+  }
+  feed.innerHTML = filtered.map(renderPost).join('');
+}
+
+// ── Load posts ─────────────────────────────────────────
+async function loadPosts() {
+  const limit  = document.getElementById('limitSel').value;
+  const feed   = document.getElementById('feed');
+  const icon   = document.getElementById('refIcon');
+  const status = document.getElementById('toolStatus');
+  const skel = `<div class="skeleton">
+    <div class="skel" style="width:40%;height:13px;margin-bottom:10px"></div>
+    <div class="skel" style="width:100%;height:11px;margin-bottom:7px"></div>
+    <div class="skel" style="width:75%;height:11px"></div>
+  </div>`;
+  icon.style.animation = 'spin 1s linear infinite';
+  document.head.insertAdjacentHTML('beforeend','<style>@keyframes spin{to{transform:rotate(360deg)}}</style>');
+  status.textContent = 'Đang tải...';
+  feed.innerHTML = skel.repeat(3);
+  try {
+    const res  = await fetch(`/api/posts?limit=${limit}&groups=${groups.join(',')}`);
+    const data = await res.json();
+    if (data.error) {
+      feed.innerHTML = `<div class="empty"><div class="empty-icon">🍪</div><div class="empty-title">Lỗi xác thực</div><div class="empty-sub">${esc(data.error)}</div></div>`;
+      status.textContent = 'Lỗi'; return;
+    }
+    allPosts = data;
+    applyFilter();
+    const now   = new Date().toLocaleTimeString('vi-VN');
+    const known = new Set(JSON.parse(localStorage.getItem('seenIds')||'[]'));
+    const fresh = data.filter(p => !known.has(p.id));
+    data.forEach(p => known.add(p.id));
+    localStorage.setItem('seenIds', JSON.stringify([...known].slice(-500)));
+    const nb = fresh.length && known.size > fresh.length ? ` <span class="new-badge">+${fresh.length} mới</span>` : '';
+    status.innerHTML = `${data.length} bài · ${now}${nb}`;
+    status.dataset.base = `${data.length} bài · ${now}`;
+  } catch {
+    feed.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-title">Lỗi kết nối server</div></div>`;
+    status.textContent = 'Lỗi';
+  } finally { icon.style.animation = ''; }
+}
+
+// ── Auto refresh ───────────────────────────────────────
+let autoTimer=null, cTimer=null, secsLeft=0;
+
+function saveSettings() {
+  const auto_refresh = !!autoTimer;
+  const interval = parseInt(document.getElementById('intervalInp').value)||5;
+  fetch('/api/settings', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ auto_refresh, interval })
+  });
+}
+
+function toggleAuto() { autoTimer ? stopAuto() : startAuto(); saveSettings(); }
+
+function startAuto() {
+  const m = parseInt(document.getElementById('intervalInp').value)||5;
+  if (m<1) return;
+  document.getElementById('btnAuto').classList.add('on');
+  document.getElementById('btnAuto').textContent = '⏹ Dừng';
+  document.getElementById('intervalInp').disabled = true;
+  tick(m*60);
+}
+function stopAuto() {
+  clearTimeout(autoTimer); clearInterval(cTimer); autoTimer=cTimer=null;
+  const btn = document.getElementById('btnAuto');
+  btn.classList.remove('on'); btn.textContent = '⏱ Tự động';
+  document.getElementById('intervalInp').disabled = false;
+  const st = document.getElementById('toolStatus');
+  st.textContent = st.dataset.base || st.textContent;
+}
+function tick(secs) {
+  secsLeft=secs; clearInterval(cTimer);
+  cTimer=setInterval(()=>{ if(--secsLeft<=0) clearInterval(cTimer); showCountdown(); },1000);
+  autoTimer=setTimeout(()=>{ loadPosts().then(()=>tick((parseInt(document.getElementById('intervalInp').value)||5)*60)); }, secs*1000);
+}
+function showCountdown() {
+  const st=document.getElementById('toolStatus');
+  const base=st.dataset.base||'';
+  const m=Math.floor(secsLeft/60),s=secsLeft%60;
+  st.textContent=base+(m>0?` (${m}p${s}s)`:`  (${s}s)`);
+}
+
+document.getElementById('intervalInp').addEventListener('change', saveSettings);
+
+// ── Group management ───────────────────────────────────
+async function loadGroups() {
+  try {
+    const r = await fetch('/api/groups');
+    const data = await r.json();
+    groups = data.map(g => g.id);
+    data.forEach(g => { if (g.name) groupNames[g.id] = g.name; });
+  } catch {}
+}
+
+function renderGroupChips() {
+  document.getElementById('groupChips').innerHTML = groups.map(gid => {
+    const name = groupNames[gid] || gid;
+    return `<div class="chip chip-group" title="${esc(name)}\nID: ${gid}">
+      <span class="chip-text">${esc(name)}</span>
+      <span class="chip-remove" onclick="removeGroup('${gid}')">✕</span>
+    </div>`;
+  }).join('');
+  const sub = document.getElementById('headerSub');
+  if (groups.length === 1) {
+    const n = groupNames[groups[0]] || groups[0];
+    sub.textContent = n; sub.title = 'ID: ' + groups[0];
+  } else {
+    sub.textContent = groups.length + ' nhóm đang theo dõi'; sub.title='';
+  }
+}
+
+async function loadGroupName(gid) {
+  if (groupNames[gid]) return;
+  try {
+    const r = await fetch('/api/groups/resolve?slug=' + encodeURIComponent(gid));
+    const d = await r.json();
+    if (d.ok && d.name) { groupNames[gid] = d.name; }
+  } catch {}
+}
+
+function extractSlug(raw) {
+  try {
+    const url = new URL(raw.includes('://')?raw:'https://'+raw);
+    const parts = url.pathname.split('/').filter(Boolean);
+    const i = parts.indexOf('groups');
+    if (i !== -1 && parts[i+1]) return parts[i+1].replace(/[^a-zA-Z0-9._-]/g,'');
+  } catch {}
+  return raw.trim().replace(/[^a-zA-Z0-9._-]/g,'');
+}
+
+async function addGroup() {
+  const inp = document.getElementById('groupInp');
+  const raw = inp.value.trim();
+  if (!raw) return;
+  inp.value=''; inp.disabled=true;
+  const slug = extractSlug(raw);
+  const st = document.getElementById('toolStatus');
+  const prev = st.dataset.base || st.textContent;
+  st.textContent = `🔍 Đang tìm "${slug}"...`;
+  try {
+    const r = await fetch('/api/groups/resolve?slug=' + encodeURIComponent(slug));
+    const d = await r.json();
+    if (d.ok) {
+      if (d.name) groupNames[d.id] = d.name;
+      if (!d.is_member) {
+        st.textContent = prev;
+        showJoinPrompt(d.id, d.name || d.id);
+      } else {
+        await fetch('/api/groups', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ id: d.id, name: d.name || '' })
+        });
+        if (!groups.includes(d.id)) groups.push(d.id);
+        renderGroupChips();
+        st.innerHTML = `✅ Đã thêm: ${esc(d.name||d.id)} <a href="https://www.facebook.com/groups/${d.id}" target="_blank" style="color:#1877f2;text-decoration:none">🔗 Mở FB</a>`;
+        setTimeout(()=>{ st.textContent=prev; },5000);
+      }
+    } else {
+      // Group not found via API — might be a private group
+      // Try to show join prompt anyway if slug looks like a valid ID
+      if (slug.match(/^\d{10,}$/)) {
+        st.textContent = prev;
+        showJoinPrompt(slug, slug);
+      } else {
+        st.textContent = `❌ Không tìm được: ${d.error}`;
+        setTimeout(()=>{ st.textContent=prev; },4000);
+      }
+    }
+  } catch {
+    st.textContent='❌ Lỗi kết nối';
+    setTimeout(()=>{ st.textContent=prev; },4000);
+  }
+  inp.disabled=false;
+}
+
+function showJoinPrompt(gid, gname) {
+  document.getElementById('joinPromptWrap').innerHTML = `
+    <div class="join-prompt" id="joinPrompt-${gid}">
+      <div class="join-prompt-icon">⚠️</div>
+      <div class="join-prompt-body">
+        <div class="join-prompt-title">Bạn chưa là thành viên của nhóm "${esc(gname)}"</div>
+        <div class="join-prompt-sub">Cần tham gia nhóm trước thì mới theo dõi được bài viết.</div>
+        <div class="join-prompt-actions">
+          <button class="btn-join" id="btnJoin-${gid}" onclick="joinGroup('${gid}','${esc(gname)}')">🚀 Gửi yêu cầu tham gia</button>
+          <a class="btn-join-fb" href="https://www.facebook.com/groups/${gid}" target="_blank">🔗 Mở trên Facebook</a>
+          <button class="btn-join-fb" onclick="forceAddGroup('${gid}','${esc(gname)}')">📋 Thêm theo dõi</button>
+        </div>
+        <div class="join-msg" id="joinMsg-${gid}"></div>
+      </div>
+      <span class="join-prompt-close" onclick="document.getElementById('joinPromptWrap').innerHTML=''">✕</span>
+    </div>`;
+}
+
+async function forceAddGroup(gid, gname) {
+  await fetch('/api/groups', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ id: gid, name: gname })
+  });
+  if (!groups.includes(gid)) groups.push(gid);
+  groupNames[gid] = gname;
+  renderGroupChips();
+  document.getElementById('joinPromptWrap').innerHTML = '';
+}
+
+async function joinGroup(gid, gname) {
+  const btn = document.getElementById('btnJoin-' + gid);
+  const msg = document.getElementById('joinMsg-' + gid);
+  btn.disabled = true;
+  btn.textContent = '⏳ Đang gửi...';
+  try {
+    const r = await fetch(`/api/groups/${gid}/join`, { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      if (d.already_member) {
+        // Was actually already a member — add the group
+        await fetch('/api/groups', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ id: gid, name: gname })
+        });
+        if (!groups.includes(gid)) groups.push(gid);
+        renderGroupChips();
+        document.getElementById('joinPromptWrap').innerHTML = '';
+      } else {
+        msg.style.color = '#1a7f37';
+        msg.textContent = '✅ ' + d.msg + ' — Chờ admin duyệt rồi thêm lại nhóm.';
+        btn.textContent = '✔ Đã gửi';
+      }
+    } else {
+      msg.style.color = '#e41e3f';
+      msg.textContent = '❌ ' + (d.error || 'Lỗi không xác định');
+      btn.disabled = false;
+      btn.textContent = '🚀 Gửi yêu cầu tham gia';
+    }
+  } catch {
+    msg.style.color = '#e41e3f';
+    msg.textContent = '❌ Lỗi kết nối';
+    btn.disabled = false;
+    btn.textContent = '🚀 Gửi yêu cầu tham gia';
+  }
+}
+
+async function removeGroup(gid) {
+  if (groups.length<=1) return;
+  await fetch(`/api/groups/${gid}`, { method: 'DELETE' });
+  groups = groups.filter(g => g !== gid);
+  renderGroupChips();
+}
+
+document.getElementById('groupInp').addEventListener('keydown', e => { if(e.key==='Enter') addGroup(); });
+
+// ── Telegram ───────────────────────────────────────────
+function renderTgChips() {
+  document.getElementById('tgChips').innerHTML = tgIds.map(cid =>
+    `<div class="chip chip-tg">
+      <span class="chip-text">${cid}</span>
+      <span class="chip-action" onclick="testTg('${cid}')">Test</span>
+      <span class="chip-remove" onclick="removeTg('${cid}')">✕</span>
+    </div>`
+  ).join('');
+}
+async function loadTg() {
+  try { const r=await fetch('/api/telegram/chatids'); tgIds=await r.json(); renderTgChips(); } catch {}
+}
+async function addTg() {
+  const inp=document.getElementById('tgInp');
+  const cid=inp.value.trim().replace(/[^0-9-]/g,'');
+  if(!cid) return; inp.value='';
+  const r=await fetch('/api/telegram/chatids',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:cid})});
+  const d=await r.json();
+  if(d.ok){tgIds=d.chat_ids; renderTgChips();}
+}
+async function removeTg(cid) {
+  const r=await fetch(`/api/telegram/chatids/${cid}`,{method:'DELETE'});
+  const d=await r.json(); tgIds=d.chat_ids; renderTgChips();
+}
+async function testTg(cid) {
+  const st=document.getElementById('tgStatus');
+  st.textContent='⏳ Đang gửi...';
+  try {
+    const r=await fetch(`/api/telegram/test/${cid}`,{method:'POST'});
+    const d=await r.json();
+    st.textContent=d.ok?'✅ Gửi thành công!':'❌ '+(d.error||'Lỗi');
+  } catch { st.textContent='❌ Lỗi kết nối'; }
+  setTimeout(()=>{st.textContent='';},3000);
+}
+document.getElementById('tgInp').addEventListener('keydown', e => { if(e.key==='Enter') addTg(); });
+
+// ── Staff cookies ─────────────────────────────────────
+function renderStaffCookies() {
+  const wrap = document.getElementById('staffCookieList');
+  document.getElementById('staffCookieManage').style.display = canManageStaff ? 'grid' : 'none';
+  if (!staffCookieRows.length) {
+    wrap.innerHTML = '<div class="staff-cookie-empty">Chưa có cookie nhân sự.</div>';
+    return;
+  }
+  wrap.innerHTML = staffCookieRows.map(item => {
+    const active = item.id === activeStaffId || (currentStaff && item.id === currentStaff.id);
+    const user = item.facebook_user_id ? `Facebook ID: ${esc(item.facebook_user_id)}` : 'Chưa đọc được c_user';
+    const actions = canManageStaff && !active
+      ? `<button class="btn-ai-sm btn-ai-del" onclick="deleteStaffCookie('${item.id}')">Xoá</button>`
+      : '';
+    return `<div class="staff-cookie-item">
+      <div class="staff-cookie-main">
+        <div class="staff-cookie-name">
+          ${esc(item.name || 'Chưa đặt tên')}
+          ${active ? '<span class="staff-active-badge">Đang dùng</span>' : ''}
+          <span class="staff-active-badge">${esc(item.role === 'admin' ? 'admin' : 'nhân sự')}</span>
+        </div>
+        <div class="staff-cookie-meta">@${esc(item.username || '')} · ${user} · ${esc(item.cookie_masked || '')}</div>
+      </div>
+      <div class="staff-cookie-actions">
+        ${actions}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function loadStaffCookies() {
+  try {
+    const r = await fetch('/api/staff-cookies');
+    const d = await r.json();
+    staffCookieRows = d.staff || [];
+    activeStaffId = d.active_staff_id || '';
+    canManageStaff = !!d.can_manage;
+    renderStaffCookies();
+  } catch {
+    document.getElementById('staffCookieStatus').textContent = 'Không tải được cookie nhân sự';
+  }
+}
+
+async function saveStaffCookie() {
+  const nameInp = document.getElementById('staffNameInp');
+  const usernameInp = document.getElementById('staffUsernameInp');
+  const passwordInp = document.getElementById('staffPasswordInp');
+  const cookieInp = document.getElementById('staffCookieInp');
+  const st = document.getElementById('staffCookieStatus');
+  const name = nameInp.value.trim();
+  const username = usernameInp.value.trim();
+  const password = passwordInp.value;
+  const cookie = cookieInp.value.trim();
+  if (!name || !username || !password || !cookie) {
+    st.textContent = 'Nhập đủ tên, tài khoản, mật khẩu và cookie';
+    st.style.color = '#dc2626';
+    return;
+  }
+  st.textContent = 'Đang lưu cookie...';
+  st.style.color = '#65676b';
+  try {
+    const r = await fetch('/api/staff-cookies', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name, username, password, cookie })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      staffCookieRows = d.staff || [];
+      activeStaffId = d.active_staff_id || '';
+      canManageStaff = !!d.can_manage;
+      nameInp.value = '';
+      usernameInp.value = '';
+      passwordInp.value = '';
+      cookieInp.value = '';
+      renderStaffCookies();
+      st.textContent = '✅ Đã lưu cookie nhân sự';
+      st.style.color = '#16a34a';
+      await loadPages();
+      await loadPosts();
+    } else {
+      st.textContent = '❌ ' + (d.error || 'Lỗi lưu cookie');
+      st.style.color = '#dc2626';
+    }
+  } catch {
+    st.textContent = '❌ Lỗi kết nối';
+    st.style.color = '#dc2626';
+  }
+  setTimeout(() => { if (st.textContent.startsWith('✅')) st.textContent = ''; }, 4000);
+}
+
+async function deleteStaffCookie(staffId) {
+  if (!confirm('Xoá cookie nhân sự này?')) return;
+  const st = document.getElementById('staffCookieStatus');
+  try {
+    const r = await fetch(`/api/staff-cookies/${staffId}`, { method: 'DELETE' });
+    const d = await r.json();
+    if (d.ok) {
+      staffCookieRows = d.staff || [];
+      activeStaffId = d.active_staff_id || '';
+      canManageStaff = !!d.can_manage;
+      renderStaffCookies();
+      st.textContent = '✅ Đã xoá cookie';
+      st.style.color = '#16a34a';
+      await loadPages();
+      await loadPosts();
+    }
+  } catch {
+    st.textContent = '❌ Lỗi kết nối';
+    st.style.color = '#dc2626';
+  }
+  setTimeout(() => { if (st.textContent.startsWith('✅')) st.textContent = ''; }, 4000);
+}
+
+// ── Post modal ─────────────────────────────────────────
+function openPostModal() {
+  document.getElementById('postGroupList').innerHTML =
+    groups.map(g => `<div class="multi-group-item">
+      <input type="checkbox" id="pg-${g}" value="${g}" checked>
+      <label for="pg-${g}">${esc(groupNames[g]||g)}</label>
+    </div>`).join('');
+  document.getElementById('postIdSel').innerHTML =
+    '<option value="">👤 Cá nhân</option>' +
+    pages.map(p=>`<option value="${p.id}">📄 ${esc(p.name)}</option>`).join('');
+  document.getElementById('postResult').textContent='';
+  document.getElementById('postContent').value='';
+  document.getElementById('postModal').classList.add('open');
+  setTimeout(()=>document.getElementById('postContent').focus(),80);
+}
+function closePostModal() { document.getElementById('postModal').classList.remove('open'); }
+
+function postSelectAll(checked) {
+  document.querySelectorAll('#postGroupList input[type=checkbox]').forEach(cb => cb.checked = checked);
+}
+
+function getSelectedGroups() {
+  return [...document.querySelectorAll('#postGroupList input[type=checkbox]:checked')].map(cb => cb.value);
+}
+
+async function submitPost() {
+  const selectedGroups = getSelectedGroups();
+  const page_id = document.getElementById('postIdSel').value;
+  const message = document.getElementById('postContent').value.trim();
+  const res = document.getElementById('postResult');
+  const btn = document.getElementById('btnPost');
+  if (!message) return;
+  if (!selectedGroups.length) { res.style.color='#e41e3f'; res.textContent='❌ Chọn ít nhất 1 nhóm'; return; }
+
+  btn.disabled = true;
+  const total = selectedGroups.length;
+  let ok = 0, fail = 0;
+  res.style.color = '#65676b';
+  res.textContent = `⏳ Đang đăng vào ${total} nhóm...`;
+
+  for (const group_id of selectedGroups) {
+    try {
+      const r = await fetch('/api/post', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ group_id, page_id, message })
+      });
+      const d = await r.json();
+      if (d.ok) ok++; else fail++;
+    } catch { fail++; }
+    res.textContent = `⏳ Đã đăng ${ok + fail}/${total} (✅${ok} ❌${fail})`;
+  }
+
+  if (fail === 0) {
+    res.style.color = '#1a7f37';
+    res.textContent = `✅ Đăng thành công ${ok}/${total} nhóm!`;
+    document.getElementById('postContent').value = '';
+    setTimeout(closePostModal, 2000);
+  } else {
+    res.style.color = ok > 0 ? '#b45309' : '#e41e3f';
+    res.textContent = `✅ ${ok} thành công, ❌ ${fail} thất bại`;
+  }
+  btn.disabled = false;
+}
+
+// ── AI Classification ──────────────────────────────────
+let classifications = {};
+let aiConfig = {};
+let aiProviders = {};
+
+const CAT_COLORS = {
+  'Mua bán':           { bg: '#dcfce7', fg: '#166534' },
+  'Hỏi đáp':           { bg: '#dbeafe', fg: '#1e40af' },
+  'Thông báo':         { bg: '#f3e8ff', fg: '#6b21a8' },
+  'Tán gẫu':           { bg: '#ccfbf1', fg: '#115e59' },
+  'Spam/Quảng cáo':    { bg: '#fee2e2', fg: '#991b1b' },
+  'Tuyển dụng':        { bg: '#ffedd5', fg: '#9a3412' },
+  'Chia sẻ kiến thức': { bg: '#e0e7ff', fg: '#3730a3' },
+};
+function catBg(cat) { return (CAT_COLORS[cat] || { bg: '#f3f4f6' }).bg; }
+function catFg(cat) { return (CAT_COLORS[cat] || { fg: '#374151' }).fg; }
+
+async function loadAiConfig() {
+  try {
+    const [pRes, cRes, clRes, lRes, rsRes, csRes] = await Promise.all([
+      fetch('/api/ai/providers'),
+      fetch('/api/ai/config'),
+      fetch('/api/ai/classifications'),
+      fetch('/api/ai/leads'),
+      fetch('/api/ai/reply-suggestions'),
+      fetch('/api/ai/comment-summaries'),
+    ]);
+    aiProviders = await pRes.json();
+    aiConfig = await cRes.json();
+    classifications = await clRes.json();
+    leads = await lRes.json();
+    replySuggestions = await rsRes.json();
+    commentSummaries = await csRes.json();
+    document.getElementById('aiProvider').value = aiConfig.provider || 'gemini';
+    document.getElementById('aiAutoClassify').checked = !!aiConfig.auto_classify;
+    renderKeyDisplay();
+    updateCatFilter();
+  } catch {}
+}
+
+function fillBusinessProfileForm(profile) {
+  document.getElementById('bizName').value = profile.business_name || '';
+  document.getElementById('bizPhone').value = profile.phone || '';
+  document.getElementById('bizAddress').value = profile.address || '';
+  document.getElementById('bizWhy').value = profile.why_choose_us || '';
+  document.getElementById('bizNotes').value = profile.extra_notes || '';
+}
+
+function getBusinessProfileForm() {
+  return {
+    business_name: document.getElementById('bizName').value.trim(),
+    phone: document.getElementById('bizPhone').value.trim(),
+    address: document.getElementById('bizAddress').value.trim(),
+    why_choose_us: document.getElementById('bizWhy').value.trim(),
+    extra_notes: document.getElementById('bizNotes').value.trim(),
+  };
+}
+
+async function loadBusinessProfile() {
+  const st = document.getElementById('profileStatus');
+  try {
+    const r = await fetch('/api/business-profile');
+    const d = await r.json();
+    if (d.ok) {
+      businessProfile = d.profile || {};
+      fillBusinessProfileForm(businessProfile);
+      st.textContent = d.storage === 'supabase' ? 'Đã nạp Supabase' : '';
+    }
+  } catch {
+    st.textContent = 'Không tải được thông tin';
+    st.style.color = '#dc2626';
+  }
+}
+
+async function saveBusinessProfile() {
+  const st = document.getElementById('profileStatus');
+  const profile = getBusinessProfileForm();
+  st.textContent = 'Đang lưu...';
+  st.style.color = '#65676b';
+  try {
+    const r = await fetch('/api/business-profile', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(profile)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      businessProfile = d.profile || profile;
+      fillBusinessProfileForm(businessProfile);
+      st.textContent = d.storage === 'supabase' ? '✅ Đã lưu Supabase' : '✅ Đã lưu local';
+      st.style.color = '#16a34a';
+      if (d.warning) {
+        setTimeout(() => {
+          st.textContent = '⚠️ ' + d.warning;
+          st.style.color = '#b45309';
+        }, 1200);
+      }
+    } else {
+      st.textContent = '❌ ' + (d.error || 'Lỗi lưu');
+      st.style.color = '#dc2626';
+    }
+  } catch {
+    st.textContent = '❌ Lỗi kết nối';
+    st.style.color = '#dc2626';
+  }
+  setTimeout(() => { if (st.textContent.startsWith('✅')) st.textContent = ''; }, 5000);
+}
+
+async function generateBusinessText() {
+  const st = document.getElementById('profileStatus');
+  const btn = document.getElementById('profileGenBtn');
+  const profile = getBusinessProfileForm();
+  if (!Object.values(profile).some(Boolean)) {
+    st.textContent = 'Nhập thông tin trước khi tạo';
+    st.style.color = '#dc2626';
+    return;
+  }
+
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ AI đang viết...';
+  st.textContent = 'AI đang tạo văn bản...';
+  st.style.color = '#65676b';
+  try {
+    const r = await fetch('/api/business-profile/generate-text', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(profile)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      businessProfile = d.profile || profile;
+      fillBusinessProfileForm(businessProfile);
+      st.textContent = d.storage === 'supabase' ? '✅ AI đã tạo và lưu Supabase' : '✅ AI đã tạo và lưu local';
+      st.style.color = '#16a34a';
+      if (d.warning) {
+        setTimeout(() => {
+          st.textContent = '⚠️ ' + d.warning;
+          st.style.color = '#b45309';
+        }, 1200);
+      }
+    } else {
+      st.textContent = '❌ ' + (d.error || 'AI chưa tạo được văn bản');
+      st.style.color = '#dc2626';
+    }
+  } catch {
+    st.textContent = '❌ Lỗi kết nối';
+    st.style.color = '#dc2626';
+  }
+  btn.disabled = false;
+  btn.textContent = prev;
+  setTimeout(() => { if (st.textContent.startsWith('✅')) st.textContent = ''; }, 7000);
+}
+
+function renderKeyDisplay() {
+  const provider = document.getElementById('aiProvider').value;
+  const masked = (aiConfig.keys_masked || {})[provider] || '';
+  const hasKey = masked && masked !== '***' && masked.length > 3;
+  const display = document.getElementById('aiKeyDisplay');
+  const delBtn = document.getElementById('aiKeyDelBtn');
+  const editBtn = document.getElementById('aiKeyEditBtn');
+  const input = document.getElementById('aiKeyInput');
+  const saveBtn = document.getElementById('aiKeySaveBtn');
+
+  if (hasKey) {
+    display.textContent = masked;
+    display.style.display = '';
+    delBtn.style.display = '';
+    editBtn.textContent = '✏️ Đổi key';
+  } else {
+    display.textContent = 'Chưa có key';
+    display.style.display = '';
+    delBtn.style.display = 'none';
+    editBtn.textContent = '➕ Thêm key';
+  }
+  input.style.display = 'none';
+  saveBtn.style.display = 'none';
+  input.value = '';
+}
+
+function showKeyInput() {
+  document.getElementById('aiKeyInput').style.display = '';
+  document.getElementById('aiKeySaveBtn').style.display = '';
+  document.getElementById('aiKeyInput').focus();
+}
+
+function onProviderChange() {
+  const provider = document.getElementById('aiProvider').value;
+  renderKeyDisplay();
+  document.getElementById('aiStatus').textContent = '';
+  // Save provider selection
+  fetch('/api/ai/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ provider, model: (aiProviders[provider] || {}).default_model || '' })
+  });
+}
+
+async function saveAiKey() {
+  const provider = document.getElementById('aiProvider').value;
+  const key = document.getElementById('aiKeyInput').value.trim();
+  const st = document.getElementById('aiStatus');
+  if (!key) { st.textContent = '❌ Nhập API key'; st.style.color = '#dc2626'; return; }
+  st.textContent = '⏳ Đang lưu...'; st.style.color = '#65676b';
+  try {
+    const model = (aiProviders[provider] || {}).default_model || '';
+    const r = await fetch('/api/ai/config', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ provider, model, key })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      st.textContent = '✅ Đã lưu key!'; st.style.color = '#16a34a';
+      // Refresh config to get masked key
+      const cRes = await fetch('/api/ai/config');
+      aiConfig = await cRes.json();
+      renderKeyDisplay();
+    } else {
+      st.textContent = '❌ Lỗi lưu'; st.style.color = '#dc2626';
+    }
+  } catch { st.textContent = '❌ Lỗi kết nối'; st.style.color = '#dc2626'; }
+  setTimeout(() => { st.textContent = ''; }, 3000);
+}
+
+async function deleteAiKey() {
+  const provider = document.getElementById('aiProvider').value;
+  const st = document.getElementById('aiStatus');
+  if (!confirm(`Xoá API key của ${provider.toUpperCase()}?`)) return;
+  try {
+    await fetch(`/api/ai/key/${provider}`, { method: 'DELETE' });
+    st.textContent = '✅ Đã xoá key'; st.style.color = '#16a34a';
+    const cRes = await fetch('/api/ai/config');
+    aiConfig = await cRes.json();
+    renderKeyDisplay();
+  } catch { st.textContent = '❌ Lỗi'; st.style.color = '#dc2626'; }
+  setTimeout(() => { st.textContent = ''; }, 3000);
+}
+
+async function saveAiConfig() {
+  const provider = document.getElementById('aiProvider').value;
+  const auto_classify = document.getElementById('aiAutoClassify').checked;
+  await fetch('/api/ai/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ provider, auto_classify })
+  });
+}
+
+function isAiQuotaError(message) {
+  const text = String(message || '').toLowerCase();
+  return text.includes('quota') || text.includes('rate-limit') || text.includes('rate limit') || text.includes('429');
+}
+
+async function showAiError(message, options = {}) {
+  const st = document.getElementById('aiStatus');
+  const text = message || 'AI đang lỗi';
+  st.textContent = '❌ ' + text;
+  st.style.color = '#dc2626';
+  if (isAiQuotaError(text)) {
+    document.getElementById('aiAutoClassify').checked = false;
+    await saveAiConfig();
+    st.textContent = '⚠️ ' + text + ' Đã tắt tự động AI để tránh gọi tiếp.';
+    st.style.color = '#b45309';
+  }
+  if (options.clear !== false) {
+    setTimeout(() => { st.textContent = ''; }, options.timeout || 9000);
+  }
+}
+
+async function testAi() {
+  const st = document.getElementById('aiStatus');
+  st.textContent = '⏳ Đang test...'; st.style.color = '#65676b';
+  let shouldClear = true;
+  try {
+    const r = await fetch('/api/ai/test', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      st.textContent = '✅ Kết nối OK!';
+      st.style.color = '#16a34a';
+    } else {
+      await showAiError(d.error || 'Lỗi', { clear: false });
+      shouldClear = false;
+    }
+  } catch { st.textContent = '❌ Lỗi kết nối'; st.style.color = '#dc2626'; }
+  if (shouldClear) setTimeout(() => { st.textContent = ''; }, 4000);
+}
+
+async function classifyAll() {
+  if (!allPosts.length) return;
+  const btn = document.getElementById('btnClassify');
+  const st = document.getElementById('aiStatus');
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Đang phân loại...';
+  st.textContent = '⏳ Đang phân loại...';
+  st.style.color = '#65676b';
+  try {
+    const r = await fetch('/api/ai/classify', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ posts: allPosts })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      Object.assign(classifications, d.classifications);
+      updateCatFilter();
+      applyFilter();
+      st.textContent = '✅ Đã phân loại bài viết';
+      st.style.color = '#16a34a';
+    } else {
+      await showAiError(d.error || 'Không xác định', { clear: false });
+    }
+  } catch { await showAiError('Lỗi kết nối server', { clear: false }); }
+  btn.disabled = false;
+  btn.textContent = prev;
+  setTimeout(() => { if (st.textContent.startsWith('✅')) st.textContent = ''; }, 5000);
+}
+
+async function extractLeadsAll() {
+  if (!allPosts.length) return;
+  const btn = document.getElementById('btnLeads');
+  const st = document.getElementById('aiStatus');
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Đang tách lead...';
+  st.textContent = '⏳ Đang tách lead...';
+  st.style.color = '#65676b';
+  try {
+    const r = await fetch('/api/ai/extract-leads', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ posts: allPosts, force: true })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      Object.assign(leads, d.leads);
+      applyFilter();
+      const count = Object.values(d.leads || {}).reduce((sum, items) => sum + (items || []).length, 0);
+      if (d.warning) {
+        st.textContent = '⚠️ ' + d.warning;
+        st.style.color = '#b45309';
+      } else if (count) {
+        st.textContent = `✅ Tách được ${count} lead`;
+        st.style.color = '#16a34a';
+      } else {
+        st.textContent = 'ℹ️ Chưa phát hiện lead';
+        st.style.color = '#65676b';
+      }
+    } else {
+      await showAiError(d.error || 'Không xác định', { clear: false });
+    }
+  } catch {
+    await showAiError('Lỗi kết nối server', { clear: false });
+  }
+  btn.disabled = false;
+  btn.textContent = prev;
+  setTimeout(() => { st.textContent = ''; }, 7000);
+}
+
+function updateCatFilter() {
+  const sel = document.getElementById('catFilter');
+  const cur = sel.value;
+  const cats = [...new Set(Object.values(classifications))].sort();
+  sel.innerHTML = '<option value="">🏷️ Tất cả</option>' +
+    cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  sel.value = cur;
+}
+
+// ── Init ───────────────────────────────────────────────
+async function startApp() {
+  if (appStarted) {
+    await loadStaffCookies();
+    await loadTodayCommentStats();
+    await loadPosts();
+    return;
+  }
+  appStarted = true;
+  try {
+    const sr = await fetch('/api/settings');
+    const s  = await sr.json();
+    document.getElementById('intervalInp').value = s.interval || 5;
+    window._autoOnInit = !!s.auto_refresh;
+  } catch { window._autoOnInit = true; }
+
+  await loadBusinessProfile();
+  await loadAiConfig();
+  await loadStaffCookies();
+  await loadTodayCommentStats();
+  await loadGroups();
+  await Promise.all(groups.map(loadGroupName));
+  await Promise.all(groups.map(g =>
+    fetch('/api/groups', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ id: g, name: groupNames[g] || '' })
+    })
+  ));
+  renderGroupChips();
+  renderKwChips();
+  loadTg();
+  loadPages();
+  await loadPosts();
+  if (aiConfig.auto_classify) classifyAll();
+  if (window._autoOnInit) startAuto();
+}
+
+(async function authBootstrap() {
+  const ok = await checkAuth();
+  if (ok) await startApp();
+})();
+</script>
+</body>
+</html>
