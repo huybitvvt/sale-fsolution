@@ -20,7 +20,7 @@ from core import supabase_store as sb
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
-load_dotenv(os.path.join(BASE_DIR, '.env'))
+load_dotenv(os.path.join(BASE_DIR, '.env'), override=True)
 
 SEEN_FILE = os.path.join(DATA_DIR, 'seen_posts.json')
 TG_CONFIG_FILE = os.path.join(DATA_DIR, 'telegram_config.json')
@@ -35,6 +35,7 @@ STAFF_COOKIES_FILE = os.path.join(DATA_DIR, 'staff_cookies.json')
 STAFF_TOKEN_DIR = os.path.join(DATA_DIR, 'staff_tokens')
 COMMENT_LOGS_FILE = os.path.join(DATA_DIR, 'comment_logs.json')
 COMMENT_SUMMARIES_FILE = os.path.join(DATA_DIR, 'comment_summaries.json')
+POST_COMMENTS_FILE = os.path.join(DATA_DIR, 'post_comments.json')
 
 BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '')
 DEFAULT_GROUP = os.environ.get('DEFAULT_GROUP', '3809441172650624')
@@ -51,8 +52,10 @@ SUPABASE_REPLY_TABLE = os.environ.get('SUPABASE_REPLY_TABLE', 'ai_reply_suggesti
 SUPABASE_PROFILE_TABLE = os.environ.get('SUPABASE_PROFILE_TABLE', 'business_profiles')
 SUPABASE_COMMENT_LOG_TABLE = os.environ.get('SUPABASE_COMMENT_LOG_TABLE', 'comment_logs')
 SUPABASE_COMMENT_SUMMARY_TABLE = os.environ.get('SUPABASE_COMMENT_SUMMARY_TABLE', 'post_comment_summaries')
+SUPABASE_POST_COMMENT_TABLE = os.environ.get('SUPABASE_POST_COMMENT_TABLE', 'post_comments')
 SUPABASE_COMMENT_IMAGE_BUCKET = os.environ.get('SUPABASE_COMMENT_IMAGE_BUCKET', 'comment-images')
 APP_TIMEZONE = os.environ.get('APP_TIMEZONE', 'Asia/Ho_Chi_Minh')
+TIKTOK_COOKIE = os.environ.get('TIKTOK_COOKIE', '')
 MAX_COMMENT_IMAGE_BYTES = int(os.environ.get('MAX_COMMENT_IMAGE_BYTES', 8 * 1024 * 1024))
 ALLOWED_COMMENT_IMAGE_TYPES = {
     'image/jpeg': '.jpg',
@@ -89,6 +92,7 @@ _business_profile: dict = {}  # {business_name, phone, address, why_choose_us, e
 _staff_cookies: dict = {}  # {active_staff_id, staff: [{id, name, cookie, enabled}]}
 _comment_logs: list = []
 _comment_summaries: dict = {}
+_post_comments: list = []
 
 
 def _default_business_profile() -> dict:
@@ -148,7 +152,7 @@ def _verify_password(password: str, salt: str, digest: str) -> bool:
 
 
 def _load_state():
-    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _reply_suggestions, _business_profile, _staff_cookies, _comment_logs, _comment_summaries
+    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _reply_suggestions, _business_profile, _staff_cookies, _comment_logs, _comment_summaries, _post_comments
     os.makedirs(DATA_DIR, exist_ok=True)
 
     loaded_from_supabase = False
@@ -209,6 +213,9 @@ def _load_state():
     _comment_summaries = _read_json(COMMENT_SUMMARIES_FILE, {})
     if not isinstance(_comment_summaries, dict):
         _comment_summaries = {}
+    _post_comments = _read_json(POST_COMMENTS_FILE, [])
+    if not isinstance(_post_comments, list):
+        _post_comments = []
 
 
 def _save_seen(new_posts=None):
@@ -282,6 +289,11 @@ def _save_comment_logs():
 def _save_comment_summaries():
     with open(COMMENT_SUMMARIES_FILE, 'w', encoding='utf-8') as f:
         json.dump(_comment_summaries, f, ensure_ascii=False)
+
+
+def _save_post_comments():
+    with open(POST_COMMENTS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(_post_comments[-5000:], f, ensure_ascii=False)
 
 
 def _extract_cookie_user(cookie: str) -> str:
@@ -575,6 +587,324 @@ def _save_comment_summary_to_supabase(summary: dict) -> tuple[bool, str]:
         return False, str(e)[:300]
 
 
+def _normalize_keywords(value) -> list[str]:
+    if isinstance(value, list):
+        raw = value
+    else:
+        raw = re.split(r'[\n,;]+', str(value or ''))
+    seen = set()
+    keywords = []
+    for item in raw:
+        kw = str(item or '').strip()
+        key = kw.lower()
+        if kw and key not in seen:
+            seen.add(key)
+            keywords.append(kw)
+    return keywords[:50]
+
+
+def _match_comment_keywords(message: str, keywords: list[str]) -> list[str]:
+    hay = (message or '').lower()
+    return [kw for kw in keywords if kw.lower() in hay]
+
+
+def _iso_from_unix(value) -> str:
+    try:
+        ts = int(value or 0)
+        if ts <= 0:
+            return ''
+        return datetime.fromtimestamp(ts, timezone.utc).isoformat().replace('+00:00', 'Z')
+    except Exception:
+        return ''
+
+
+def _flatten_facebook_comment_rows(post: dict, comments: list, keywords: list[str], fetched_at: str, staff: dict) -> list[dict]:
+    rows: list[dict] = []
+    post_id = str(post.get('id') or '')
+    group_id = str(post.get('_group_id') or DEFAULT_GROUP)
+    post_url = post.get('permalink_url') or ''
+
+    def walk(items: list, parent_id: str = '', depth: int = 0):
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            cid = str(item.get('id') or '').strip()
+            if not cid:
+                continue
+            from_obj = item.get('from') if isinstance(item.get('from'), dict) else {}
+            message = item.get('message') or ''
+            matched = _match_comment_keywords(message, keywords)
+            rows.append({
+                'source': 'facebook',
+                'post_id': post_id,
+                'group_id': group_id,
+                'post_url': post_url,
+                'comment_id': cid,
+                'parent_comment_id': parent_id,
+                'depth': depth,
+                'author_id': from_obj.get('id') or '',
+                'author_name': from_obj.get('name') or 'Ẩn danh',
+                'message': message,
+                'attachment_type': ((item.get('attachment') or {}).get('type') if isinstance(item.get('attachment'), dict) else '') or '',
+                'created_time': item.get('created_time') or None,
+                'matched_keywords': matched,
+                'is_matched': bool(matched),
+                'raw_comment': item,
+                'fetched_by_staff_id': staff.get('id', ''),
+                'fetched_by_staff_name': staff.get('name', ''),
+                'fetched_by_staff_username': staff.get('username', ''),
+                'fetched_at': fetched_at,
+            })
+            replies = ((item.get('comments') or {}).get('data') if isinstance(item.get('comments'), dict) else []) or []
+            if replies:
+                walk(replies, cid, depth + 1)
+
+    walk(comments)
+    return rows
+
+
+def _save_post_comment_rows_to_supabase(rows: list[dict]) -> tuple[bool, str]:
+    if not rows:
+        return True, ''
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False, 'Chưa cấu hình Supabase'
+    headers = {
+        'apikey': SUPABASE_KEY,
+        'Authorization': f'Bearer {SUPABASE_KEY}',
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates,return=minimal',
+    }
+    chunk = 200
+
+    def post_chunks(payload_rows: list[dict]) -> tuple[bool, str]:
+        for i in range(0, len(payload_rows), chunk):
+            resp = _req.post(
+                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_POST_COMMENT_TABLE}?on_conflict=comment_id",
+                headers=headers,
+                json=payload_rows[i:i + chunk],
+                timeout=30,
+            )
+            if resp.status_code not in (200, 201, 204):
+                if resp.headers.get('content-type', '').startswith('application/json'):
+                    try:
+                        return False, (resp.json().get('message') or resp.text)[:300]
+                    except Exception:
+                        pass
+                return False, resp.text[:300]
+        return True, ''
+
+    try:
+        ok, error = post_chunks(rows)
+        if ok:
+            return True, ''
+        if "'source' column" in error or 'source column' in error:
+            legacy_rows = [{k: v for k, v in row.items() if k != 'source'} for row in rows]
+            legacy_ok, legacy_error = post_chunks(legacy_rows)
+            if legacy_ok:
+                return True, 'Đã lưu Supabase, nhưng bảng post_comments đang thiếu cột source nên chưa phân loại được facebook/tiktok trong DB.'
+            return False, legacy_error
+        return False, error
+    except Exception as e:
+        return False, str(e)[:300]
+
+
+def _store_post_comment_rows(rows: list[dict]) -> tuple[str, str]:
+    global _post_comments
+    if not rows:
+        return 'local', ''
+    by_id = {str(item.get('comment_id')): item for item in _post_comments if item.get('comment_id')}
+    for row in rows:
+        by_id[str(row.get('comment_id'))] = row
+    _post_comments = list(by_id.values())[-5000:]
+    _save_post_comments()
+    ok, error = _save_post_comment_rows_to_supabase(rows)
+    return ('supabase' if ok else 'local'), error
+
+
+def _extract_tiktok_video_id(raw: str) -> tuple[str, str]:
+    value = (raw or '').strip()
+    if not value:
+        return '', ''
+    if re.fullmatch(r'\d{8,}', value):
+        return value, f'https://www.tiktok.com/@/video/{value}'
+
+    url = value
+    if 'tiktok.com' not in url.lower() and re.search(r'\d{8,}', url):
+        vid = re.search(r'\d{8,}', url).group(0)
+        return vid, url
+    if not re.match(r'^https?://', url, re.I):
+        url = 'https://' + url
+
+    final_url = url
+    try:
+        resp = _req.get(
+            url,
+            headers={'User-Agent': 'Mozilla/5.0'},
+            allow_redirects=True,
+            timeout=15,
+        )
+        final_url = resp.url or url
+    except Exception:
+        final_url = url
+
+    match = re.search(r'/video/(\d+)', final_url)
+    if not match:
+        match = re.search(r'(?:item_id|itemId|aweme_id)=(\d+)', final_url)
+    return (match.group(1), final_url) if match else ('', final_url)
+
+
+def _fetch_tiktok_comments(video_id: str, limit: int = 300, cookie: str = '') -> tuple[list[dict], str]:
+    comments: list[dict] = []
+    cursor = 0
+    limit = max(1, min(int(limit or 300), 1000))
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Referer': f'https://www.tiktok.com/@/video/{video_id}',
+        'Origin': 'https://www.tiktok.com',
+    }
+    merged_cookie = (cookie or TIKTOK_COOKIE or '').strip()
+    if merged_cookie:
+        headers['Cookie'] = merged_cookie
+
+    def request_page(url: str, params: dict) -> tuple[dict, str]:
+        try:
+            resp = _req.get(url, params=params, headers=headers, timeout=25)
+        except Exception as e:
+            return {}, f'Lỗi kết nối TikTok: {str(e)[:180]}'
+        if resp.status_code in (401, 403):
+            return {}, 'TikTok đang chặn request. Hãy thêm TIKTOK_COOKIE trong .env rồi chạy lại.'
+        if resp.status_code != 200:
+            return {}, f'TikTok trả lỗi {resp.status_code}: {resp.text[:160]}'
+        try:
+            return resp.json(), ''
+        except Exception:
+            return {}, 'TikTok không trả JSON hợp lệ, có thể endpoint đang bị chặn.'
+
+    def fetch_replies(parent: dict):
+        parent_cid = str(parent.get('cid') or parent.get('id') or '').strip()
+        if not parent_cid or len(comments) >= limit:
+            return ''
+        total_replies = int(parent.get('reply_comment_total') or parent.get('reply_comment_count') or 0)
+        if total_replies <= 0:
+            return ''
+        reply_cursor = 0
+        while len(comments) < limit:
+            reply_count = min(50, limit - len(comments))
+            data, error = request_page(
+                'https://www.tiktok.com/api/comment/list/reply/',
+                {
+                    'item_id': video_id,
+                    'comment_id': parent_cid,
+                    'cursor': reply_cursor,
+                    'count': reply_count,
+                    'aid': 1988,
+                    'app_language': 'vi-VN',
+                    'browser_language': 'vi-VN',
+                    'device_platform': 'webapp',
+                    'region': 'VN',
+                    'os': 'windows',
+                },
+            )
+            if error:
+                return error
+            batch = data.get('comments') or []
+            if not batch:
+                return ''
+            for item in batch:
+                if isinstance(item, dict):
+                    item['_parent_cid'] = parent_cid
+                    item['_depth'] = 1
+                    comments.append(item)
+                    if len(comments) >= limit:
+                        break
+            has_more = bool(data.get('has_more'))
+            next_cursor = data.get('cursor')
+            if not has_more or next_cursor is None or int(next_cursor) == reply_cursor:
+                return ''
+            reply_cursor = int(next_cursor)
+        return ''
+
+    while len(comments) < limit:
+        count = min(50, limit - len(comments))
+        params = {
+            'aweme_id': video_id,
+            'cursor': cursor,
+            'count': count,
+            'aid': 1988,
+            'app_language': 'vi-VN',
+            'browser_language': 'vi-VN',
+            'device_platform': 'webapp',
+            'region': 'VN',
+            'os': 'windows',
+        }
+        data, error = request_page('https://www.tiktok.com/api/comment/list/', params)
+        if error:
+            return comments, error
+
+        batch = data.get('comments') or []
+        if not batch:
+            msg = data.get('status_msg') or data.get('message') or ''
+            return comments, msg or ('Không thấy comment TikTok hoặc video/cookie không có quyền đọc.')
+        for item in batch:
+            if not isinstance(item, dict):
+                continue
+            item['_depth'] = 0
+            comments.append(item)
+            if len(comments) >= limit:
+                break
+            reply_error = fetch_replies(item)
+            if reply_error and not comments:
+                return comments, reply_error
+            if len(comments) >= limit:
+                break
+        has_more = bool(data.get('has_more'))
+        next_cursor = data.get('cursor')
+        if not has_more or next_cursor is None or int(next_cursor) == cursor:
+            break
+        cursor = int(next_cursor)
+    return comments[:limit], ''
+
+
+def _flatten_tiktok_comment_rows(video_id: str, video_url: str, comments: list, keywords: list[str], fetched_at: str, staff: dict) -> list[dict]:
+    rows: list[dict] = []
+    post_id = f'tiktok_{video_id}'
+    for item in comments or []:
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get('cid') or item.get('id') or '').strip()
+        if not cid:
+            continue
+        depth = int(item.get('_depth') or 0)
+        parent_cid = str(item.get('_parent_cid') or '').strip()
+        user = item.get('user') if isinstance(item.get('user'), dict) else {}
+        share_info = item.get('share_info') if isinstance(item.get('share_info'), dict) else {}
+        message = item.get('text') or share_info.get('desc') or ''
+        matched = _match_comment_keywords(message, keywords)
+        rows.append({
+            'source': 'tiktok',
+            'post_id': post_id,
+            'group_id': '',
+            'post_url': video_url,
+            'comment_id': f'tiktok_{cid}',
+            'parent_comment_id': f'tiktok_{parent_cid}' if parent_cid else '',
+            'depth': depth,
+            'author_id': str(user.get('uid') or user.get('sec_uid') or ''),
+            'author_name': user.get('nickname') or user.get('unique_id') or 'Ẩn danh',
+            'message': message,
+            'attachment_type': '',
+            'created_time': _iso_from_unix(item.get('create_time')) or None,
+            'matched_keywords': matched,
+            'is_matched': bool(matched),
+            'raw_comment': item,
+            'fetched_by_staff_id': staff.get('id', ''),
+            'fetched_by_staff_name': staff.get('name', ''),
+            'fetched_by_staff_username': staff.get('username', ''),
+            'fetched_at': fetched_at,
+        })
+    return rows
+
+
 def _upload_comment_image_to_supabase(file_storage) -> tuple[str, str]:
     if not SUPABASE_URL or not SUPABASE_KEY:
         return '', 'Chưa cấu hình Supabase'
@@ -773,6 +1103,8 @@ def _require_auth_for_api():
 
 # ── Telegram ───────────────────────────────────────────
 def _tg_send(chat_id: str, text: str):
+    if not BOT_TOKEN:
+        return
     try:
         _req.post(
             f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
@@ -800,6 +1132,8 @@ def _notify_new_post(post: dict):
 
 
 def _poll_telegram():
+    if not BOT_TOKEN:
+        return
     offset = 0
     while True:
         try:
@@ -1045,6 +1379,97 @@ def comment_stats_today():
     if warning and storage == 'local':
         payload['warning'] = warning
     return jsonify(payload)
+
+
+@app.route('/api/post-comments/fetch', methods=['POST'])
+def fetch_facebook_post_comments():
+    body = request.get_json() or {}
+    post = body.get('post') or {}
+    if not post or not post.get('id'):
+        return jsonify({'ok': False, 'error': 'Thiếu bài viết Facebook'}), 400
+    keywords = _normalize_keywords(body.get('keywords') or [])
+    limit = max(1, min(int(body.get('limit') or 500), 1000))
+    post_id = str(post.get('id'))
+    group_id = str(post.get('_group_id') or DEFAULT_GROUP)
+    try:
+        loaded = get_api(group_id).get_post_comments(post_id, limit=limit)
+        if loaded is None:
+            return jsonify({'ok': False, 'error': 'Không đọc được bình luận Facebook. Kiểm tra cookie/quyền nhóm.'}), 502
+        comments = loaded.get('comments') or []
+        total_count = int(loaded.get('total_count') or len(comments))
+        fetched_at = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+        rows = _flatten_facebook_comment_rows(post, comments, keywords, fetched_at, _current_staff())
+        storage, warning = _store_post_comment_rows(rows)
+        matched_count = sum(1 for row in rows if row.get('is_matched'))
+        payload = {
+            'ok': True,
+            'source': 'facebook',
+            'post_id': post_id,
+            'comment_count': total_count,
+            'fetched_comment_count': len(rows),
+            'matched_count': matched_count,
+            'comments': rows,
+            'storage': storage,
+        }
+        if warning:
+            payload['warning'] = warning if storage == 'supabase' else f'Đã lưu local, Supabase chưa ghi được: {warning}'
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/tiktok/comments/fetch', methods=['POST'])
+def fetch_tiktok_comments():
+    body = request.get_json() or {}
+    raw_url = str(body.get('url') or body.get('video_url') or body.get('video_id') or '').strip()
+    keywords = _normalize_keywords(body.get('keywords') or [])
+    limit = max(1, min(int(body.get('limit') or 300), 1000))
+    cookie = str(body.get('cookie') or '').strip()
+    video_id, final_url = _extract_tiktok_video_id(raw_url)
+    if not video_id:
+        return jsonify({'ok': False, 'error': 'Không nhận diện được video TikTok. Dán link video hoặc ID video.'}), 400
+    comments, fetch_error = _fetch_tiktok_comments(video_id, limit=limit, cookie=cookie)
+    if not comments and fetch_error:
+        return jsonify({'ok': False, 'error': fetch_error, 'source': 'tiktok', 'post_id': f'tiktok_{video_id}'}), 502
+    fetched_at = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    rows = _flatten_tiktok_comment_rows(video_id, final_url, comments, keywords, fetched_at, _current_staff())
+    storage, warning = _store_post_comment_rows(rows)
+    matched_count = sum(1 for row in rows if row.get('is_matched'))
+    payload = {
+        'ok': True,
+        'source': 'tiktok',
+        'post_id': f'tiktok_{video_id}',
+        'video_id': video_id,
+        'post_url': final_url,
+        'comment_count': len(rows),
+        'fetched_comment_count': len(rows),
+        'matched_count': matched_count,
+        'comments': rows,
+        'storage': storage,
+    }
+    if fetch_error:
+        payload['warning'] = fetch_error
+    if warning:
+        save_warning = warning if storage == 'supabase' else f'Đã lưu local, Supabase chưa ghi được: {warning}'
+        payload['warning'] = (payload.get('warning') + ' | ' if payload.get('warning') else '') + save_warning
+    return jsonify(payload)
+
+
+@app.route('/api/post-comments', methods=['GET'])
+def list_post_comments():
+    source = (request.args.get('source') or '').strip().lower()
+    post_id = (request.args.get('post_id') or '').strip()
+    keyword = (request.args.get('keyword') or '').strip().lower()
+    limit = max(1, min(request.args.get('limit', 200, type=int), 1000))
+    rows = list(_post_comments)
+    if source:
+        rows = [row for row in rows if str(row.get('source') or 'facebook').lower() == source]
+    if post_id:
+        rows = [row for row in rows if str(row.get('post_id') or '') == post_id]
+    if keyword:
+        rows = [row for row in rows if keyword in str(row.get('message') or '').lower()]
+    rows.sort(key=lambda row: row.get('created_time') or row.get('fetched_at') or '', reverse=True)
+    return jsonify({'ok': True, 'count': len(rows[:limit]), 'comments': rows[:limit]})
 
 
 @app.route('/api/groups/resolve')

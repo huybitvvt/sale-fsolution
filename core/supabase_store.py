@@ -17,6 +17,10 @@ import json
 from typing import Any, Optional
 
 import requests
+from dotenv import load_dotenv
+
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(_BASE_DIR, '.env'), override=True)
 
 SUPABASE_URL = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
 SUPABASE_KEY = (

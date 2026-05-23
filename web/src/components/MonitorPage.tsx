@@ -5,7 +5,7 @@ import { AuthPanel } from '@/components/AuthPanel';
 import { PostCard } from '@/components/PostCard';
 import { SaleSetupPanel } from '@/components/SaleSetupPanel';
 import { api } from '@/lib/api';
-import type { CommentSummary, FbPage, FbPost, GroupRow, Lead, ReplySuggestion, StaffAccount } from '@/lib/types';
+import type { CommentSummary, FbPage, FbPost, GroupRow, Lead, ReplySuggestion, StaffAccount, StoredPostComment } from '@/lib/types';
 import { extractSlug } from '@/lib/utils';
 
 type AiProviders = Record<string, { default_model?: string }>;
@@ -72,6 +72,19 @@ export function MonitorPage() {
   const [postContent, setPostContent] = useState('');
   const [postResult, setPostResult] = useState('');
   const [postSubmitting, setPostSubmitting] = useState(false);
+
+  const [fbCommentModalPost, setFbCommentModalPost] = useState<FbPost | null>(null);
+  const [fbCommentKeywords, setFbCommentKeywords] = useState('quan tâm, đặt hàng, sđt, địa chỉ, ib, giá');
+  const [fbCommentRows, setFbCommentRows] = useState<StoredPostComment[]>([]);
+  const [fbCommentStatus, setFbCommentStatus] = useState('');
+  const [fbCommentBusy, setFbCommentBusy] = useState(false);
+
+  const [tiktokModal, setTiktokModal] = useState(false);
+  const [tiktokUrl, setTiktokUrl] = useState('');
+  const [tiktokKeywords, setTiktokKeywords] = useState('quan tâm, đặt hàng, sđt, địa chỉ, ib, giá');
+  const [tiktokRows, setTiktokRows] = useState<StoredPostComment[]>([]);
+  const [tiktokStatus, setTiktokStatus] = useState('');
+  const [tiktokBusy, setTiktokBusy] = useState(false);
 
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [classifyBusy, setClassifyBusy] = useState(false);
@@ -554,6 +567,84 @@ export function MonitorPage() {
     setPostSubmitting(false);
   }
 
+  function parseKeywordInput(value: string): string[] {
+    return value
+      .split(/[\n,;]+/)
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .slice(0, 50);
+  }
+
+  function openFbCommentExplorer(post: FbPost) {
+    setFbCommentModalPost(post);
+    setFbCommentRows([]);
+    setFbCommentStatus('');
+  }
+
+  async function fetchFacebookCommentsForFilter() {
+    if (!fbCommentModalPost) return;
+    setFbCommentBusy(true);
+    setFbCommentStatus('Đang lấy toàn bộ comment Facebook...');
+    try {
+      const r = await api('/api/post-comments/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          post: fbCommentModalPost,
+          keywords: parseKeywordInput(fbCommentKeywords),
+          limit: 1000,
+        }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setFbCommentRows(d.comments || []);
+        const warn = d.warning ? ` · ${d.warning}` : '';
+        setFbCommentStatus(`Đã đọc ${d.fetched_comment_count}/${d.comment_count} comment · khớp ${d.matched_count} · lưu ${d.storage}${warn}`);
+      } else {
+        setFbCommentRows([]);
+        setFbCommentStatus(`Lỗi: ${d.error || 'Không lấy được comment'}`);
+      }
+    } catch {
+      setFbCommentRows([]);
+      setFbCommentStatus('Lỗi kết nối backend');
+    }
+    setFbCommentBusy(false);
+  }
+
+  async function fetchTiktokCommentsForFilter() {
+    const url = tiktokUrl.trim();
+    if (!url) {
+      setTiktokStatus('Dán link video TikTok trước');
+      return;
+    }
+    setTiktokBusy(true);
+    setTiktokStatus('Đang lấy comment TikTok...');
+    try {
+      const r = await api('/api/tiktok/comments/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url,
+          keywords: parseKeywordInput(tiktokKeywords),
+          limit: 500,
+        }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setTiktokRows(d.comments || []);
+        const warn = d.warning ? ` · ${d.warning}` : '';
+        setTiktokStatus(`Đã đọc ${d.fetched_comment_count} comment · khớp ${d.matched_count} · lưu ${d.storage}${warn}`);
+      } else {
+        setTiktokRows([]);
+        setTiktokStatus(`Lỗi: ${d.error || 'Không lấy được comment TikTok'}`);
+      }
+    } catch {
+      setTiktokRows([]);
+      setTiktokStatus('Lỗi kết nối backend');
+    }
+    setTiktokBusy(false);
+  }
+
   async function onProviderChange(next: string) {
     setAiProvider(next);
     setAiStatus('');
@@ -845,6 +936,8 @@ export function MonitorPage() {
 
   const masked = (aiConfig.keys_masked || {})[aiProvider] || '';
   const hasKey = Boolean(masked && masked !== '***' && masked.length > 3);
+  const fbMatchedRows = fbCommentRows.filter((row) => row.is_matched);
+  const tiktokMatchedRows = tiktokRows.filter((row) => row.is_matched);
 
   if (!authChecked) {
     return (
@@ -1065,6 +1158,16 @@ export function MonitorPage() {
           <button type="button" className="btn btn-leads" disabled={leadsBusy} onClick={() => void extractLeadsAll()}>
             🧲 Tách lead
           </button>
+          <button
+            type="button"
+            className="btn btn-tiktok"
+            onClick={() => {
+              setTiktokModal(true);
+              setTiktokStatus('');
+            }}
+          >
+            🎵 TikTok CMT
+          </button>
           <select className="cat-filter" value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>
             <option value="">🏷️ Tất cả</option>
             {catOptions.map((c) => (
@@ -1134,6 +1237,7 @@ export function MonitorPage() {
                 commentSummary={commentSummaries[p.id]}
                 onSuggestReply={suggestReply}
                 onSummarizeComments={summarizeComments}
+                onExploreComments={openFbCommentExplorer}
                 onCommentSent={loadTodayCommentStats}
                 onOpenLightbox={setLightbox}
               />
@@ -1198,6 +1302,117 @@ export function MonitorPage() {
             <button type="button" className="btn-submit" disabled={postSubmitting} onClick={() => void submitPost()}>
               Đăng bài
             </button>
+          </div>
+        </div>
+      </div>
+
+      <div
+        className={`modal-overlay${fbCommentModalPost ? ' open' : ''}`}
+        onClick={(e) => e.target === e.currentTarget && setFbCommentModalPost(null)}
+        role="presentation"
+      >
+        <div className="modal modal-wide">
+          <div className="modal-hd">
+            🔎 Lọc bình luận Facebook
+            <span className="modal-close" onClick={() => setFbCommentModalPost(null)} role="presentation">
+              ✕
+            </span>
+          </div>
+          <div className="field">
+            <label>Từ khoá lọc comment</label>
+            <textarea
+              className="keyword-textarea"
+              value={fbCommentKeywords}
+              onChange={(e) => setFbCommentKeywords(e.target.value)}
+              placeholder="quan tâm, đặt hàng, sđt, địa chỉ"
+            />
+          </div>
+          <div className="modal-actions modal-actions-between">
+            <div className="modal-result">{fbCommentStatus}</div>
+            <button type="button" className="btn-submit" disabled={fbCommentBusy} onClick={() => void fetchFacebookCommentsForFilter()}>
+              {fbCommentBusy ? 'Đang đọc...' : 'Lấy & lọc CMT'}
+            </button>
+          </div>
+          <div className="comment-filter-summary">
+            Hiển thị {fbMatchedRows.length || fbCommentRows.length} comment {fbMatchedRows.length ? 'khớp từ khoá' : fbCommentRows.length ? 'đã lấy' : ''}
+          </div>
+          <div className="stored-comments-list">
+            {(fbMatchedRows.length ? fbMatchedRows : fbCommentRows).slice(0, 100).map((row) => (
+              <div key={row.comment_id} className="stored-comment">
+                <div className="stored-comment-head">
+                  <b>{row.author_name || 'Ẩn danh'}</b>
+                  <span>{row.created_time ? new Date(row.created_time).toLocaleString('vi-VN') : ''}</span>
+                </div>
+                <div className="stored-comment-message">{row.message || '[Không có nội dung chữ]'}</div>
+                {row.matched_keywords?.length ? (
+                  <div className="stored-comment-tags">
+                    {row.matched_keywords.map((kw) => (
+                      <span key={kw}>{kw}</span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div
+        className={`modal-overlay${tiktokModal ? ' open' : ''}`}
+        onClick={(e) => e.target === e.currentTarget && setTiktokModal(false)}
+        role="presentation"
+      >
+        <div className="modal modal-wide">
+          <div className="modal-hd">
+            🎵 Lọc bình luận TikTok
+            <span className="modal-close" onClick={() => setTiktokModal(false)} role="presentation">
+              ✕
+            </span>
+          </div>
+          <div className="field">
+            <label>Link video TikTok</label>
+            <input
+              className="modal-input"
+              value={tiktokUrl}
+              onChange={(e) => setTiktokUrl(e.target.value)}
+              placeholder="https://www.tiktok.com/@user/video/..."
+            />
+          </div>
+          <div className="field">
+            <label>Từ khoá lọc comment</label>
+            <textarea
+              className="keyword-textarea"
+              value={tiktokKeywords}
+              onChange={(e) => setTiktokKeywords(e.target.value)}
+              placeholder="quan tâm, đặt hàng, sđt, địa chỉ"
+            />
+          </div>
+          <div className="modal-actions modal-actions-between">
+            <div className="modal-result">{tiktokStatus}</div>
+            <button type="button" className="btn-submit" disabled={tiktokBusy} onClick={() => void fetchTiktokCommentsForFilter()}>
+              {tiktokBusy ? 'Đang đọc...' : 'Lấy & lọc TikTok'}
+            </button>
+          </div>
+          <div className="comment-filter-summary">
+            Hiển thị {tiktokMatchedRows.length || tiktokRows.length} comment {tiktokMatchedRows.length ? 'khớp từ khoá' : tiktokRows.length ? 'đã lấy' : ''}
+          </div>
+          <div className="stored-comments-list">
+            {(tiktokMatchedRows.length ? tiktokMatchedRows : tiktokRows).slice(0, 100).map((row) => (
+              <div key={row.comment_id} className="stored-comment">
+                <div className="stored-comment-head">
+                  <b>{row.author_name || 'Ẩn danh'}</b>
+                  <span>{row.created_time ? new Date(row.created_time).toLocaleString('vi-VN') : ''}</span>
+                </div>
+                <div className="stored-comment-message">{row.message || '[Không có nội dung chữ]'}</div>
+                {row.matched_keywords?.length ? (
+                  <div className="stored-comment-tags">
+                    {row.matched_keywords.map((kw) => (
+                      <span key={kw}>{kw}</span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ))}
           </div>
         </div>
       </div>

@@ -95,3 +95,20 @@ export type CommentSummary = {
   storage?: string;
   warning?: string;
 };
+
+export type StoredPostComment = {
+  source?: 'facebook' | 'tiktok' | string;
+  post_id?: string;
+  post_url?: string;
+  comment_id?: string;
+  parent_comment_id?: string;
+  depth?: number;
+  author_id?: string;
+  author_name?: string;
+  message?: string;
+  attachment_type?: string;
+  created_time?: string;
+  matched_keywords?: string[];
+  is_matched?: boolean;
+  fetched_at?: string;
+};

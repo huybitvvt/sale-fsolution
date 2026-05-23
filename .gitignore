@@ -11,3 +11,6 @@ data/staff_cookies.json
 data/staff_tokens/
 data/comment_logs.json
 data/comment_summaries.json
+data/post_comments.json
+data/inboxed_posts.json
+*.log
