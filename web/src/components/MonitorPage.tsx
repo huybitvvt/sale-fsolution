@@ -875,6 +875,11 @@ export function MonitorPage() {
         await loadStaffCookies();
         await loadTodayCommentStats();
       } else {
+        if (d.already_setup || d.setup_required === false) {
+          setSetupRequired(false);
+          setAuthenticated(false);
+          setCurrentStaff(null);
+        }
         setAuthStatus(d.error || 'Lỗi setup');
       }
     } catch {
@@ -941,28 +946,21 @@ export function MonitorPage() {
 
   if (!authChecked) {
     return (
-      <>
-        <div className="header">
-          <div className="header-icon">👥</div>
+      <main className="auth-page">
+        <div className="auth-loading">
+          <img src="/st-real-logo.jpg" alt="ST.Real" />
           <div>
-            <div className="header-title">FB Group Monitor</div>
-            <div className="header-sub">Đang kiểm tra đăng nhập...</div>
+            <b>ST.Real Social Console</b>
+            <span>Đang kiểm tra phiên đăng nhập...</span>
           </div>
         </div>
-      </>
+      </main>
     );
   }
 
   if (setupRequired || !authenticated) {
     return (
       <>
-        <div className="header">
-          <div className="header-icon">👥</div>
-          <div>
-            <div className="header-title">FB Group Monitor</div>
-            <div className="header-sub">{setupRequired ? 'Cần setup tài khoản đầu tiên' : 'Vui lòng đăng nhập'}</div>
-          </div>
-        </div>
         <AuthPanel
           mode={setupRequired ? 'setup' : 'login'}
           status={authStatus}
@@ -976,9 +974,9 @@ export function MonitorPage() {
   return (
     <>
       <div className="header">
-        <div className="header-icon">👥</div>
+        <img className="header-logo" src="/st-real-logo.jpg" alt="ST.Real" />
         <div>
-          <div className="header-title">FB Group Monitor</div>
+          <div className="header-title">ST.Real Social Console</div>
           <div className="header-sub" title={groups.length === 1 ? `ID: ${groups[0]}` : ''}>
             {headerSub}
           </div>

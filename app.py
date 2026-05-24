@@ -1180,13 +1180,24 @@ def auth_status():
 @app.route('/api/auth/setup', methods=['POST'])
 def auth_setup():
     global _staff_cookies
-    if not _setup_required():
-        return jsonify({'ok': False, 'error': 'Hệ thống đã setup tài khoản đầu tiên'}), 400
     body = request.get_json() or {}
     name = str(body.get('name') or '').strip()[:80]
     username = str(body.get('username') or '').strip().lower()[:60]
     password = str(body.get('password') or '')
     cookie = str(body.get('cookie') or '').strip()
+    if not _setup_required():
+        existing = next((item for item in _staff_accounts()
+                         if item.get('enabled', True) and item.get('username') == username), None)
+        if existing and _verify_password(password, existing.get('password_salt', ''), existing.get('password_hash', '')):
+            session['staff_id'] = existing['id']
+            _invalidate_facebook_cache()
+            return jsonify({'ok': True, 'already_setup': True, 'staff': _public_current_staff()})
+        return jsonify({
+            'ok': False,
+            'already_setup': True,
+            'setup_required': False,
+            'error': 'Hệ thống đã có admin. Vui lòng đăng nhập bằng tài khoản đã tạo.',
+        }), 409
     if not name or not username or not password or not cookie:
         return jsonify({'ok': False, 'error': 'Nhập đủ tên, tài khoản, mật khẩu và cookie'}), 400
     if len(password) < 6:
