@@ -633,6 +633,7 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
   .console-content { padding: 14px; }
   .module-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .channel-form { grid-template-columns: 1fr 1fr; }
+  .tiktok-stats-grid { grid-template-columns: 1fr; }
   .staff-modal-grid { grid-template-columns: 1fr; }
   .staff-cookie-field { grid-column: auto; }
 }
@@ -652,6 +653,8 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
   .console-clock, .console-topbar .header-user { display: none; }
   .module-card-grid { grid-template-columns: 1fr; }
   .channel-form { grid-template-columns: 1fr; }
+  .tiktok-meta-grid { grid-template-columns: 1fr; }
+  .tiktok-stats-actions { align-items: flex-start; }
   .table-search { min-width: 100%; }
 }
 
@@ -718,6 +721,7 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
 .btn-primary  { background: #1877f2; color: white; }
 .btn-success  { background: #2dba4e; color: white; }
 .btn-tiktok   { background: #111827; color: white; }
+.btn-tiktok-stats { background: #0f5f8a; color: white; }
 .btn-auto     { background: white; color: #1877f2; border: 1.5px solid #1877f2; }
 .btn-auto.on  { background: #1877f2; color: white; }
 .interval-wrap { display: flex; align-items: center; gap: 4px; }
@@ -835,6 +839,7 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
 .modal-overlay.open { display: flex; }
 .modal { background: white; border-radius: 18px; padding: 24px; width: 520px; max-width: 95vw; max-height: 92vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,.18); }
 .modal-wide { width: 760px; }
+.modal-xwide { width: min(1180px, 96vw); }
 .modal-hd { font-size: 17px; font-weight: 700; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: center; }
 .modal-close { cursor: pointer; font-size: 20px; color: #65676b; line-height: 1; }
 .modal-close:hover { color: #1c1e21; }
@@ -857,6 +862,24 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
 .btn-submit:hover { background: #1464d8; }
 .btn-submit:disabled { opacity: .5; cursor: not-allowed; }
 .modal-result { font-size: 13px; margin-top: 8px; min-height: 18px; }
+.tiktok-meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.tiktok-stats-actions { margin-top: 0; margin-bottom: 14px; }
+.tiktok-stats-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.phone-filter-toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: #334155; font-weight: 700; }
+.phone-filter-toggle input { width: 16px; height: 16px; accent-color: #1877f2; }
+.tiktok-stats-grid { display: grid; grid-template-columns: minmax(420px, .95fr) minmax(460px, 1.2fr); gap: 14px; align-items: start; }
+.tiktok-video-table { min-width: 720px; }
+.tiktok-comment-table { min-width: 720px; }
+.data-table tr.is-selected td { background: #eaf3ff; }
+.data-table tr.is-selected:hover td { background: #dbeafe; }
+.tiktok-video-table tbody tr { cursor: pointer; }
+.tiktok-detail-panel { min-width: 0; }
+.tiktok-detail-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 10px; }
+.tiktok-detail-head b { display: block; color: #0f172a; font-size: 14px; }
+.tiktok-detail-head span { display: block; color: #64748b; margin-top: 3px; font-size: 12px; }
+.stat-number { display: inline-flex !important; align-items: center; border-radius: 999px; background: #dbeafe; color: #1d4ed8 !important; padding: 4px 10px; font-weight: 800; white-space: nowrap; }
+.comment-message-cell { min-width: 280px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.empty-table-cell { text-align: center; color: #64748b !important; padding: 32px 12px !important; }
 .comment-filter-summary { margin-top: 12px; font-size: 12px; color: #65676b; font-weight: 700; }
 .stored-comments-list { margin-top: 8px; display: grid; gap: 8px; max-height: 390px; overflow-y: auto; padding-right: 4px; }
 .stored-comment { border: 1px solid #e5e7eb; background: #f9fafb; border-radius: 10px; padding: 10px 12px; }

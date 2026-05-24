@@ -15,7 +15,7 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 from core.group_api import FacebookGroupAPI, load_token, load_cookie, refresh_token
-from core.ai_classifier import AIClassifier, DEFAULT_MODEL, DEFAULT_API_KEY, DEFAULT_CATEGORIES, PROVIDERS
+from core.ai_classifier import AIClassifier, DEFAULT_MODEL, DEFAULT_API_KEY, DEFAULT_CATEGORIES, PROVIDERS, extract_phones
 from core import supabase_store as sb
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -955,6 +955,83 @@ def _store_post_comment_rows(rows: list[dict]) -> tuple[str, str]:
     return ('supabase' if ok else 'local'), error
 
 
+def _load_post_comment_rows(source: str = '', post_id: str = '', limit: int = 1000) -> tuple[list[dict], str]:
+    limit = max(1, min(int(limit or 1000), 5000))
+    source = (source or '').strip().lower()
+    post_id = (post_id or '').strip()
+    if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
+        try:
+            filters = [
+                'select=source,post_id,group_id,post_url,comment_id,parent_comment_id,depth,author_id,author_name,message,attachment_type,created_time,matched_keywords,is_matched,raw_comment,fetched_by_staff_id,fetched_by_staff_name,fetched_by_staff_username,fetched_at',
+                'order=fetched_at.desc',
+                f'limit={limit}',
+            ]
+            if source:
+                filters.append(f'source=eq.{quote(source, safe="")}')
+            if post_id:
+                filters.append(f'post_id=eq.{quote(post_id, safe="")}')
+            resp = _req.get(
+                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_POST_COMMENT_TABLE}?{'&'.join(filters)}",
+                headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+                timeout=30,
+            )
+            if resp.status_code in (200, 206):
+                remote_rows = resp.json()
+                if not isinstance(remote_rows, list):
+                    remote_rows = []
+                by_id = {str(row.get('comment_id') or ''): row for row in remote_rows if row.get('comment_id')}
+                for row in _post_comments:
+                    if source and str(row.get('source') or 'facebook').lower() != source:
+                        continue
+                    if post_id and str(row.get('post_id') or '') != post_id:
+                        continue
+                    cid = str(row.get('comment_id') or '')
+                    if cid and cid not in by_id:
+                        by_id[cid] = row
+                rows = list(by_id.values())
+                rows.sort(key=lambda row: row.get('fetched_at') or row.get('created_time') or '', reverse=True)
+                return rows[:limit], ''
+            return [], resp.text[:300]
+        except Exception as e:
+            return [], str(e)[:300]
+    rows = list(_post_comments)
+    if source:
+        rows = [row for row in rows if str(row.get('source') or 'facebook').lower() == source]
+    if post_id:
+        rows = [row for row in rows if str(row.get('post_id') or '') == post_id]
+    rows.sort(key=lambda row: row.get('fetched_at') or row.get('created_time') or '', reverse=True)
+    return rows[:limit], ''
+
+
+def _public_comment_row(row: dict) -> dict:
+    raw = row.get('raw_comment') if isinstance(row.get('raw_comment'), dict) else {}
+    meta = raw.get('_video_meta') if isinstance(raw.get('_video_meta'), dict) else {}
+    cid = str(row.get('comment_id') or '')
+    post_url = row.get('post_url') or ''
+    phones = extract_phones(row.get('message') or '')
+    return {
+        'source': row.get('source') or '',
+        'post_id': row.get('post_id') or '',
+        'post_url': post_url,
+        'comment_url': f'{post_url}?comment={cid.replace("tiktok_", "")}' if post_url and cid else post_url,
+        'comment_id': cid,
+        'parent_comment_id': row.get('parent_comment_id') or '',
+        'depth': row.get('depth') or 0,
+        'author_id': row.get('author_id') or '',
+        'author_name': row.get('author_name') or 'Ẩn danh',
+        'message': row.get('message') or '',
+        'attachment_type': row.get('attachment_type') or '',
+        'created_time': row.get('created_time'),
+        'matched_keywords': row.get('matched_keywords') or [],
+        'is_matched': bool(row.get('is_matched')),
+        'phone': phones[0] if phones else '',
+        'phones': phones,
+        'channel_name': meta.get('channel_name') or _derive_tiktok_channel_name(post_url),
+        'video_title': meta.get('video_title') or '',
+        'fetched_at': row.get('fetched_at'),
+    }
+
+
 def _extract_tiktok_video_id(raw: str) -> tuple[str, str]:
     value = (raw or '').strip()
     if not value:
@@ -1100,9 +1177,28 @@ def _fetch_tiktok_comments(video_id: str, limit: int = 300, cookie: str = '') ->
     return comments[:limit], ''
 
 
-def _flatten_tiktok_comment_rows(video_id: str, video_url: str, comments: list, keywords: list[str], fetched_at: str, staff: dict) -> list[dict]:
+def _derive_tiktok_channel_name(video_url: str) -> str:
+    match = re.search(r'tiktok\.com/@([^/?#]+)', video_url or '', re.I)
+    return f"@{match.group(1).lstrip('@')}" if match else ''
+
+
+def _flatten_tiktok_comment_rows(
+    video_id: str,
+    video_url: str,
+    comments: list,
+    keywords: list[str],
+    fetched_at: str,
+    staff: dict,
+    channel_name: str = '',
+    video_title: str = '',
+) -> list[dict]:
     rows: list[dict] = []
     post_id = f'tiktok_{video_id}'
+    video_meta = {
+        'channel_name': channel_name or _derive_tiktok_channel_name(video_url),
+        'video_title': video_title or f'Video {video_id}',
+        'video_id': video_id,
+    }
     for item in comments or []:
         if not isinstance(item, dict):
             continue
@@ -1115,6 +1211,7 @@ def _flatten_tiktok_comment_rows(video_id: str, video_url: str, comments: list, 
         share_info = item.get('share_info') if isinstance(item.get('share_info'), dict) else {}
         message = item.get('text') or share_info.get('desc') or ''
         matched = _match_comment_keywords(message, keywords)
+        raw_comment = {**item, '_video_meta': video_meta}
         rows.append({
             'source': 'tiktok',
             'post_id': post_id,
@@ -1130,13 +1227,63 @@ def _flatten_tiktok_comment_rows(video_id: str, video_url: str, comments: list, 
             'created_time': _iso_from_unix(item.get('create_time')) or None,
             'matched_keywords': matched,
             'is_matched': bool(matched),
-            'raw_comment': item,
+            'raw_comment': raw_comment,
             'fetched_by_staff_id': staff.get('id', ''),
             'fetched_by_staff_name': staff.get('name', ''),
             'fetched_by_staff_username': staff.get('username', ''),
             'fetched_at': fetched_at,
         })
     return rows
+
+
+def _tiktok_comment_stats(rows: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for row in rows or []:
+        if str(row.get('source') or '').lower() != 'tiktok':
+            continue
+        post_id = str(row.get('post_id') or '')
+        if not post_id:
+            continue
+        public_row = _public_comment_row(row)
+        raw = row.get('raw_comment') if isinstance(row.get('raw_comment'), dict) else {}
+        meta = raw.get('_video_meta') if isinstance(raw.get('_video_meta'), dict) else {}
+        stat = grouped.setdefault(post_id, {
+            'post_id': post_id,
+            'video_id': post_id.replace('tiktok_', '', 1),
+            'post_url': row.get('post_url') or '',
+            'channel_name': meta.get('channel_name') or public_row.get('channel_name') or '',
+            'video_title': meta.get('video_title') or public_row.get('video_title') or post_id.replace('tiktok_', 'Video '),
+            'comment_count': 0,
+            'matched_count': 0,
+            'phone_count': 0,
+            'latest_fetched_at': '',
+            'latest_comment_at': '',
+            'comments': [],
+        })
+        if not stat.get('post_url') and row.get('post_url'):
+            stat['post_url'] = row.get('post_url')
+        if not stat.get('channel_name') and public_row.get('channel_name'):
+            stat['channel_name'] = public_row.get('channel_name')
+        if not stat.get('video_title') and public_row.get('video_title'):
+            stat['video_title'] = public_row.get('video_title')
+        stat['comment_count'] += 1
+        if public_row.get('is_matched'):
+            stat['matched_count'] += 1
+        if public_row.get('phones'):
+            stat['phone_count'] += 1
+        fetched_at = str(public_row.get('fetched_at') or '')
+        created_time = str(public_row.get('created_time') or '')
+        if fetched_at > str(stat.get('latest_fetched_at') or ''):
+            stat['latest_fetched_at'] = fetched_at
+        if created_time > str(stat.get('latest_comment_at') or ''):
+            stat['latest_comment_at'] = created_time
+        stat['comments'].append(public_row)
+
+    stats = list(grouped.values())
+    for stat in stats:
+        stat['comments'].sort(key=lambda row: row.get('created_time') or row.get('fetched_at') or '', reverse=True)
+    stats.sort(key=lambda item: item.get('latest_fetched_at') or item.get('latest_comment_at') or '', reverse=True)
+    return stats
 
 
 def _upload_comment_image_to_supabase(file_storage) -> tuple[str, str]:
@@ -1693,6 +1840,8 @@ def fetch_tiktok_comments():
     keywords = _normalize_keywords(body.get('keywords') or [])
     limit = max(1, min(int(body.get('limit') or 300), 1000))
     cookie = str(body.get('cookie') or '').strip()
+    channel_name = str(body.get('channel_name') or body.get('channel') or '').strip()
+    video_title = str(body.get('video_title') or body.get('title') or '').strip()
     video_id, final_url = _extract_tiktok_video_id(raw_url)
     if not video_id:
         return jsonify({'ok': False, 'error': 'Không nhận diện được video TikTok. Dán link video hoặc ID video.'}), 400
@@ -1700,18 +1849,22 @@ def fetch_tiktok_comments():
     if not comments and fetch_error:
         return jsonify({'ok': False, 'error': fetch_error, 'source': 'tiktok', 'post_id': f'tiktok_{video_id}'}), 502
     fetched_at = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
-    rows = _flatten_tiktok_comment_rows(video_id, final_url, comments, keywords, fetched_at, _current_staff())
+    rows = _flatten_tiktok_comment_rows(video_id, final_url, comments, keywords, fetched_at, _current_staff(), channel_name, video_title)
     storage, warning = _store_post_comment_rows(rows)
     matched_count = sum(1 for row in rows if row.get('is_matched'))
+    phone_count = sum(1 for row in rows if extract_phones(row.get('message') or ''))
     payload = {
         'ok': True,
         'source': 'tiktok',
         'post_id': f'tiktok_{video_id}',
         'video_id': video_id,
         'post_url': final_url,
+        'channel_name': channel_name or _derive_tiktok_channel_name(final_url),
+        'video_title': video_title or f'Video {video_id}',
         'comment_count': len(rows),
         'fetched_comment_count': len(rows),
         'matched_count': matched_count,
+        'phone_count': phone_count,
         'comments': rows,
         'storage': storage,
     }
@@ -1729,15 +1882,31 @@ def list_post_comments():
     post_id = (request.args.get('post_id') or '').strip()
     keyword = (request.args.get('keyword') or '').strip().lower()
     limit = max(1, min(request.args.get('limit', 200, type=int), 1000))
-    rows = list(_post_comments)
-    if source:
-        rows = [row for row in rows if str(row.get('source') or 'facebook').lower() == source]
-    if post_id:
-        rows = [row for row in rows if str(row.get('post_id') or '') == post_id]
+    rows, warning = _load_post_comment_rows(source=source, post_id=post_id, limit=limit)
     if keyword:
         rows = [row for row in rows if keyword in str(row.get('message') or '').lower()]
     rows.sort(key=lambda row: row.get('created_time') or row.get('fetched_at') or '', reverse=True)
-    return jsonify({'ok': True, 'count': len(rows[:limit]), 'comments': rows[:limit]})
+    payload = {'ok': True, 'count': len(rows[:limit]), 'comments': [_public_comment_row(row) for row in rows[:limit]]}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
+
+
+@app.route('/api/tiktok/comment-stats', methods=['GET'])
+def tiktok_comment_stats():
+    limit = max(1, min(request.args.get('limit', 2000, type=int), 5000))
+    rows, warning = _load_post_comment_rows(source='tiktok', limit=limit)
+    stats = _tiktok_comment_stats(rows)
+    payload = {
+        'ok': True,
+        'count': len(stats),
+        'total_comments': sum(item.get('comment_count') or 0 for item in stats),
+        'total_phone_comments': sum(item.get('phone_count') or 0 for item in stats),
+        'stats': stats,
+    }
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
 
 
 @app.route('/api/groups/resolve')

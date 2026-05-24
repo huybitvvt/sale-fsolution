@@ -10,7 +10,19 @@ import { PostCard } from '@/components/PostCard';
 import { SaleSetupPanel } from '@/components/SaleSetupPanel';
 import { StaffCookiePanel, type StaffPayload } from '@/components/StaffCookiePanel';
 import { api } from '@/lib/api';
-import type { CommentLog, CommentSummary, FbPage, FbPost, GroupRow, Lead, ManagedChannel, ReplySuggestion, StaffAccount, StoredPostComment } from '@/lib/types';
+import type {
+  CommentLog,
+  CommentSummary,
+  FbPage,
+  FbPost,
+  GroupRow,
+  Lead,
+  ManagedChannel,
+  ReplySuggestion,
+  StaffAccount,
+  StoredPostComment,
+  TikTokCommentStat,
+} from '@/lib/types';
 import { extractSlug } from '@/lib/utils';
 
 type AiProviders = Record<string, { default_model?: string }>;
@@ -93,10 +105,18 @@ export function MonitorPage() {
 
   const [tiktokModal, setTiktokModal] = useState(false);
   const [tiktokUrl, setTiktokUrl] = useState('');
+  const [tiktokChannelName, setTiktokChannelName] = useState('');
+  const [tiktokVideoTitle, setTiktokVideoTitle] = useState('');
   const [tiktokKeywords, setTiktokKeywords] = useState('quan tâm, đặt hàng, sđt, địa chỉ, ib, giá');
   const [tiktokRows, setTiktokRows] = useState<StoredPostComment[]>([]);
   const [tiktokStatus, setTiktokStatus] = useState('');
   const [tiktokBusy, setTiktokBusy] = useState(false);
+  const [tiktokStatsModal, setTiktokStatsModal] = useState(false);
+  const [tiktokStats, setTiktokStats] = useState<TikTokCommentStat[]>([]);
+  const [tiktokStatsStatus, setTiktokStatsStatus] = useState('');
+  const [tiktokStatsBusy, setTiktokStatsBusy] = useState(false);
+  const [tiktokSelectedPostId, setTiktokSelectedPostId] = useState('');
+  const [tiktokOnlyPhone, setTiktokOnlyPhone] = useState(false);
 
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [classifyBusy, setClassifyBusy] = useState(false);
@@ -742,6 +762,8 @@ export function MonitorPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url,
+          channel_name: tiktokChannelName.trim(),
+          video_title: tiktokVideoTitle.trim(),
           keywords: parseKeywordInput(tiktokKeywords),
           limit: 500,
         }),
@@ -750,7 +772,8 @@ export function MonitorPage() {
       if (d.ok) {
         setTiktokRows(d.comments || []);
         const warn = d.warning ? ` · ${d.warning}` : '';
-        setTiktokStatus(`Đã đọc ${d.fetched_comment_count} comment · khớp ${d.matched_count} · lưu ${d.storage}${warn}`);
+        setTiktokStatus(`Đã đọc ${d.fetched_comment_count} comment · khớp ${d.matched_count} · có SĐT ${d.phone_count || 0} · lưu ${d.storage}${warn}`);
+        void loadTiktokStats(d.post_id || '');
       } else {
         setTiktokRows([]);
         setTiktokStatus(`Lỗi: ${d.error || 'Không lấy được comment TikTok'}`);
@@ -760,6 +783,28 @@ export function MonitorPage() {
       setTiktokStatus('Lỗi kết nối backend');
     }
     setTiktokBusy(false);
+  }
+
+  async function loadTiktokStats(preferredPostId = '') {
+    setTiktokStatsBusy(true);
+    setTiktokStatsStatus('Đang tải thống kê TikTok...');
+    try {
+      const r = await api('/api/tiktok/comment-stats?limit=5000');
+      const d = await r.json();
+      if (d.ok) {
+        const rows: TikTokCommentStat[] = d.stats || [];
+        setTiktokStats(rows);
+        const nextSelected = preferredPostId || tiktokSelectedPostId || rows[0]?.post_id || '';
+        if (nextSelected) setTiktokSelectedPostId(nextSelected);
+        const warn = d.warning ? ` · ${d.warning}` : '';
+        setTiktokStatsStatus(`Có ${rows.length} video · ${d.total_comments || 0} comment · ${d.total_phone_comments || 0} comment có SĐT${warn}`);
+      } else {
+        setTiktokStatsStatus(`Lỗi: ${d.error || 'Không tải được thống kê TikTok'}`);
+      }
+    } catch {
+      setTiktokStatsStatus('Lỗi kết nối backend');
+    }
+    setTiktokStatsBusy(false);
   }
 
   async function onProviderChange(next: string) {
@@ -1074,6 +1119,9 @@ export function MonitorPage() {
   const hasKey = Boolean(masked && masked !== '***' && masked.length > 3);
   const fbMatchedRows = fbCommentRows.filter((row) => row.is_matched);
   const tiktokMatchedRows = tiktokRows.filter((row) => row.is_matched);
+  const selectedTiktokStat = tiktokStats.find((item) => item.post_id === tiktokSelectedPostId) || tiktokStats[0];
+  const selectedTiktokComments = (selectedTiktokStat?.comments || []).filter((row) => !tiktokOnlyPhone || !!row.phones?.length);
+  const formatDateTime = (value?: string) => (value ? new Date(value).toLocaleString('vi-VN') : '-');
   const navItems: { key: ViewKey; icon: string; label: string }[] = [
     { key: 'home', icon: '⌂', label: 'Trang chủ' },
     { key: 'staff', icon: '👥', label: 'Nhân sự' },
@@ -1372,6 +1420,16 @@ export function MonitorPage() {
           >
             🎵 TikTok CMT
           </button>
+          <button
+            type="button"
+            className="btn btn-tiktok-stats"
+            onClick={() => {
+              setTiktokStatsModal(true);
+              void loadTiktokStats();
+            }}
+          >
+            📊 Thống kê kênh
+          </button>
           <select className="cat-filter" value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>
             <option value="">🏷️ Tất cả</option>
             {catOptions.map((c) => (
@@ -1585,6 +1643,26 @@ export function MonitorPage() {
               placeholder="https://www.tiktok.com/@user/video/..."
             />
           </div>
+          <div className="tiktok-meta-grid">
+            <div className="field">
+              <label>Tên kênh</label>
+              <input
+                className="modal-input"
+                value={tiktokChannelName}
+                onChange={(e) => setTiktokChannelName(e.target.value)}
+                placeholder="@tenkenh hoặc tên shop"
+              />
+            </div>
+            <div className="field">
+              <label>Tên bài / video</label>
+              <input
+                className="modal-input"
+                value={tiktokVideoTitle}
+                onChange={(e) => setTiktokVideoTitle(e.target.value)}
+                placeholder="Ví dụ: video giới thiệu sản phẩm"
+              />
+            </div>
+          </div>
           <div className="field">
             <label>Từ khoá lọc comment</label>
             <textarea
@@ -1620,6 +1698,152 @@ export function MonitorPage() {
                 ) : null}
               </div>
             ))}
+          </div>
+        </div>
+      </div>
+
+      <div
+        className={`modal-overlay${tiktokStatsModal ? ' open' : ''}`}
+        onClick={(e) => e.target === e.currentTarget && setTiktokStatsModal(false)}
+        role="presentation"
+      >
+        <div className="modal modal-xwide">
+          <div className="modal-hd">
+            📊 Thống kê comment TikTok
+            <span className="modal-close" onClick={() => setTiktokStatsModal(false)} role="presentation">
+              ✕
+            </span>
+          </div>
+          <div className="modal-actions modal-actions-between tiktok-stats-actions">
+            <div className="modal-result">{tiktokStatsStatus}</div>
+            <div className="tiktok-stats-controls">
+              <label className="phone-filter-toggle">
+                <input type="checkbox" checked={tiktokOnlyPhone} onChange={(e) => setTiktokOnlyPhone(e.target.checked)} />
+                Chỉ comment có SĐT
+              </label>
+              <button type="button" className="btn-submit" disabled={tiktokStatsBusy} onClick={() => void loadTiktokStats()}>
+                {tiktokStatsBusy ? 'Đang tải...' : 'Tải lại'}
+              </button>
+            </div>
+          </div>
+
+          <div className="tiktok-stats-grid">
+            <div className="tiktok-stat-list">
+              <div className="data-table-wrap">
+                <table className="data-table tiktok-video-table">
+                  <thead>
+                    <tr>
+                      <th>Kênh</th>
+                      <th>Tên bài</th>
+                      <th>Link</th>
+                      <th>CMT</th>
+                      <th>Khớp</th>
+                      <th>SĐT</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tiktokStats.length ? (
+                      tiktokStats.map((item) => (
+                        <tr
+                          key={item.post_id}
+                          className={item.post_id === selectedTiktokStat?.post_id ? 'is-selected' : ''}
+                          onClick={() => setTiktokSelectedPostId(item.post_id || '')}
+                        >
+                          <td>
+                            <b>{item.channel_name || '-'}</b>
+                            <small>{item.video_id || ''}</small>
+                          </td>
+                          <td>
+                            {item.video_title || 'Video TikTok'}
+                            <small>Lần đọc: {formatDateTime(item.latest_fetched_at)}</small>
+                          </td>
+                          <td className="link-cell">
+                            {item.post_url ? (
+                              <a href={item.post_url} target="_blank" rel="noreferrer">
+                                Mở
+                              </a>
+                            ) : (
+                              '-'
+                            )}
+                          </td>
+                          <td>{item.comment_count || 0}</td>
+                          <td>{item.matched_count || 0}</td>
+                          <td>
+                            <span className="lead-phone">{item.phone_count || 0}</span>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={6} className="empty-table-cell">
+                          Chưa có dữ liệu TikTok. Bấm “TikTok CMT” để lấy comment trước.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="tiktok-detail-panel">
+              <div className="tiktok-detail-head">
+                <div>
+                  <b>{selectedTiktokStat?.video_title || 'Chưa chọn video'}</b>
+                  <span>{selectedTiktokStat?.channel_name || '-'}</span>
+                </div>
+                <span className="stat-number">{selectedTiktokComments.length} comment</span>
+              </div>
+              <div className="data-table-wrap">
+                <table className="data-table tiktok-comment-table">
+                  <thead>
+                    <tr>
+                      <th>Tên nick</th>
+                      <th>Nội dung CMT</th>
+                      <th>SĐT</th>
+                      <th>Link</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedTiktokComments.length ? (
+                      selectedTiktokComments.map((row) => (
+                        <tr key={row.comment_id}>
+                          <td>
+                            <b>{row.author_name || 'Ẩn danh'}</b>
+                            <small>{formatDateTime(row.created_time)}</small>
+                          </td>
+                          <td className="comment-message-cell">
+                            {row.message || '[Không có nội dung chữ]'}
+                            {row.matched_keywords?.length ? (
+                              <div className="stored-comment-tags">
+                                {row.matched_keywords.map((kw) => (
+                                  <span key={kw}>{kw}</span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </td>
+                          <td>{row.phones?.length ? row.phones.join(', ') : '-'}</td>
+                          <td className="link-cell">
+                            {(row.comment_url || row.post_url) ? (
+                              <a href={row.comment_url || row.post_url} target="_blank" rel="noreferrer">
+                                Mở
+                              </a>
+                            ) : (
+                              '-'
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={4} className="empty-table-cell">
+                          {tiktokOnlyPhone ? 'Video này chưa có comment chứa SĐT.' : 'Chưa có comment cho video này.'}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       </div>

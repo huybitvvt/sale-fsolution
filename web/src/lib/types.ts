@@ -124,7 +124,26 @@ export type StoredPostComment = {
   created_time?: string;
   matched_keywords?: string[];
   is_matched?: boolean;
+  phone?: string;
+  phones?: string[];
+  comment_url?: string;
+  channel_name?: string;
+  video_title?: string;
   fetched_at?: string;
+};
+
+export type TikTokCommentStat = {
+  post_id?: string;
+  video_id?: string;
+  post_url?: string;
+  channel_name?: string;
+  video_title?: string;
+  comment_count?: number;
+  matched_count?: number;
+  phone_count?: number;
+  latest_fetched_at?: string;
+  latest_comment_at?: string;
+  comments?: StoredPostComment[];
 };
 
 export type CommentLog = {
