@@ -15,6 +15,7 @@ Nếu env SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY chưa được set thì
 import os
 import json
 from typing import Any, Optional
+from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
@@ -30,6 +31,7 @@ SUPABASE_KEY = (
     or os.environ.get('VITE_SUPABASE_PUBLISHABLE_KEY')
     or ''
 )
+STAFF_USERS_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 
 _TIMEOUT = 30
 
@@ -123,6 +125,30 @@ def kv_get(key: str, default: Any = None) -> Any:
 def kv_set(key: str, value: Any) -> None:
     _request('POST', 'app_kv', json=[{'key': key, 'value': value}],
              prefer='resolution=merge-duplicates,return=minimal')
+
+
+# ── staff_users ─────────────────────────────────────────
+def get_staff_user(username: str, table: Optional[str] = None) -> Optional[dict]:
+    """Read one login user from Supabase.
+
+    The customer-facing login is intentionally simple: one table with username
+    and password columns. Cookie fields are optional and used only after login.
+    """
+    username = (username or '').strip().lower()
+    if not username:
+        return None
+    table_name = table or STAFF_USERS_TABLE
+    encoded = quote(username, safe='')
+    r = _request('GET', f'{table_name}?select=*&username=eq.{encoded}&limit=1')
+    rows = r.json()
+    return rows[0] if rows else None
+
+
+def insert_staff_user(row: dict, table: Optional[str] = None) -> dict:
+    table_name = table or STAFF_USERS_TABLE
+    r = _request('POST', table_name, json=[row], prefer='return=representation')
+    rows = r.json()
+    return rows[0] if rows else {}
 
 
 # ── seen_posts ──────────────────────────────────────────

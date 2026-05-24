@@ -19,6 +19,24 @@ create table if not exists public.app_kv (
     updated_at  timestamptz not null default now()
 );
 
+create extension if not exists pgcrypto;
+
+create table if not exists public.staff_users (
+    id               text primary key default gen_random_uuid()::text,
+    name             text not null,
+    username         text not null,
+    password         text not null,
+    role             text not null default 'staff',
+    cookie           text,
+    facebook_user_id text,
+    enabled          boolean not null default true,
+    created_at       timestamptz not null default now(),
+    updated_at       timestamptz not null default now()
+);
+
+create unique index if not exists staff_users_username_uidx
+    on public.staff_users (username);
+
 create table if not exists public.seen_posts (
     post_id       text primary key,
     permalink_url text,
@@ -52,5 +70,6 @@ create table if not exists public.classifications (
 alter table public.groups            disable row level security;
 alter table public.telegram_chat_ids disable row level security;
 alter table public.app_kv            disable row level security;
+alter table public.staff_users       disable row level security;
 alter table public.seen_posts        disable row level security;
 alter table public.classifications   disable row level security;

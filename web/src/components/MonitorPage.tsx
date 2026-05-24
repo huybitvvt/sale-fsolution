@@ -108,7 +108,7 @@ export function MonitorPage() {
     try {
       const r = await api('/api/auth/status');
       const d = await r.json();
-      setSetupRequired(!!d.setup_required);
+      setSetupRequired(!!d.setup_required && !d.simple_login);
       setAuthenticated(!!d.authenticated);
       setCurrentStaff(d.staff || null);
       setAuthStatus('');

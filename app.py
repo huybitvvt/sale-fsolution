@@ -53,9 +53,11 @@ SUPABASE_PROFILE_TABLE = os.environ.get('SUPABASE_PROFILE_TABLE', 'business_prof
 SUPABASE_COMMENT_LOG_TABLE = os.environ.get('SUPABASE_COMMENT_LOG_TABLE', 'comment_logs')
 SUPABASE_COMMENT_SUMMARY_TABLE = os.environ.get('SUPABASE_COMMENT_SUMMARY_TABLE', 'post_comment_summaries')
 SUPABASE_POST_COMMENT_TABLE = os.environ.get('SUPABASE_POST_COMMENT_TABLE', 'post_comments')
+SUPABASE_STAFF_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 SUPABASE_COMMENT_IMAGE_BUCKET = os.environ.get('SUPABASE_COMMENT_IMAGE_BUCKET', 'comment-images')
 APP_TIMEZONE = os.environ.get('APP_TIMEZONE', 'Asia/Ho_Chi_Minh')
 TIKTOK_COOKIE = os.environ.get('TIKTOK_COOKIE', '')
+SIMPLE_LOGIN_ONLY = os.environ.get('SIMPLE_LOGIN_ONLY', 'true').lower() not in ('0', 'false', 'no')
 MAX_COMMENT_IMAGE_BYTES = int(os.environ.get('MAX_COMMENT_IMAGE_BYTES', 8 * 1024 * 1024))
 ALLOWED_COMMENT_IMAGE_TYPES = {
     'image/jpeg': '.jpg',
@@ -90,6 +92,7 @@ _leads: dict = {}       # {post_id: [lead]}
 _reply_suggestions: dict = {}  # {post_id: latest suggestion}
 _business_profile: dict = {}  # {business_name, phone, address, why_choose_us, extra_notes}
 _staff_cookies: dict = {}  # {active_staff_id, staff: [{id, name, cookie, enabled}]}
+_session_staff_cache: dict = {}  # server-only cache for Supabase staff cookies
 _comment_logs: list = []
 _comment_summaries: dict = {}
 _post_comments: list = []
@@ -318,7 +321,7 @@ def _public_staff_cookie(row: dict) -> dict:
         'username': row.get('username', ''),
         'role': row.get('role', 'staff'),
         'cookie_masked': _mask_cookie(cookie),
-        'facebook_user_id': _extract_cookie_user(cookie),
+        'facebook_user_id': row.get('facebook_user_id') or _extract_cookie_user(cookie),
         'enabled': bool(row.get('enabled', True)),
         'created_at': row.get('created_at', ''),
         'updated_at': row.get('updated_at', ''),
@@ -329,7 +332,97 @@ def _staff_accounts() -> list:
     return _staff_cookies.get('staff') or []
 
 
+def _as_enabled(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ('0', 'false', 'no', 'off', 'disabled')
+    return bool(value)
+
+
+def _normalize_supabase_staff(row: dict) -> dict:
+    username = str(row.get('username') or row.get('account') or row.get('login') or '').strip().lower()
+    name = str(row.get('name') or row.get('staff_name') or username or 'Nhân sự').strip()
+    cookie = str(row.get('cookie') or row.get('facebook_cookie') or row.get('fb_cookie') or '').strip()
+    role = str(row.get('role') or '').strip().lower()
+    if not role:
+        role = 'admin' if row.get('is_admin') is True else 'staff'
+    return {
+        'id': str(row.get('id') or username or uuid.uuid4().hex[:12]),
+        'name': name,
+        'username': username,
+        'cookie': cookie,
+        'role': role,
+        'enabled': _as_enabled(row.get('enabled', True)),
+        'facebook_user_id': str(row.get('facebook_user_id') or _extract_cookie_user(cookie) or ''),
+        'created_at': row.get('created_at', ''),
+        'updated_at': row.get('updated_at', ''),
+        '_auth_source': 'supabase',
+    }
+
+
+def _plain_password_from_row(row: dict) -> str:
+    for key in ('password', 'pass', 'plain_password', 'mat_khau'):
+        value = row.get(key)
+        if value is not None:
+            return str(value)
+    return ''
+
+
+def _supabase_password_matches(row: dict, password: str) -> bool:
+    digest = row.get('password_hash') or row.get('pass_hash')
+    salt = row.get('password_salt') or row.get('salt')
+    if digest and salt and _verify_password(password, str(salt), str(digest)):
+        return True
+    plain = _plain_password_from_row(row)
+    return bool(plain) and secrets.compare_digest(plain, password)
+
+
+def _find_local_staff(username: str) -> dict:
+    username = (username or '').strip().lower()
+    return next((item for item in _staff_accounts()
+                 if item.get('enabled', True) and item.get('username') == username), {})
+
+
+def _load_supabase_staff(username: str) -> tuple[dict, str]:
+    if not USE_SUPABASE:
+        return {}, ''
+    try:
+        row = sb.get_staff_user(username, SUPABASE_STAFF_TABLE)
+        return row or {}, ''
+    except Exception as e:
+        return {}, str(e)
+
+
+def _set_logged_in_staff(staff: dict) -> None:
+    old_token = session.pop('staff_cache_token', None)
+    if old_token:
+        _session_staff_cache.pop(old_token, None)
+
+    session['staff_id'] = staff.get('id', '')
+    session['staff_username'] = staff.get('username', '')
+    session['staff_source'] = staff.get('_auth_source', 'local')
+
+    if staff.get('_auth_source') == 'supabase':
+        token = uuid.uuid4().hex
+        _session_staff_cache[token] = staff
+        session['staff_cache_token'] = token
+
+
+def _clear_logged_in_staff() -> None:
+    token = session.pop('staff_cache_token', None)
+    if token:
+        _session_staff_cache.pop(token, None)
+    session.pop('staff_id', None)
+    session.pop('staff_username', None)
+    session.pop('staff_source', None)
+
+
 def _setup_required() -> bool:
+    if SIMPLE_LOGIN_ONLY:
+        return False
     return not any(item.get('enabled', True) and item.get('username') and item.get('password_hash') for item in _staff_accounts())
 
 
@@ -337,7 +430,25 @@ def _current_staff() -> dict:
     staff_id = session.get('staff_id', '')
     if not staff_id:
         return {}
-    return next((item for item in _staff_accounts() if item.get('id') == staff_id and item.get('enabled', True)), {})
+    local = next((item for item in _staff_accounts() if item.get('id') == staff_id and item.get('enabled', True)), {})
+    if local:
+        return local
+
+    token = session.get('staff_cache_token', '')
+    cached = _session_staff_cache.get(token) if token else None
+    if cached and cached.get('id') == staff_id and cached.get('enabled', True):
+        return cached
+
+    if session.get('staff_source') == 'supabase':
+        row, _ = _load_supabase_staff(session.get('staff_username', ''))
+        if row:
+            staff = _normalize_supabase_staff(row)
+            if staff.get('id') == staff_id and staff.get('enabled', True):
+                token = uuid.uuid4().hex
+                _session_staff_cache[token] = staff
+                session['staff_cache_token'] = token
+                return staff
+    return {}
 
 
 def _current_staff_id() -> str:
@@ -1173,6 +1284,7 @@ def auth_status():
         'ok': True,
         'authenticated': bool(staff),
         'setup_required': _setup_required(),
+        'simple_login': SIMPLE_LOGIN_ONLY,
         'staff': staff,
     })
 
@@ -1189,7 +1301,7 @@ def auth_setup():
         existing = next((item for item in _staff_accounts()
                          if item.get('enabled', True) and item.get('username') == username), None)
         if existing and _verify_password(password, existing.get('password_salt', ''), existing.get('password_hash', '')):
-            session['staff_id'] = existing['id']
+            _set_logged_in_staff(existing)
             _invalidate_facebook_cache()
             return jsonify({'ok': True, 'already_setup': True, 'staff': _public_current_staff()})
         return jsonify({
@@ -1224,7 +1336,7 @@ def auth_setup():
         }]
     }
     _save_staff_cookies()
-    session['staff_id'] = staff_id
+    _set_logged_in_staff(_staff_cookies['staff'][0])
     _invalidate_facebook_cache()
     return jsonify({'ok': True, 'staff': _public_current_staff()})
 
@@ -1234,18 +1346,40 @@ def auth_login():
     body = request.get_json() or {}
     username = str(body.get('username') or '').strip().lower()
     password = str(body.get('password') or '')
-    staff = next((item for item in _staff_accounts()
-                  if item.get('enabled', True) and item.get('username') == username), None)
-    if not staff or not _verify_password(password, staff.get('password_salt', ''), staff.get('password_hash', '')):
+    if not username or not password:
+        return jsonify({'ok': False, 'error': 'Nhập tài khoản và mật khẩu'}), 400
+
+    staff = _find_local_staff(username)
+    if staff and _verify_password(password, staff.get('password_salt', ''), staff.get('password_hash', '')):
+        _set_logged_in_staff(staff)
+        _invalidate_facebook_cache()
+        return jsonify({'ok': True, 'staff': _public_current_staff()})
+
+    row, supabase_error = _load_supabase_staff(username)
+    if row:
+        supabase_staff = _normalize_supabase_staff(row)
+        if not supabase_staff.get('enabled', True):
+            return jsonify({'ok': False, 'error': 'Tài khoản đã bị tắt'}), 403
+        if _supabase_password_matches(row, password):
+            _set_logged_in_staff(supabase_staff)
+            _invalidate_facebook_cache()
+            return jsonify({'ok': True, 'staff': _public_current_staff()})
         return jsonify({'ok': False, 'error': 'Sai tài khoản hoặc mật khẩu'}), 401
-    session['staff_id'] = staff['id']
-    _invalidate_facebook_cache()
-    return jsonify({'ok': True, 'staff': _public_current_staff()})
+
+    if supabase_error and 'Could not find the table' in supabase_error:
+        return jsonify({
+            'ok': False,
+            'error': f'Chưa có bảng {SUPABASE_STAFF_TABLE} trong Supabase. Chạy lại file SQL rồi thêm user/pass.',
+        }), 500
+    if supabase_error and 'Could not find the' in supabase_error:
+        return jsonify({'ok': False, 'error': f'Lỗi bảng đăng nhập Supabase: {supabase_error}'}), 500
+
+    return jsonify({'ok': False, 'error': 'Sai tài khoản hoặc mật khẩu'}), 401
 
 
 @app.route('/api/auth/logout', methods=['POST'])
 def auth_logout():
-    session.pop('staff_id', None)
+    _clear_logged_in_staff()
     _invalidate_facebook_cache()
     return jsonify({'ok': True})
 
@@ -1593,6 +1727,9 @@ def groups_remove(gid):
 def staff_cookies_get():
     if _is_admin():
         staff_rows = [_public_staff_cookie(item) for item in _staff_accounts()]
+        current = _current_staff()
+        if current and not any(item.get('id') == current.get('id') for item in staff_rows):
+            staff_rows.insert(0, _public_staff_cookie(current))
     else:
         staff_rows = [_public_current_staff()] if _current_staff() else []
     return jsonify({
@@ -1627,10 +1764,16 @@ def staff_cookies_save():
     staff = _staff_cookies.setdefault('staff', [])
     if any(item.get('username') == username for item in staff):
         return jsonify({'ok': False, 'error': 'Tài khoản đăng nhập đã tồn tại'}), 400
+    if USE_SUPABASE:
+        existing_row, existing_error = _load_supabase_staff(username)
+        if existing_row:
+            return jsonify({'ok': False, 'error': 'Tài khoản đăng nhập đã tồn tại trong Supabase'}), 400
+        if existing_error and 'Could not find the table' in existing_error:
+            return jsonify({'ok': False, 'error': f'Chưa có bảng {SUPABASE_STAFF_TABLE} trong Supabase'}), 500
     now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
     saved_id = uuid.uuid4().hex[:12]
     salt, digest = _hash_password(password)
-    staff.append({
+    local_row = {
         'id': saved_id,
         'name': name,
         'username': username,
@@ -1641,12 +1784,34 @@ def staff_cookies_save():
         'enabled': True,
         'created_at': now,
         'updated_at': now,
-    })
+    }
+    staff.append(local_row)
     if not _staff_cookies.get('active_staff_id'):
         _staff_cookies['active_staff_id'] = saved_id
     _save_staff_cookies()
+    warning = ''
+    if USE_SUPABASE:
+        try:
+            sb.insert_staff_user({
+                'id': saved_id,
+                'name': name,
+                'username': username,
+                'password': password,
+                'role': 'staff',
+                'cookie': cookie,
+                'facebook_user_id': _extract_cookie_user(cookie),
+                'enabled': True,
+            }, SUPABASE_STAFF_TABLE)
+        except Exception as e:
+            warning = f'Supabase chưa ghi được: {e}'
     _invalidate_facebook_cache()
-    return jsonify({'ok': True, 'active_staff_id': _current_staff_id(), 'staff': [_public_staff_cookie(item) for item in staff], 'can_manage': True})
+    return jsonify({
+        'ok': True,
+        'active_staff_id': _current_staff_id(),
+        'staff': [_public_staff_cookie(item) for item in staff],
+        'can_manage': True,
+        'warning': warning,
+    })
 
 
 @app.route('/api/staff-cookies/<staff_id>/activate', methods=['POST'])
