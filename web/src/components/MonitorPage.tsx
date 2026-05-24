@@ -1182,35 +1182,16 @@ export function MonitorPage() {
             />
           ) : null}
           {activeView === 'cookies' ? (
-            <div className="settings-module">
-              <SaleSetupPanel
-                aiProvider={aiProvider}
-                onProviderChange={(v) => {
-                  setAiProvider(v);
-                  void onProviderChange(v);
-                }}
-                aiAutoClassify={aiAutoClassify}
-                onAutoClassifyChange={(v) => void saveAiAuto(v)}
-                aiStatus={aiStatus}
-                maskedKey={masked}
-                hasKey={hasKey}
-                aiKeyEdit={aiKeyEdit}
-                aiKeyInput={aiKeyInput}
-                onAiKeyInput={setAiKeyInput}
-                onToggleKeyEdit={() => setAiKeyEdit((e) => !e)}
-                onTestAi={testAi}
-                onSaveKey={saveAiKey}
-                onDeleteKey={deleteAiKey}
-                staff={staffRows}
-                currentStaff={currentStaff}
-                canManageStaff={canManageStaff}
-                staffStatus={staffStatus}
-                staffTitle="Quản lý Cooki"
-                staffKicker="Cookie nhân sự"
-                onSaveStaff={saveStaffCookie}
-                onDeleteStaff={deleteStaffCookie}
-              />
-            </div>
+            <StaffCookiePanel
+              staff={staffRows}
+              currentStaff={currentStaff}
+              canManage={canManageStaff}
+              status={staffStatus}
+              title="Quản lý Cooki"
+              kicker="Cookie nhân sự"
+              onSave={saveStaffCookie}
+              onDelete={deleteStaffCookie}
+            />
           ) : null}
 
       {activeView === 'manage' ? (
