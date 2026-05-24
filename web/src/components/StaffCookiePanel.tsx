@@ -193,7 +193,11 @@ export function StaffCookiePanel({
       </div>
 
       {status ? <div className="module-status">{status}</div> : null}
-      {!canManage ? <div className="module-status">Cookie của bạn do admin cấu hình, không tự sửa tại đây.</div> : null}
+      {!canManage ? (
+        <div className="module-status">
+          Bạn đang đăng nhập tài khoản nhân sự. Chỉ admin được thêm, sửa, xoá nhân sự và gắn cookie.
+        </div>
+      ) : null}
 
       <div className={`modal-overlay${modalOpen ? ' open' : ''}`} onClick={(e) => e.target === e.currentTarget && resetModal()} role="presentation">
         <form className="modal staff-modal" onSubmit={submit}>

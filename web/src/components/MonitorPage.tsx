@@ -581,9 +581,27 @@ export function MonitorPage() {
   }
 
   async function removeGroup(gid: string) {
-    if (groups.length <= 1) return;
-    await api(`/api/groups/${gid}`, { method: 'DELETE' });
+    const previousGroups = groups;
+    const previousNames = groupNames;
     setGroups((g) => g.filter((x) => x !== gid));
+    setGroupNames((names) => {
+      const next = { ...names };
+      delete next[gid];
+      return next;
+    });
+    try {
+      const r = await api(`/api/groups/${gid}`, { method: 'DELETE' });
+      const d = await r.json().catch(() => ({ ok: r.ok }));
+      if (!r.ok || d.error) {
+        setGroups(previousGroups);
+        setGroupNames(previousNames);
+        setToolStatus(`❌ Không xoá được nhóm: ${d.error || `Server lỗi ${r.status}`}`);
+      }
+    } catch {
+      setGroups(previousGroups);
+      setGroupNames(previousNames);
+      setToolStatus('❌ Lỗi kết nối khi xoá nhóm');
+    }
   }
 
   async function addTg() {
