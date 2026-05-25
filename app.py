@@ -1947,17 +1947,45 @@ def api_posts():
     global _seen_ids
     limit = request.args.get('limit', 10, type=int)
     group_ids = [g.strip() for g in request.args.get('groups', DEFAULT_GROUP).split(',') if g.strip()]
+    debug = request.args.get('debug', '').lower() in ('1', 'true', 'yes')
     is_first = len(_seen_ids) == 0
 
     try:
         all_posts = []
+        report = []
         for gid in group_ids:
             posts = get_api(gid).get_posts(limit)
             if posts is None:
-                return jsonify({'error': 'Cookie hết hạn hoặc không hợp lệ — cập nhật cookie nhân sự đang dùng rồi tải lại'}), 401
+                report.append({
+                    'group_id': gid,
+                    'group_name': next((g.get('name') for g in _merged_facebook_groups() if g.get('id') == gid), gid),
+                    'ok': False,
+                    'count': 0,
+                    'source': 'facebook_graph',
+                    'error': 'Cookie hết hạn, chưa vào nhóm, hoặc Facebook không cho đọc feed nhóm này',
+                })
+                continue
             for p in posts:
                 p['_group_id'] = gid
+                p['_source'] = 'facebook_graph'
             all_posts.extend(posts)
+            report.append({
+                'group_id': gid,
+                'group_name': next((g.get('name') for g in _merged_facebook_groups() if g.get('id') == gid), gid),
+                'ok': True,
+                'count': len(posts or []),
+                'source': 'facebook_graph',
+                'error': '',
+            })
+
+        if group_ids and not all_posts and any(not item.get('ok') for item in report):
+            payload = {
+                'error': 'Không lấy được bài từ Facebook. Kiểm tra cookie nhân sự và quyền vào các nhóm.',
+                'posts': [],
+                'report': report,
+                'source': 'facebook_graph',
+            }
+            return jsonify(payload), 401
 
         all_posts.sort(key=lambda x: x.get('created_time', ''), reverse=True)
 
@@ -1975,6 +2003,14 @@ def api_posts():
             _seen_ids.update(new_ids)
             _save_seen(new_posts)
 
+        if debug:
+            return jsonify({
+                'ok': True,
+                'source': 'facebook_graph',
+                'posts': all_posts,
+                'report': report,
+                'total_posts': len(all_posts),
+            })
         return jsonify(all_posts)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -2400,8 +2436,47 @@ def _sync_group_from_channel(row: dict) -> None:
             print(f'[supabase] upsert_group from managed channel failed: {e}')
 
 
+def _facebook_group_channels() -> list[dict]:
+    rows = []
+    for row in _managed_channels:
+        platform = str(row.get('platform') or '').strip().lower()
+        channel_type = str(row.get('channel_type') or '').strip().lower()
+        target_id = str(row.get('target_id') or '').strip()
+        if platform == 'facebook' and channel_type in ('nhóm', 'nhom', 'group') and target_id:
+            rows.append({'id': target_id, 'name': str(row.get('channel_name') or '').strip()})
+    return rows
+
+
+def _merged_facebook_groups() -> list[dict]:
+    by_id = {}
+    for row in _groups:
+        gid = str(row.get('id') or '').strip()
+        if gid:
+            by_id[gid] = {'id': gid, 'name': str(row.get('name') or '').strip()}
+    for row in _facebook_group_channels():
+        gid = row['id']
+        if gid not in by_id:
+            by_id[gid] = row
+        elif row.get('name'):
+            by_id[gid]['name'] = row['name']
+    return list(by_id.values())
+
+
+def _refresh_managed_channels_from_supabase() -> None:
+    global _managed_channels
+    if not USE_SUPABASE:
+        return
+    try:
+        rows = sb.list_managed_channels(SUPABASE_CHANNEL_TABLE)
+        if isinstance(rows, list):
+            _managed_channels = rows
+    except Exception as e:
+        print(f'[supabase] refresh managed_channels failed: {e}')
+
+
 @app.route('/api/channels', methods=['GET'])
 def channels_get():
+    _refresh_managed_channels_from_supabase()
     rows = [_public_managed_channel(item) for item in _managed_channels]
     rows.sort(key=lambda item: item.get('created_at') or item.get('updated_at') or '', reverse=True)
     return jsonify({'ok': True, 'channels': rows})
@@ -2531,7 +2606,8 @@ def tg_remove(chat_id):
 
 @app.route('/api/groups', methods=['GET'])
 def groups_get():
-    return jsonify(_groups)
+    _refresh_managed_channels_from_supabase()
+    return jsonify(_merged_facebook_groups())
 
 
 @app.route('/api/groups', methods=['POST'])

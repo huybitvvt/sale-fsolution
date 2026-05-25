@@ -53,6 +53,14 @@ type TikTokBridgeResult = {
   url?: string;
   version?: string;
 };
+type PostFetchReport = {
+  group_id?: string;
+  group_name?: string;
+  ok?: boolean;
+  count?: number;
+  source?: string;
+  error?: string;
+};
 
 export function MonitorPage() {
   const [groups, setGroups] = useState<string[]>([]);
@@ -97,6 +105,7 @@ export function MonitorPage() {
   const [autoOn, setAutoOn] = useState(false);
   const [loading, setLoading] = useState(false);
   const [feedError, setFeedError] = useState('');
+  const [postFetchReport, setPostFetchReport] = useState<PostFetchReport[]>([]);
   const [toolStatus, setToolStatus] = useState('');
   const statusBaseRef = useRef('');
   const [headerSub, setHeaderSub] = useState('Đang tải...');
@@ -379,15 +388,17 @@ export function MonitorPage() {
     if (!gids.length) return null;
     setLoading(true);
     setFeedError('');
+    setPostFetchReport([]);
     setToolStatus('Đang tải...');
     try {
-      const res = await api(`/api/posts?limit=${lim}&groups=${gids.join(',')}`);
+      const res = await api(`/api/posts?debug=1&limit=${lim}&groups=${gids.join(',')}`);
       const data = await res.json();
       if (!res.ok || data.error) {
+        setPostFetchReport(Array.isArray(data.report) ? data.report : []);
         const msg =
           data.error ||
           (res.status === 401
-            ? 'Cookie/token Facebook hết hạn — cập nhật data/cookie.txt rồi restart backend'
+            ? 'Cookie/token Facebook hết hạn hoặc nhân sự chưa có quyền đọc nhóm'
             : `Lỗi tải bài (${res.status})`);
         setAllPosts([]);
         setFeedError(msg);
@@ -395,7 +406,10 @@ export function MonitorPage() {
         statusBaseRef.current = '';
         return null;
       }
-      setAllPosts(data);
+      const rows: FbPost[] = Array.isArray(data) ? data : data.posts || [];
+      const report: PostFetchReport[] = Array.isArray(data.report) ? data.report : [];
+      setPostFetchReport(report);
+      setAllPosts(rows);
       const now = new Date().toLocaleTimeString('vi-VN');
       let known: string[] = [];
       try {
@@ -404,17 +418,21 @@ export function MonitorPage() {
         known = [];
       }
       const knownSet = new Set(known);
-      const fresh = data.filter((p: FbPost) => !knownSet.has(p.id));
-      data.forEach((p: FbPost) => knownSet.add(p.id));
+      const fresh = rows.filter((p: FbPost) => !knownSet.has(p.id));
+      rows.forEach((p: FbPost) => knownSet.add(p.id));
       const nextKnown = [...knownSet].slice(-500);
       if (typeof window !== 'undefined') localStorage.setItem('seenIds', JSON.stringify(nextKnown));
-      const base = `${data.length} bài · ${now}`;
+      const okGroups = report.filter((item) => item.ok).length;
+      const failedGroups = report.filter((item) => !item.ok).length;
+      const reportText = report.length ? ` · Facebook thật · ${okGroups}/${report.length} nhóm đọc được${failedGroups ? ` · ${failedGroups} nhóm lỗi` : ''}` : '';
+      const base = `${rows.length} bài · ${now}${reportText}`;
       statusBaseRef.current = base;
       const nb = fresh.length && knownSet.size > fresh.length ? ` +${fresh.length} mới` : '';
       setToolStatus(base + nb);
-      return data as FbPost[];
+      return rows as FbPost[];
     } catch {
       setAllPosts([]);
+      setPostFetchReport([]);
       setToolStatus('Lỗi');
       return null;
     } finally {
@@ -1768,6 +1786,20 @@ export function MonitorPage() {
           </span>
           <span className="toolbar-status">{toolStatus}</span>
         </div>
+
+        {postFetchReport.length ? (
+          <div className="post-fetch-report">
+            <div className="post-fetch-report-head">Nguồn bài viết: Facebook Graph API thật</div>
+            <div className="post-fetch-report-list">
+              {postFetchReport.map((item) => (
+                <span key={item.group_id || item.group_name} className={`post-fetch-pill ${item.ok ? 'ok' : 'fail'}`}>
+                  {item.ok ? '✅' : '⚠️'} {item.group_name || item.group_id}: {item.count || 0} bài
+                  {item.error ? ` · ${item.error}` : ''}
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         <div className="feed">
           {loading && !allPosts.length ? (
