@@ -126,28 +126,112 @@
     return body.includes('log in') || body.includes('login') || body.includes('đăng nhập');
   }
 
+  function readCookie(name) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = document.cookie.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
+    return match ? decodeURIComponent(match[1]) : '';
+  }
+
+  function getVideoId(payload) {
+    const raw = String(payload.video_id || payload.post_id || window.location.href || '')
+      .replace(/^tiktok_/, '')
+      .trim();
+    return raw.match(/\d{8,}/)?.[0] || '';
+  }
+
+  function friendlyPublishError(payload, fallback) {
+    const text = String(payload?.status_msg || payload?.message || fallback || '').trim();
+    if (!text) return 'TikTok khong nhan binh luan qua phien Chrome hien tai.';
+    if (/login|session|expired|auth|verify|captcha/i.test(text)) {
+      return 'TikTok yeu cau dang nhap/xac minh lai tren Chrome truoc khi gui binh luan.';
+    }
+    return text;
+  }
+
+  async function publishCommentByApi(payload, reason) {
+    const message = String(payload.message || '').trim();
+    const videoId = getVideoId(payload);
+    if (!videoId) {
+      throw new Error(`${reason} Khong xac dinh duoc ID video TikTok de gui bang API.`);
+    }
+
+    const params = new URLSearchParams({
+      aweme_id: videoId,
+      aid: '1988',
+      app_language: 'vi-VN',
+      browser_language: navigator.language || 'vi-VN',
+      device_platform: 'webapp',
+      region: 'VN',
+      os: 'windows',
+    });
+    const body = new URLSearchParams({ aweme_id: videoId, text: message });
+    const csrf = readCookie('tt_csrf_token') || readCookie('csrf_session_id');
+    const headers = { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' };
+    if (csrf) {
+      headers['X-Secsdk-Csrf-Token'] = csrf;
+      headers['x-secsdk-csrf-token'] = csrf;
+    }
+
+    const response = await fetch(`/api/comment/publish/?${params.toString()}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body,
+    });
+    let data = {};
+    try {
+      data = await response.json();
+    } catch (error) {
+      data = {};
+    }
+    if (!response.ok) {
+      throw new Error(`${reason} Gui API TikTok loi ${response.status}: ${friendlyPublishError(data, response.statusText)}`);
+    }
+    const statusCode = data.status_code;
+    const comment = data.comment || data.comments?.[0] || {};
+    if (statusCode !== 0 && statusCode !== '0' && statusCode !== undefined) {
+      throw new Error(`${reason} ${friendlyPublishError(data, 'TikTok khong nhan binh luan.')}`);
+    }
+    if ((data.status_msg || data.message) && !comment.cid && !comment.id && !comment.comment_id) {
+      throw new Error(`${reason} ${friendlyPublishError(data, 'TikTok khong nhan binh luan.')}`);
+    }
+    const commentId = comment.cid || comment.id || comment.comment_id || `extension_api_${Date.now()}`;
+    return {
+      ok: true,
+      final: FINAL,
+      comment_id: String(commentId),
+      message: 'Extension da gui binh luan TikTok bang phien Chrome',
+      url: window.location.href,
+      method: 'api',
+    };
+  }
+
   async function postComment(payload) {
     const message = String(payload.message || '').trim();
     if (!message) throw new Error('Thieu noi dung binh luan');
     if (tiktokPageError()) {
-      throw new Error('TikTok dang mo trang loi. Link video co the sai, video bi an, hoac tai khoan Chrome khong xem duoc video nay.');
+      return publishCommentByApi(payload, 'Khung binh luan TikTok dang loi.');
     }
 
     maybeOpenCommentPanel();
+    let sawTikTokError = false;
     const input = await waitFor(() => {
       if (tiktokPageError()) {
-        throw new Error('TikTok dang mo trang loi. Hay kiem tra lai link video va tai khoan TikTok tren Chrome.');
+        sawTikTokError = true;
+        return null;
       }
       return findCommentInput();
-    }, 30000, maybeOpenCommentPanel);
+    }, 30000, () => {
+      if (!sawTikTokError) maybeOpenCommentPanel();
+    });
     if (!input) {
-      if (tiktokPageError()) {
-        throw new Error('TikTok dang mo trang loi. Hay kiem tra lai link video va tai khoan TikTok tren Chrome.');
+      if (sawTikTokError || tiktokPageError()) {
+        return publishCommentByApi(payload, 'Khung binh luan TikTok dang loi.');
       }
       if (loginHint()) {
         throw new Error('Chrome chua dang nhap TikTok hoac TikTok yeu cau dang nhap lai.');
       }
-      throw new Error('Khong thay o binh luan TikTok. Hay mo video tren TikTok, cho trang tai xong roi bam lai.');
+      return publishCommentByApi(payload, 'Khong thay o binh luan TikTok.');
     }
 
     setTextValue(input, message);
@@ -156,9 +240,9 @@
     const button = await waitFor(findPostButton, 12000);
     if (!button) {
       if (tiktokPageError()) {
-        throw new Error('TikTok dang mo trang loi nen khong the gui binh luan.');
+        return publishCommentByApi(payload, 'Khung binh luan TikTok dang loi.');
       }
-      throw new Error('Da dien noi dung nhung khong thay nut dang binh luan TikTok.');
+      return publishCommentByApi(payload, 'Da dien noi dung nhung khong thay nut dang binh luan TikTok.');
     }
 
     button.click();
