@@ -364,6 +364,29 @@ def _mask_tiktok_cookie(cookie: str) -> str:
     return cookie[:10] + '...' + cookie[-6:] if len(cookie) > 20 else '***'
 
 
+TIKTOK_LOGIN_COOKIE_KEYS = ('sessionid', 'sessionid_ss', 'sid_tt', 'sid_guard', 'uid_tt', 'uid_tt_ss')
+
+
+def _has_tiktok_login_cookie(cookie: str) -> bool:
+    return any(_extract_cookie_value(cookie, key) for key in TIKTOK_LOGIN_COOKIE_KEYS)
+
+
+def _tiktok_cookie_login_message(cookie: str) -> str:
+    if not cookie:
+        return 'Chưa có TikTok cookie.'
+    if _has_tiktok_login_cookie(cookie):
+        return 'Cookie có session đăng nhập TikTok. Nếu vẫn lỗi, phiên đăng nhập đã hết hạn hoặc TikTok chặn thao tác.'
+    return 'Cookie TikTok thiếu session đăng nhập như sessionid/sid_tt. Hãy đăng nhập TikTok rồi copy cookie đầy đủ từ tiktok.com.'
+
+
+def _friendly_tiktok_publish_error(message: str) -> str:
+    text = str(message or '').strip()
+    lower = text.lower()
+    if any(token in lower for token in ('đăng nhập', 'login', 'expired', 'session', 'hết hạn')):
+        return 'Cookie TikTok đã hết hạn hoặc chưa phải cookie của tài khoản đang đăng nhập. Mở tiktok.com, đăng nhập lại rồi copy cookie đầy đủ vào menu Cooki.'
+    return text or 'TikTok không nhận bình luận'
+
+
 def _configured_tiktok_cookie() -> str:
     return str((_tiktok_config or {}).get('cookie') or TIKTOK_COOKIE or '').strip()
 
@@ -373,6 +396,7 @@ def _public_tiktok_config() -> dict:
     source = 'web' if str((_tiktok_config or {}).get('cookie') or '').strip() else ('env' if TIKTOK_COOKIE else '')
     return {
         'has_cookie': bool(cookie),
+        'has_login_cookie': _has_tiktok_login_cookie(cookie),
         'cookie_masked': _mask_tiktok_cookie(cookie),
         'source': source,
         'updated_at': (_tiktok_config or {}).get('updated_at') or '',
@@ -1341,9 +1365,11 @@ def _send_tiktok_comment(video_id: str, video_url: str, message: str, cookie: st
     message = (message or '').strip()
     if not message:
         return {}, 'Nhập nội dung bình luận TikTok'
-    merged_cookie = (cookie or _configured_tiktok_cookie() or _current_staff().get('cookie') or '').strip()
+    merged_cookie = (cookie or _configured_tiktok_cookie()).strip()
     if not merged_cookie:
         return {}, 'Thiếu cookie TikTok. Admin cần nhập TikTok cookie trong menu Cooki.'
+    if not _has_tiktok_login_cookie(merged_cookie):
+        return {}, _tiktok_cookie_login_message(merged_cookie)
 
     csrf = (
         _extract_cookie_value(merged_cookie, 'tt_csrf_token')
@@ -1399,7 +1425,7 @@ def _send_tiktok_comment(video_id: str, video_url: str, message: str, cookie: st
         msg = payload.get('status_msg') or payload.get('message') or payload.get('log_pb') or 'TikTok không nhận bình luận'
         if status_code in (0, '0') and (payload.get('comment') or payload.get('comments')):
             return payload, ''
-        return {}, str(msg)[:220]
+        return {}, _friendly_tiktok_publish_error(str(msg)[:220])
     return payload, ''
 
 
@@ -2127,10 +2153,10 @@ def tiktok_config_save():
     cookie = str(body.get('cookie') or '').strip()
     if not cookie:
         return jsonify({'ok': False, 'error': 'Dán cookie TikTok trước khi lưu'}), 400
-    if '=' not in cookie or ';' not in cookie:
+    if '=' not in cookie:
         return jsonify({'ok': False, 'error': 'Cookie TikTok chưa đúng định dạng, cần chuỗi cookie đầy đủ từ trình duyệt'}), 400
-    if not any(token in cookie for token in ('sessionid=', 'sid_tt=', 'ttwid=', 'msToken=', 'tt_csrf_token=')):
-        return jsonify({'ok': False, 'error': 'Cookie chưa giống TikTok cookie. Kiểm tra lại cookie từ tiktok.com'}), 400
+    if not _has_tiktok_login_cookie(cookie):
+        return jsonify({'ok': False, 'error': _tiktok_cookie_login_message(cookie)}), 400
     now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
     staff = _current_staff()
     _tiktok_config = {
@@ -2142,6 +2168,21 @@ def tiktok_config_save():
     }
     _save_tiktok_config()
     return jsonify({'ok': True, 'config': _public_tiktok_config(), 'storage': 'supabase' if USE_SUPABASE else 'local'})
+
+
+@app.route('/api/tiktok/config/test', methods=['POST'])
+def tiktok_config_test():
+    body = request.get_json() or {}
+    cookie = str(body.get('cookie') or '').strip() or _configured_tiktok_cookie()
+    has_login_cookie = _has_tiktok_login_cookie(cookie)
+    return jsonify({
+        'ok': True,
+        'valid': bool(cookie and has_login_cookie),
+        'has_cookie': bool(cookie),
+        'has_login_cookie': has_login_cookie,
+        'message': _tiktok_cookie_login_message(cookie),
+        'config': _public_tiktok_config(),
+    })
 
 
 @app.route('/api/tiktok/config', methods=['DELETE'])

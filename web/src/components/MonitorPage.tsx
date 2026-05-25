@@ -37,6 +37,7 @@ type JoinPrompt = { id: string; name: string };
 type ViewKey = 'home' | 'staff' | 'channels' | 'manage' | 'cookies' | 'history' | 'leads';
 type TikTokCookieConfig = {
   has_cookie?: boolean;
+  has_login_cookie?: boolean;
   cookie_masked?: string;
   source?: string;
   updated_at?: string;
@@ -1237,6 +1238,28 @@ export function MonitorPage() {
     setTiktokCookieBusy(false);
   }
 
+  async function testTiktokCookie() {
+    setTiktokCookieBusy(true);
+    setTiktokCookieStatus('Đang kiểm tra TikTok cookie...');
+    try {
+      const r = await api('/api/tiktok/config/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cookie: tiktokCookieInput.trim() }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        if (d.config) setTiktokCookieConfig(d.config);
+        setTiktokCookieStatus(`${d.valid ? '✅' : '❌'} ${d.message || 'Đã kiểm tra cookie'}`);
+      } else {
+        setTiktokCookieStatus('Lỗi: ' + (d.error || 'Không kiểm tra được TikTok cookie'));
+      }
+    } catch {
+      setTiktokCookieStatus('Lỗi kết nối backend');
+    }
+    setTiktokCookieBusy(false);
+  }
+
   const masked = (aiConfig.keys_masked || {})[aiProvider] || '';
   const hasKey = Boolean(masked && masked !== '***' && masked.length > 3);
   const fbMatchedRows = fbCommentRows.filter((row) => row.is_matched);
@@ -1364,8 +1387,8 @@ export function MonitorPage() {
                   </button>
                 </div>
                 <div className="tiktok-cookie-status-row">
-                  <span className={`status-pill ${tiktokCookieConfig.has_cookie ? 'ok' : 'fail'}`}>
-                    {tiktokCookieConfig.has_cookie ? 'Đã cấu hình' : 'Chưa có cookie'}
+                  <span className={`status-pill ${tiktokCookieConfig.has_login_cookie ? 'ok' : 'fail'}`}>
+                    {tiktokCookieConfig.has_login_cookie ? 'Cookie đăng nhập hợp lệ' : tiktokCookieConfig.has_cookie ? 'Thiếu session login' : 'Chưa có cookie'}
                   </span>
                   <span className="mono-cell">{tiktokCookieConfig.cookie_masked || '-'}</span>
                   {tiktokCookieConfig.source ? <span>Nguồn: {tiktokCookieConfig.source === 'web' ? 'Web' : '.env'}</span> : null}
@@ -1385,6 +1408,9 @@ export function MonitorPage() {
                     <div className="tiktok-cookie-actions">
                       <button type="button" className="btn-submit" disabled={tiktokCookieBusy} onClick={() => void saveTiktokCookie()}>
                         {tiktokCookieBusy ? 'Đang lưu...' : 'Lưu TikTok cookie'}
+                      </button>
+                      <button type="button" className="btn-cancel" disabled={tiktokCookieBusy || (!tiktokCookieInput.trim() && !tiktokCookieConfig.has_cookie)} onClick={() => void testTiktokCookie()}>
+                        Test cookie
                       </button>
                       <button type="button" className="btn-cancel" disabled={tiktokCookieBusy || !tiktokCookieConfig.has_cookie} onClick={() => void deleteTiktokCookie()}>
                         Xoá cookie
