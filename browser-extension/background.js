@@ -6,9 +6,18 @@ function sleep(ms) {
 
 function normalizeTikTokUrl(payload) {
   const rawUrl = String(payload.post_url || payload.video_url || payload.url || '').trim();
+  const videoIdFromUrl = rawUrl.match(/\/video\/(\d+)/)?.[1] || '';
+  const rawVideoId = String(payload.video_id || payload.post_id || '').replace(/^tiktok_/, '').trim();
+  const videoId = videoIdFromUrl || rawVideoId.match(/\d{8,}/)?.[0] || '';
+  const channelName = String(payload.channel_name || payload.channel || payload.author_unique_id || payload.username || '')
+    .trim()
+    .replace(/^@+/, '')
+    .replace(/\s+/g, '')
+    .replace(/[^a-zA-Z0-9._-]/g, '');
+
+  if (rawUrl && rawUrl.includes('tiktok.com') && !rawUrl.includes('/@/video/')) return rawUrl;
+  if (videoId && channelName) return `${TIKTOK_HOST}/@${encodeURIComponent(channelName)}/video/${encodeURIComponent(videoId)}`;
   if (rawUrl && rawUrl.includes('tiktok.com')) return rawUrl;
-  const videoId = String(payload.video_id || payload.post_id || '').replace(/^tiktok_/, '').trim();
-  if (videoId) return `${TIKTOK_HOST}/@/video/${encodeURIComponent(videoId)}`;
   return '';
 }
 
@@ -65,7 +74,11 @@ async function handleSendComment(request) {
   const text = String(payload.message || payload.text || '').trim();
 
   if (!url) {
-    return { ok: false, final: true, error: 'Thieu link hoac ID video TikTok' };
+    return {
+      ok: false,
+      final: true,
+      error: 'Thieu link video TikTok chuan. Hay lay comment lai bang link video dang https://www.tiktok.com/@kenh/video/id hoac dam bao co ten kenh.',
+    };
   }
   if (!text) {
     return { ok: false, final: true, error: 'Nhap noi dung binh luan truoc khi gui' };
