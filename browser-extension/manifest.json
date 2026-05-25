@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "ST.Real TikTok Bridge",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Gui binh luan TikTok tu ST.Real Social Console bang phien dang nhap Chrome that.",
-  "permissions": ["tabs", "scripting"],
+  "permissions": ["tabs", "scripting", "cookies"],
   "host_permissions": [
     "https://www.tiktok.com/*",
     "https://*.vercel.app/*",

@@ -21,6 +21,133 @@ function normalizeTikTokUrl(payload) {
   return '';
 }
 
+function getVideoId(payload, url) {
+  const raw = String(payload.video_id || payload.post_id || url || '')
+    .replace(/^tiktok_/, '')
+    .trim();
+  return raw.match(/\d{8,}/)?.[0] || '';
+}
+
+function friendlyTikTokError(payload, fallback) {
+  const text = String(payload?.status_msg || payload?.message || fallback || '').trim();
+  if (!text) return 'TikTok khong nhan binh luan qua phien Chrome hien tai.';
+  if (/login|session|expired|auth|verify|captcha/i.test(text)) {
+    return 'TikTok yeu cau dang nhap/xac minh/captcha lai tren Chrome truoc khi gui binh luan.';
+  }
+  return text;
+}
+
+function getTikTokCookies() {
+  return new Promise((resolve) => {
+    chrome.cookies.getAll({ domain: '.tiktok.com' }, (cookies) => {
+      if (chrome.runtime.lastError) {
+        resolve({ cookieHeader: '', csrf: '', error: chrome.runtime.lastError.message });
+        return;
+      }
+      const rows = Array.isArray(cookies) ? cookies : [];
+      const cookieHeader = rows.map((item) => `${item.name}=${item.value}`).join('; ');
+      const csrf =
+        rows.find((item) => item.name === 'tt_csrf_token')?.value ||
+        rows.find((item) => item.name === 'csrf_session_id')?.value ||
+        '';
+      resolve({ cookieHeader, csrf, error: '' });
+    });
+  });
+}
+
+async function publishCommentFromBackground(payload, url, previousError) {
+  const text = String(payload.message || payload.text || '').trim();
+  const videoId = getVideoId(payload, url);
+  if (!videoId) {
+    return { ok: false, final: true, error: `${previousError || ''} Khong xac dinh duoc ID video TikTok.`.trim() };
+  }
+
+  const cookieInfo = await getTikTokCookies();
+  if (!cookieInfo.cookieHeader) {
+    return {
+      ok: false,
+      final: true,
+      error: `${previousError || ''} Khong doc duoc cookie TikTok trong Chrome. Hay cap quyen cookies cho extension va reload extension.`.trim(),
+    };
+  }
+
+  const params = new URLSearchParams({
+    aweme_id: videoId,
+    aid: '1988',
+    app_language: 'vi-VN',
+    browser_language: 'vi-VN',
+    device_platform: 'webapp',
+    region: 'VN',
+    os: 'windows',
+  });
+  const body = new URLSearchParams({ aweme_id: videoId, text });
+  const headers = {
+    'Accept': 'application/json, text/plain, */*',
+    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    'Origin': TIKTOK_HOST,
+    'Referer': url,
+  };
+  if (cookieInfo.csrf) {
+    headers['X-Secsdk-Csrf-Token'] = cookieInfo.csrf;
+    headers['x-secsdk-csrf-token'] = cookieInfo.csrf;
+  }
+
+  let response;
+  try {
+    response = await fetch(`${TIKTOK_HOST}/api/comment/publish/?${params.toString()}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      final: true,
+      error: `${previousError || ''} Background API loi ket noi TikTok: ${error?.message || String(error)}`.trim(),
+    };
+  }
+
+  let data = {};
+  try {
+    data = await response.json();
+  } catch (error) {
+    data = {};
+  }
+  if (!response.ok) {
+    return {
+      ok: false,
+      final: true,
+      error: `${previousError || ''} Background API TikTok loi ${response.status}: ${friendlyTikTokError(data, response.statusText)}`.trim(),
+    };
+  }
+  const statusCode = data.status_code;
+  const comment = data.comment || data.comments?.[0] || {};
+  if (statusCode !== 0 && statusCode !== '0' && statusCode !== undefined) {
+    return {
+      ok: false,
+      final: true,
+      error: `${previousError || ''} Background API TikTok: ${friendlyTikTokError(data, 'TikTok khong nhan binh luan.')}`.trim(),
+    };
+  }
+  if ((data.status_msg || data.message) && !comment.cid && !comment.id && !comment.comment_id) {
+    return {
+      ok: false,
+      final: true,
+      error: `${previousError || ''} Background API TikTok: ${friendlyTikTokError(data, 'TikTok khong nhan binh luan.')}`.trim(),
+    };
+  }
+
+  return {
+    ok: true,
+    final: true,
+    comment_id: String(comment.cid || comment.id || comment.comment_id || `extension_bg_${Date.now()}`),
+    message: 'Extension da gui binh luan TikTok bang background Chrome',
+    url,
+    method: 'background-api',
+  };
+}
+
 function waitForTabLoaded(tabId, timeoutMs = 30000) {
   return new Promise((resolve) => {
     let done = false;
@@ -88,11 +215,13 @@ async function handleSendComment(request) {
   await waitForTabLoaded(tab.id);
   await sleep(2500);
 
-  return sendMessageWithRetries(tab.id, {
+  const response = await sendMessageWithRetries(tab.id, {
     type: 'STREAL_TIKTOK_DO_COMMENT',
     requestId: request.requestId,
     payload: { ...payload, url, message: text },
   });
+  if (response?.ok) return response;
+  return publishCommentFromBackground({ ...payload, message: text }, url, response?.error || '');
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
