@@ -251,6 +251,33 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
 .table-toolbar select:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
 .channel-field-wide { min-width: 0; }
 .channel-form-actions { display: flex; gap: 8px; align-items: flex-end; justify-content: flex-end; }
+.channel-add-button { min-width: 96px; height: 36px; padding: 0 18px; border-radius: 12px; }
+.channel-modal { width: 720px; }
+.channel-modal-note {
+  margin: -8px 0 16px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.channel-modal-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.3fr .8fr .9fr;
+  gap: 12px;
+}
+.channel-modal-wide { grid-column: span 2; }
+.channel-form-error { color: #be123c; font-weight: 700; }
+.modal-close-button {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  color: #64748b;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.modal-close-button:hover { background: #f8fafc; color: #111827; }
 .table-toolbar {
   display: flex;
   gap: 10px;
@@ -672,6 +699,8 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
   .console-content { padding: 14px; }
   .module-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .channel-form { grid-template-columns: 1fr 1fr; }
+  .channel-modal-grid { grid-template-columns: 1fr 1fr; }
+  .channel-modal-wide { grid-column: span 2; }
   .tiktok-stats-grid { grid-template-columns: 1fr; }
   .staff-modal-grid { grid-template-columns: 1fr; }
   .staff-cookie-field { grid-column: auto; }
@@ -692,6 +721,8 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
   .console-clock, .console-topbar .header-user { display: none; }
   .module-card-grid { grid-template-columns: 1fr; }
   .channel-form { grid-template-columns: 1fr; }
+  .channel-modal-grid { grid-template-columns: 1fr; }
+  .channel-modal-wide { grid-column: auto; }
   .tiktok-meta-grid { grid-template-columns: 1fr; }
   .tiktok-stats-actions { align-items: flex-start; }
   .table-search { min-width: 100%; }

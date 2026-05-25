@@ -36,6 +36,8 @@ const TYPE_OPTIONS = ['Page', 'Video', 'Nhóm'];
 export function ChannelManagerPanel({ channels, status, busy, onSave, onDelete, onReload }: Props) {
   const [form, setForm] = useState<Payload>(EMPTY);
   const [editingId, setEditingId] = useState('');
+  const [modalOpen, setModalOpen] = useState(false);
+  const [formError, setFormError] = useState('');
   const [query, setQuery] = useState('');
   const [platformFilter, setPlatformFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
@@ -66,7 +68,15 @@ export function ChannelManagerPanel({ channels, status, busy, onSave, onDelete, 
   }, [channels, platformFilter, query, typeFilter]);
 
   function setField(key: keyof Payload, value: string) {
+    setFormError('');
     setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function openCreate() {
+    setEditingId('');
+    setForm(EMPTY);
+    setFormError('');
+    setModalOpen(true);
   }
 
   function edit(item: ManagedChannel) {
@@ -79,15 +89,51 @@ export function ChannelManagerPanel({ channels, status, busy, onSave, onDelete, 
       target_id: item.target_id || '',
       note: item.note || '',
     });
+    setFormError('');
+    setModalOpen(true);
   }
 
   function reset() {
     setEditingId('');
     setForm(EMPTY);
+    setFormError('');
+    setModalOpen(false);
   }
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (!form.platform.trim()) {
+      setFormError('Nhập nền tảng trước khi lưu.');
+      return;
+    }
+    if (!form.channel_name.trim()) {
+      setFormError('Nhập tên kênh / nhóm trước khi lưu.');
+      return;
+    }
+    if (!form.link.trim() && !form.target_id.trim()) {
+      setFormError('Nhập link hoặc ID để tránh lưu trùng kênh.');
+      return;
+    }
+    const normalizedName = form.channel_name.trim().toLowerCase();
+    const normalizedPlatform = form.platform.trim().toLowerCase();
+    const normalizedType = form.channel_type.trim().toLowerCase();
+    const normalizedId = form.target_id.trim();
+    const normalizedLink = form.link.trim().replace(/\/+$/, '').toLowerCase();
+    const duplicated = channels.find((item) => {
+      if ((item.id || '') === editingId) return false;
+      const sameIdentity =
+        (normalizedId && normalizedId === (item.target_id || '').trim()) ||
+        (normalizedLink && normalizedLink === (item.link || '').trim().replace(/\/+$/, '').toLowerCase());
+      const sameName =
+        normalizedName === (item.channel_name || '').trim().toLowerCase() &&
+        normalizedPlatform === (item.platform || '').trim().toLowerCase() &&
+        normalizedType === (item.channel_type || '').trim().toLowerCase();
+      return sameIdentity || sameName;
+    });
+    if (duplicated) {
+      setFormError(`Kênh này đã có trong danh sách: ${duplicated.channel_name || duplicated.target_id || duplicated.id}`);
+      return;
+    }
     const ok = await onSave(form, editingId || undefined);
     if (ok) reset();
   }
@@ -103,75 +149,11 @@ export function ChannelManagerPanel({ channels, status, busy, onSave, onDelete, 
           <button type="button" className="table-icon-button" title="Tải lại" onClick={() => void onReload()}>
             ↻
           </button>
-        </div>
-      </div>
-
-      <form className="channel-form" onSubmit={submit}>
-        <div className="channel-field">
-          <label>Nền tảng</label>
-          <input
-            list="platform-options"
-            value={form.platform}
-            onChange={(e) => setField('platform', e.target.value)}
-            placeholder="Ví dụ: TikTok"
-          />
-          <datalist id="platform-options">
-            {PLATFORM_OPTIONS.map((item) => (
-              <option key={item} value={item} />
-            ))}
-          </datalist>
-        </div>
-        <div className="channel-field">
-          <label>Kênh</label>
-          <input
-            list="channel-options"
-            value={form.channel_name}
-            onChange={(e) => setField('channel_name', e.target.value)}
-            placeholder="Tên page / nhóm / kênh"
-          />
-          <datalist id="channel-options">
-            {channelOptions.map((item) => (
-              <option key={item} value={item} />
-            ))}
-          </datalist>
-        </div>
-        <div className="channel-field">
-          <label>Loại</label>
-          <input
-            list="channel-type-options"
-            value={form.channel_type}
-            onChange={(e) => setField('channel_type', e.target.value)}
-            placeholder="Page, Video, Nhóm"
-          />
-          <datalist id="channel-type-options">
-            {TYPE_OPTIONS.map((item) => (
-              <option key={item} value={item} />
-            ))}
-          </datalist>
-        </div>
-        <div className="channel-field channel-field-wide">
-          <label>Link</label>
-          <input value={form.link} onChange={(e) => setField('link', e.target.value)} placeholder="Dán link page / video / nhóm" />
-        </div>
-        <div className="channel-field">
-          <label>ID</label>
-          <input value={form.target_id} onChange={(e) => setField('target_id', e.target.value)} placeholder="ID nếu có" />
-        </div>
-        <div className="channel-field channel-field-wide">
-          <label>Ghi chú</label>
-          <input value={form.note} onChange={(e) => setField('note', e.target.value)} placeholder="Ghi chú vận hành" />
-        </div>
-        <div className="channel-form-actions">
-          {editingId ? (
-            <button type="button" className="btn-cancel" onClick={reset}>
-              Huỷ
-            </button>
-          ) : null}
-          <button type="submit" className="btn-submit" disabled={busy}>
-            {editingId ? 'Cập nhật' : '+ Thêm'}
+          <button type="button" className="btn-submit channel-add-button" onClick={openCreate}>
+            + Thêm
           </button>
         </div>
-      </form>
+      </div>
 
       <div className="table-toolbar">
         <div className="table-search">
@@ -255,6 +237,86 @@ export function ChannelManagerPanel({ channels, status, busy, onSave, onDelete, 
         </table>
       </div>
       {status ? <div className="module-status">{status}</div> : null}
+
+      <div className={`modal-overlay${modalOpen ? ' open' : ''}`} onClick={reset}>
+        <form className="modal channel-modal" onSubmit={submit} onClick={(e) => e.stopPropagation()}>
+          <div className="modal-hd">
+            <span>{editingId ? 'Sửa kênh theo dõi' : 'Thêm kênh theo dõi'}</span>
+            <button type="button" className="modal-close-button" aria-label="Đóng" onClick={reset}>
+              ×
+            </button>
+          </div>
+          <p className="channel-modal-note">
+            Mỗi kênh/nhóm/video chỉ lưu một dòng. Hệ thống sẽ chặn trùng theo ID, link hoặc cùng nền tảng + loại + tên kênh.
+          </p>
+          <div className="channel-modal-grid">
+            <div className="channel-field">
+              <label>Nền tảng</label>
+              <input
+                list="platform-options"
+                value={form.platform}
+                onChange={(e) => setField('platform', e.target.value)}
+                placeholder="Ví dụ: Facebook, TikTok"
+                autoFocus
+              />
+              <datalist id="platform-options">
+                {PLATFORM_OPTIONS.map((item) => (
+                  <option key={item} value={item} />
+                ))}
+              </datalist>
+            </div>
+            <div className="channel-field">
+              <label>Kênh</label>
+              <input
+                list="channel-options"
+                value={form.channel_name}
+                onChange={(e) => setField('channel_name', e.target.value)}
+                placeholder="Tên page / nhóm / kênh"
+              />
+              <datalist id="channel-options">
+                {channelOptions.map((item) => (
+                  <option key={item} value={item} />
+                ))}
+              </datalist>
+            </div>
+            <div className="channel-field">
+              <label>Loại</label>
+              <input
+                list="channel-type-options"
+                value={form.channel_type}
+                onChange={(e) => setField('channel_type', e.target.value)}
+                placeholder="Page, Video, Nhóm"
+              />
+              <datalist id="channel-type-options">
+                {TYPE_OPTIONS.map((item) => (
+                  <option key={item} value={item} />
+                ))}
+              </datalist>
+            </div>
+            <div className="channel-field">
+              <label>ID</label>
+              <input value={form.target_id} onChange={(e) => setField('target_id', e.target.value)} placeholder="ID nếu có" />
+            </div>
+            <div className="channel-field channel-modal-wide">
+              <label>Link</label>
+              <input value={form.link} onChange={(e) => setField('link', e.target.value)} placeholder="Dán link page / video / nhóm" />
+            </div>
+            <div className="channel-field channel-modal-wide">
+              <label>Ghi chú</label>
+              <input value={form.note} onChange={(e) => setField('note', e.target.value)} placeholder="Ghi chú vận hành" />
+            </div>
+          </div>
+          {formError ? <div className="modal-result channel-form-error">{formError}</div> : null}
+          <div className="modal-actions">
+            <button type="button" className="btn-cancel" onClick={reset}>
+              Huỷ
+            </button>
+            <button type="submit" className="btn-submit" disabled={busy}>
+              {busy ? 'Đang lưu...' : editingId ? 'Cập nhật' : 'Thêm kênh'}
+            </button>
+          </div>
+        </form>
+      </div>
     </section>
   );
 }

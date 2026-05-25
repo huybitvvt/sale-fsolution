@@ -685,6 +685,44 @@ def _clean_managed_channel(body: dict, current: dict | None = None) -> dict:
     }
 
 
+def _norm_channel_text(value: str) -> str:
+    return re.sub(r'\s+', ' ', str(value or '').strip()).lower()
+
+
+def _norm_channel_link(value: str) -> str:
+    raw = str(value or '').strip().lower()
+    raw = re.sub(r'[?#].*$', '', raw)
+    return raw.rstrip('/')
+
+
+def _find_duplicate_managed_channel(row: dict, exclude_id: str = '') -> dict:
+    row_platform = _norm_channel_text(row.get('platform', ''))
+    row_type = _norm_channel_text(row.get('channel_type', ''))
+    row_name = _norm_channel_text(row.get('channel_name', ''))
+    row_target = str(row.get('target_id') or '').strip()
+    row_link = _norm_channel_link(row.get('link', ''))
+
+    for item in _managed_channels:
+        item_id = str(item.get('id') or '')
+        if exclude_id and item_id == exclude_id:
+            continue
+        same_identity = (
+            (row_target and row_target == str(item.get('target_id') or '').strip())
+            or (row_link and row_link == _norm_channel_link(item.get('link', '')))
+        )
+        same_name = (
+            row_platform
+            and row_type
+            and row_name
+            and row_platform == _norm_channel_text(item.get('platform', ''))
+            and row_type == _norm_channel_text(item.get('channel_type', ''))
+            and row_name == _norm_channel_text(item.get('channel_name', ''))
+        )
+        if same_identity or same_name:
+            return item
+    return {}
+
+
 def _public_managed_channel(row: dict) -> dict:
     return {
         'id': row.get('id', ''),
@@ -2380,6 +2418,13 @@ def channels_create():
         return jsonify({'ok': False, 'error': 'Thiếu tên kênh'}), 400
     if not row['target_id'] and not row['link']:
         return jsonify({'ok': False, 'error': 'Thiếu link hoặc ID'}), 400
+    duplicated = _find_duplicate_managed_channel(row)
+    if duplicated:
+        return jsonify({
+            'ok': False,
+            'error': f"Kênh này đã có trong danh sách: {duplicated.get('channel_name') or duplicated.get('target_id') or duplicated.get('id')}",
+            'duplicate': _public_managed_channel(duplicated),
+        }), 409
     now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
     row = {
         'id': uuid.uuid4().hex[:12],
@@ -2415,6 +2460,15 @@ def channels_update(channel_id):
     row = {**current, **_clean_managed_channel(body, current), 'updated_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z'}
     if not row.get('platform') or not row.get('channel_name'):
         return jsonify({'ok': False, 'error': 'Thiếu nền tảng hoặc tên kênh'}), 400
+    if not row.get('target_id') and not row.get('link'):
+        return jsonify({'ok': False, 'error': 'Thiếu link hoặc ID'}), 400
+    duplicated = _find_duplicate_managed_channel(row, exclude_id=channel_id)
+    if duplicated:
+        return jsonify({
+            'ok': False,
+            'error': f"Kênh này đã có trong danh sách: {duplicated.get('channel_name') or duplicated.get('target_id') or duplicated.get('id')}",
+            'duplicate': _public_managed_channel(duplicated),
+        }), 409
     if USE_SUPABASE:
         try:
             row = {**row, **sb.update_managed_channel(channel_id, row, SUPABASE_CHANNEL_TABLE)}
