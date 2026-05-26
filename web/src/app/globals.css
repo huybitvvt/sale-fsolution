@@ -930,6 +930,38 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
 .empty-icon { font-size: 44px; margin-bottom: 10px; }
 .empty-title { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
 .empty-sub { font-size: 13px; }
+.empty .cookie-refresh-guide { max-width: 760px; margin: 18px auto 0; text-align: left; }
+
+.cookie-refresh-guide {
+  border: 1.5px solid #bfdbfe;
+  background: #f8fbff;
+  border-radius: 14px;
+  padding: 14px 16px;
+  color: #1f2937;
+}
+.cookie-refresh-guide.compact { margin-top: 12px; padding: 12px 14px; }
+.cookie-refresh-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.cookie-refresh-title span { font-size: 20px; line-height: 1; }
+.cookie-refresh-title b { display: block; color: #0f172a; font-size: 14px; }
+.cookie-refresh-title small { display: block; margin-top: 2px; color: #64748b; font-size: 12px; }
+.cookie-refresh-guide ol {
+  margin: 0;
+  padding-left: 22px;
+  display: grid;
+  gap: 6px;
+}
+.cookie-refresh-guide li { font-size: 12.5px; line-height: 1.45; }
+.cookie-refresh-note {
+  margin-top: 10px;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+}
 
 .lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.9); z-index: 1000; align-items: center; justify-content: center; }
 .lightbox.open { display: flex; }

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AuthPanel } from '@/components/AuthPanel';
 import { ChannelManagerPanel } from '@/components/ChannelManagerPanel';
 import { ConsoleHome } from '@/components/ConsoleHome';
+import { CookieRefreshGuide } from '@/components/CookieRefreshGuide';
 import { HistoryPanel } from '@/components/HistoryPanel';
 import { LeadManagerPanel } from '@/components/LeadManagerPanel';
 import { PostCard } from '@/components/PostCard';
@@ -1822,6 +1823,7 @@ export function MonitorPage() {
                 {feedError ? 'Lỗi xác thực Facebook' : keywords.length || catFilter ? 'Không có bài khớp bộ lọc' : 'Không có bài viết nào'}
               </div>
               {feedError ? <div className="empty-sub">{feedError}</div> : null}
+              {feedError ? <CookieRefreshGuide /> : null}
             </div>
           ) : (
             filteredPosts.map((p) => (
