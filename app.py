@@ -56,6 +56,7 @@ SUPABASE_PROFILE_TABLE = os.environ.get('SUPABASE_PROFILE_TABLE', 'business_prof
 SUPABASE_COMMENT_LOG_TABLE = os.environ.get('SUPABASE_COMMENT_LOG_TABLE', 'comment_logs')
 SUPABASE_COMMENT_SUMMARY_TABLE = os.environ.get('SUPABASE_COMMENT_SUMMARY_TABLE', 'post_comment_summaries')
 SUPABASE_POST_COMMENT_TABLE = os.environ.get('SUPABASE_POST_COMMENT_TABLE', 'post_comments')
+SUPABASE_LEAD_TABLE = os.environ.get('SUPABASE_LEAD_TABLE', 'leads')
 SUPABASE_STAFF_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 SUPABASE_CHANNEL_TABLE = os.environ.get('SUPABASE_CHANNEL_TABLE', 'managed_channels')
 SUPABASE_COMMENT_IMAGE_BUCKET = os.environ.get('SUPABASE_COMMENT_IMAGE_BUCKET', 'comment-images')
@@ -309,6 +310,250 @@ def _save_classifications(new_items=None):
 
 def _save_leads():
     _write_json(LEADS_FILE, _leads)
+
+
+def _lead_key(lead: dict) -> str:
+    base = '|'.join([
+        str(lead.get('platform') or lead.get('source_platform') or ''),
+        str(lead.get('post_id') or ''),
+        str(lead.get('comment_id') or lead.get('source_id') or ''),
+        str(lead.get('phone') or lead.get('customer_phone') or ''),
+    ]).strip('|')
+    if not base:
+        base = json.dumps(lead, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(base.encode('utf-8')).hexdigest()
+
+
+def _normalise_lead(lead: dict, post_id: str = '') -> dict:
+    if not isinstance(lead, dict):
+        lead = {}
+    phones = lead.get('phones') if isinstance(lead.get('phones'), list) else []
+    phone = str(lead.get('phone') or lead.get('customer_phone') or (phones[0] if phones else '') or '').strip()
+    if phone and phone not in phones:
+        phones = [phone, *phones]
+    phones = [str(item).strip() for item in phones if str(item or '').strip()]
+    pid = str(lead.get('post_id') or post_id or '').strip()
+    lead_source = str(lead.get('lead_source') or lead.get('source') or '').strip() or ('comment' if lead.get('comment_id') else 'post')
+    platform = str(lead.get('platform') or lead.get('source_platform') or '').strip().lower()
+    if not platform:
+        platform = 'tiktok' if str(pid).startswith('tiktok_') else 'facebook'
+    return {
+        **lead,
+        'lead_key': str(lead.get('lead_key') or _lead_key({**lead, 'post_id': pid, 'phone': phone})),
+        'platform': platform,
+        'post_id': pid,
+        'group_id': str(lead.get('group_id') or '').strip(),
+        'post_url': str(lead.get('post_url') or '').strip(),
+        'comment_id': str(lead.get('comment_id') or lead.get('source_id') or '').strip(),
+        'comment_url': str(lead.get('comment_url') or '').strip(),
+        'source': lead_source,
+        'source_id': str(lead.get('source_id') or lead.get('comment_id') or pid).strip(),
+        'name': str(lead.get('name') or lead.get('customer_name') or 'Ẩn danh').strip(),
+        'phone': phone,
+        'phones': phones,
+        'need': str(lead.get('need') or lead.get('customer_need') or lead.get('evidence') or '').strip(),
+        'intent': str(lead.get('intent') or 'phone_comment').strip(),
+        'product_or_service': str(lead.get('product_or_service') or '').strip(),
+        'location': str(lead.get('location') or '').strip(),
+        'budget': str(lead.get('budget') or '').strip(),
+        'urgency': str(lead.get('urgency') or 'medium').strip(),
+        'contact_status': 'has_phone' if phone else str(lead.get('contact_status') or 'no_phone'),
+        'confidence': float(lead.get('confidence') or (0.95 if phone else 0.6)),
+        'evidence': str(lead.get('evidence') or '').strip(),
+    }
+
+
+def _merge_leads_into_memory(leads: list[dict]) -> int:
+    global _leads
+    changed = 0
+    for lead in leads or []:
+        row = _normalise_lead(lead)
+        pid = row.get('post_id')
+        if not pid:
+            continue
+        bucket = _leads.setdefault(pid, [])
+        existing = {str(item.get('lead_key') or _lead_key(item)): idx for idx, item in enumerate(bucket)}
+        key = str(row.get('lead_key'))
+        public_row = {k: v for k, v in row.items() if k != 'raw_lead'}
+        if key in existing:
+            bucket[existing[key]] = {**bucket[existing[key]], **public_row}
+        else:
+            bucket.append(public_row)
+            changed += 1
+    if changed:
+        _save_leads()
+    return changed
+
+
+def _lead_to_supabase_row(lead: dict) -> dict:
+    row = _normalise_lead(lead)
+    staff = _current_staff()
+    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    return {
+        'lead_key': row.get('lead_key'),
+        'platform': row.get('platform'),
+        'lead_source': row.get('source'),
+        'source_id': row.get('source_id'),
+        'post_id': row.get('post_id'),
+        'group_id': row.get('group_id'),
+        'post_url': row.get('post_url'),
+        'comment_id': row.get('comment_id'),
+        'comment_url': row.get('comment_url'),
+        'customer_name': row.get('name'),
+        'customer_phone': row.get('phone'),
+        'phones': row.get('phones') or [],
+        'customer_need': row.get('need'),
+        'intent': row.get('intent'),
+        'product_or_service': row.get('product_or_service'),
+        'location': row.get('location'),
+        'budget': row.get('budget'),
+        'urgency': row.get('urgency'),
+        'contact_status': row.get('contact_status'),
+        'confidence': row.get('confidence'),
+        'evidence': row.get('evidence'),
+        'raw_lead': row,
+        'created_by_staff_id': staff.get('id', ''),
+        'created_by_staff_name': staff.get('name', ''),
+        'created_by_staff_username': staff.get('username', ''),
+        'created_at': row.get('created_at') or now,
+        'updated_at': now,
+    }
+
+
+def _save_leads_to_supabase(leads: list[dict]) -> tuple[bool, str]:
+    if not leads:
+        return True, ''
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False, 'Chưa cấu hình Supabase'
+    rows_by_key = {}
+    for lead in leads:
+        row = _lead_to_supabase_row(lead)
+        if row.get('lead_key'):
+            rows_by_key[row['lead_key']] = row
+    rows = list(rows_by_key.values())
+    if not rows:
+        return True, ''
+    headers = {
+        'apikey': SUPABASE_KEY,
+        'Authorization': f'Bearer {SUPABASE_KEY}',
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates,return=minimal',
+    }
+    try:
+        for i in range(0, len(rows), 200):
+            resp = _req.post(
+                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_LEAD_TABLE}?on_conflict=lead_key",
+                headers=headers,
+                json=rows[i:i + 200],
+                timeout=30,
+            )
+            if resp.status_code not in (200, 201, 204):
+                if resp.headers.get('content-type', '').startswith('application/json'):
+                    try:
+                        return False, (resp.json().get('message') or resp.text)[:300]
+                    except Exception:
+                        pass
+                return False, resp.text[:300]
+        return True, ''
+    except Exception as e:
+        return False, str(e)[:300]
+
+
+def _supabase_lead_row_to_public(row: dict) -> dict:
+    raw = row.get('raw_lead') if isinstance(row.get('raw_lead'), dict) else {}
+    return {
+        **raw,
+        'id': row.get('id'),
+        'lead_key': row.get('lead_key'),
+        'platform': row.get('platform') or raw.get('platform') or '',
+        'source': row.get('lead_source') or raw.get('source') or '',
+        'source_id': row.get('source_id') or raw.get('source_id') or '',
+        'post_id': row.get('post_id') or raw.get('post_id') or '',
+        'group_id': row.get('group_id') or raw.get('group_id') or '',
+        'post_url': row.get('post_url') or raw.get('post_url') or '',
+        'comment_id': row.get('comment_id') or raw.get('comment_id') or '',
+        'comment_url': row.get('comment_url') or raw.get('comment_url') or '',
+        'name': row.get('customer_name') or raw.get('name') or 'Ẩn danh',
+        'phone': row.get('customer_phone') or raw.get('phone') or '',
+        'phones': row.get('phones') or raw.get('phones') or [],
+        'need': row.get('customer_need') or raw.get('need') or '',
+        'intent': row.get('intent') or raw.get('intent') or '',
+        'product_or_service': row.get('product_or_service') or raw.get('product_or_service') or '',
+        'location': row.get('location') or raw.get('location') or '',
+        'budget': row.get('budget') or raw.get('budget') or '',
+        'urgency': row.get('urgency') or raw.get('urgency') or '',
+        'contact_status': row.get('contact_status') or raw.get('contact_status') or '',
+        'confidence': row.get('confidence') or raw.get('confidence') or 0,
+        'evidence': row.get('evidence') or raw.get('evidence') or '',
+        'created_at': row.get('created_at') or raw.get('created_at') or '',
+    }
+
+
+def _load_leads_from_supabase(limit: int = 3000) -> tuple[dict, str]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return {}, 'Chưa cấu hình Supabase'
+    try:
+        resp = _req.get(
+            f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_LEAD_TABLE}",
+            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+            params={
+                'select': '*',
+                'order': 'created_at.desc',
+                'limit': str(max(1, min(int(limit or 3000), 5000))),
+            },
+            timeout=30,
+        )
+        if resp.status_code not in (200, 206):
+            return {}, resp.text[:300]
+        grouped: dict[str, list] = {}
+        for row in resp.json() or []:
+            lead = _supabase_lead_row_to_public(row)
+            pid = str(lead.get('post_id') or '')
+            if pid:
+                grouped.setdefault(pid, []).append(lead)
+        return grouped, ''
+    except Exception as e:
+        return {}, str(e)[:300]
+
+
+def _comment_rows_to_phone_leads(rows: list[dict]) -> list[dict]:
+    leads: list[dict] = []
+    for row in rows or []:
+        message = str(row.get('message') or '').strip()
+        phones = extract_phones(message)
+        if not phones:
+            continue
+        public = _public_comment_row(row)
+        post_id = str(row.get('post_id') or '')
+        platform = str(row.get('source') or '').lower() or ('tiktok' if post_id.startswith('tiktok_') else 'facebook')
+        leads.append(_normalise_lead({
+            'platform': platform,
+            'source': 'comment',
+            'source_id': row.get('comment_id') or '',
+            'comment_id': row.get('comment_id') or '',
+            'post_id': post_id,
+            'group_id': row.get('group_id') or '',
+            'post_url': row.get('post_url') or '',
+            'comment_url': public.get('comment_url') or row.get('post_url') or '',
+            'name': row.get('author_name') or 'Ẩn danh',
+            'phone': phones[0],
+            'phones': phones,
+            'need': message[:220],
+            'intent': 'phone_comment',
+            'contact_status': 'has_phone',
+            'confidence': 0.95,
+            'evidence': message[:300],
+        }))
+    return leads
+
+
+def _sync_phone_leads_from_comment_rows(rows: list[dict]) -> tuple[int, str]:
+    leads = _comment_rows_to_phone_leads(rows)
+    if not leads:
+        return 0, ''
+    changed = _merge_leads_into_memory(leads)
+    ok, error = _save_leads_to_supabase(leads)
+    return changed, '' if ok else error
 
 
 def _save_reply_suggestions():
@@ -1102,6 +1347,7 @@ def _store_post_comment_rows(rows: list[dict]) -> tuple[str, str]:
         by_id[str(row.get('comment_id'))] = row
     _post_comments = list(by_id.values())[-5000:]
     _save_post_comments()
+    _sync_phone_leads_from_comment_rows(rows)
     ok, error = _save_post_comment_rows_to_supabase(rows)
     return ('supabase' if ok else 'local'), error
 
@@ -3121,6 +3367,16 @@ def ai_classifications_get():
 
 @app.route('/api/ai/leads', methods=['GET'])
 def ai_leads_get():
+    remote, warning = _load_leads_from_supabase()
+    if remote:
+        merged = {**_leads}
+        for post_id, items in remote.items():
+            merged_items = merged.setdefault(post_id, [])
+            by_key = {str(item.get('lead_key') or _lead_key(item)): item for item in merged_items}
+            for item in items:
+                by_key[str(item.get('lead_key') or _lead_key(item))] = item
+            merged[post_id] = list(by_key.values())
+        return jsonify(merged)
     return jsonify(_leads)
 
 
@@ -3241,11 +3497,41 @@ def ai_extract_leads():
             if pid:
                 _leads[pid] = results.get(pid, [])
         _save_leads()
+        flat_leads = [lead for items in results.values() for lead in (items or [])]
+        supabase_ok, supabase_error = _save_leads_to_supabase(flat_leads)
+    else:
+        supabase_ok, supabase_error = True, ''
 
     all_results = {p['id']: _leads.get(p['id'], []) for p in posts if p.get('id')}
     payload = {'ok': True, 'leads': all_results}
     if classifier.last_error:
         payload['warning'] = classifier.last_error
+    if not supabase_ok and supabase_error:
+        payload['warning'] = f"{payload.get('warning', '')} Đã lưu local, Supabase chưa ghi lead được: {supabase_error}".strip()
+    return jsonify(payload)
+
+
+@app.route('/api/leads/from-comments', methods=['POST'])
+def leads_from_comments():
+    source = str((request.get_json(silent=True) or {}).get('source') or request.args.get('source') or '').strip().lower()
+    post_id = str((request.get_json(silent=True) or {}).get('post_id') or request.args.get('post_id') or '').strip()
+    rows, warning = _load_post_comment_rows(source=source, post_id=post_id, limit=5000)
+    leads = _comment_rows_to_phone_leads(rows)
+    changed = _merge_leads_into_memory(leads)
+    supabase_ok, supabase_error = _save_leads_to_supabase(leads)
+    grouped = {}
+    for lead in leads:
+        grouped.setdefault(str(lead.get('post_id') or ''), []).append(lead)
+    payload = {
+        'ok': True,
+        'count': len(leads),
+        'new_count': changed,
+        'leads': grouped,
+        'storage': 'supabase' if supabase_ok else 'local',
+    }
+    final_warning = supabase_error or warning
+    if final_warning:
+        payload['warning'] = final_warning
     return jsonify(payload)
 
 

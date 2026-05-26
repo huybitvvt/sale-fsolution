@@ -66,15 +66,29 @@ export type BusinessProfile = {
 };
 
 export type Lead = {
+  id?: string | number;
+  lead_key?: string;
+  platform?: string;
   name?: string;
   phone?: string;
+  phones?: string[];
   need?: string;
   source?: string;
+  source_id?: string;
+  post_id?: string;
+  group_id?: string;
+  post_url?: string;
+  comment_id?: string;
+  comment_url?: string;
   product_or_service?: string;
   location?: string;
   budget?: string;
+  intent?: string;
+  urgency?: string;
+  contact_status?: string;
   confidence?: number;
   evidence?: string;
+  created_at?: string;
 };
 
 export type ReplySuggestion = {

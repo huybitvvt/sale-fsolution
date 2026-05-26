@@ -1181,6 +1181,26 @@ export function MonitorPage() {
     setTimeout(() => setAiStatus(''), 7000);
   }
 
+  async function syncPhoneLeadsFromComments() {
+    setLeadsBusy(true);
+    setAiStatus('⏳ Đang lấy SĐT từ comment đã lưu...');
+    try {
+      const r = await api('/api/leads/from-comments', { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        setLeads((prev) => ({ ...prev, ...(d.leads || {}) }));
+        setAiStatus(`✅ Đã đưa ${d.count || 0} lead có SĐT vào bảng Lead${d.storage ? ` · ${d.storage}` : ''}`);
+        if (d.warning) setTimeout(() => setAiStatus(`⚠️ ${d.warning}`), 1200);
+      } else {
+        setAiStatus(`❌ ${d.error || 'Không lấy được SĐT từ comment'}`);
+      }
+    } catch {
+      setAiStatus('❌ Lỗi kết nối khi lấy SĐT từ comment');
+    }
+    setLeadsBusy(false);
+    setTimeout(() => setAiStatus(''), 7000);
+  }
+
   async function classifyAll() {
     if (!allPosts.length) return;
     setClassifyBusy(true);
@@ -1493,7 +1513,7 @@ export function MonitorPage() {
             />
           ) : null}
           {activeView === 'history' ? <HistoryPanel rows={commentLogs} status={historyStatus} onReload={loadCommentLogs} /> : null}
-          {activeView === 'leads' ? <LeadManagerPanel leads={leads} onExtract={extractLeadsAll} /> : null}
+          {activeView === 'leads' ? <LeadManagerPanel leads={leads} onExtract={extractLeadsAll} onSyncPhones={syncPhoneLeadsFromComments} /> : null}
           {activeView === 'staff' ? (
             <StaffCookiePanel
               staff={staffRows}

@@ -5,7 +5,15 @@ import { pct } from '@/lib/format';
 
 type LeadRow = Lead & { post_id?: string };
 
-export function LeadManagerPanel({ leads, onExtract }: { leads: Record<string, Lead[]>; onExtract: () => Promise<void> }) {
+export function LeadManagerPanel({
+  leads,
+  onExtract,
+  onSyncPhones,
+}: {
+  leads: Record<string, Lead[]>;
+  onExtract: () => Promise<void>;
+  onSyncPhones: () => Promise<void>;
+}) {
   const rows: LeadRow[] = Object.entries(leads).flatMap(([postId, items]) => (items || []).map((item) => ({ ...item, post_id: postId })));
 
   return (
@@ -15,9 +23,14 @@ export function LeadManagerPanel({ leads, onExtract }: { leads: Record<string, L
           <div className="module-kicker">Lead</div>
           <h2>Khách hàng tiềm năng</h2>
         </div>
-        <button type="button" className="btn-submit" onClick={() => void onExtract()}>
-          Tách lead
-        </button>
+        <div className="module-actions">
+          <button type="button" className="btn-cancel" onClick={() => void onSyncPhones()}>
+            Lấy SĐT từ comment
+          </button>
+          <button type="button" className="btn-submit" onClick={() => void onExtract()}>
+            Tách lead AI
+          </button>
+        </div>
       </div>
       <div className="data-table-wrap">
         <table className="data-table">
@@ -28,6 +41,7 @@ export function LeadManagerPanel({ leads, onExtract }: { leads: Record<string, L
               <th>SĐT</th>
               <th>Nguồn</th>
               <th>Bài viết</th>
+              <th>Link</th>
               <th>Độ chắc</th>
             </tr>
           </thead>
@@ -41,15 +55,22 @@ export function LeadManagerPanel({ leads, onExtract }: { leads: Record<string, L
                   </td>
                   <td>{item.need || item.evidence || '-'}</td>
                   <td>{item.phone || '-'}</td>
-                  <td>{item.source === 'post' ? 'Bài viết' : 'Bình luận'}</td>
+                  <td>{item.platform ? `${item.platform} · ` : ''}{item.source === 'post' ? 'Bài viết' : 'Bình luận'}</td>
                   <td className="mono-cell">{item.post_id || '-'}</td>
+                  <td>
+                    {(item.comment_url || item.post_url) ? (
+                      <a href={item.comment_url || item.post_url} target="_blank" rel="noreferrer">
+                        Mở
+                      </a>
+                    ) : '-'}
+                  </td>
                   <td>{pct(item.confidence) || '-'}</td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan={6} className="table-empty">
-                  Chưa có lead. Bấm Tách lead sau khi tải bài viết.
+                <td colSpan={7} className="table-empty">
+                  Chưa có lead. Bấm Lấy SĐT từ comment hoặc Tách lead AI sau khi tải bài/comment.
                 </td>
               </tr>
             )}
