@@ -18,7 +18,7 @@ type Props = {
   busy: boolean;
   onSave: (payload: Payload, id?: string) => Promise<boolean>;
   onDelete: (id: string) => Promise<void>;
-  onReload: () => Promise<void>;
+  onReload: () => Promise<unknown>;
 };
 
 const EMPTY: Payload = {

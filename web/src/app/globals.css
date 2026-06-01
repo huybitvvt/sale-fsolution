@@ -985,6 +985,8 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
 .staff-modal { width: 680px; }
 .staff-modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .staff-cookie-field { grid-column: 1 / -1; }
+.staff-cookie-tools { display: flex; align-items: center; gap: 10px; margin: 6px 0 8px; color: #64748b; font-size: 12px; flex-wrap: wrap; }
+.staff-cookie-tools .btn-cancel { padding: 8px 12px; border-radius: 999px; }
 .staff-cookie-field textarea { min-height: 120px; resize: vertical; }
 .staff-modal-actions { display: flex; gap: 8px; align-items: center; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }

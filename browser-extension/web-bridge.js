@@ -20,6 +20,32 @@
       return;
     }
 
+    if (data.type === 'STREAL_FACEBOOK_COOKIE_REQUEST') {
+      chrome.runtime.sendMessage(
+        {
+          type: 'STREAL_EXTENSION_GET_FACEBOOK_COOKIE',
+          requestId: data.requestId,
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            postToPage({
+              type: 'STREAL_FACEBOOK_COOKIE_RESPONSE',
+              requestId: data.requestId,
+              ok: false,
+              error: chrome.runtime.lastError.message || 'Extension khong phan hoi',
+            });
+            return;
+          }
+          postToPage({
+            type: 'STREAL_FACEBOOK_COOKIE_RESPONSE',
+            requestId: data.requestId,
+            ...(response || { ok: false, error: 'Extension khong tra cookie' }),
+          });
+        },
+      );
+      return;
+    }
+
     if (data.type !== 'STREAL_TIKTOK_COMMENT_REQUEST') return;
 
     chrome.runtime.sendMessage(

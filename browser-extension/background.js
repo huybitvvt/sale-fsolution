@@ -55,6 +55,30 @@ function getTikTokCookies() {
   });
 }
 
+function getFacebookCookies() {
+  return new Promise((resolve) => {
+    chrome.cookies.getAll({ domain: '.facebook.com' }, (cookies) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, cookie: '', c_user: '', error: chrome.runtime.lastError.message });
+        return;
+      }
+      const rows = Array.isArray(cookies) ? cookies : [];
+      const cookie = rows.map((item) => `${item.name}=${item.value}`).join('; ');
+      const cUser = rows.find((item) => item.name === 'c_user')?.value || '';
+      if (!cookie || !cUser) {
+        resolve({
+          ok: false,
+          cookie: '',
+          c_user: '',
+          error: 'Chrome chua dang nhap Facebook hoac extension chua du quyen doc cookie facebook.com.',
+        });
+        return;
+      }
+      resolve({ ok: true, cookie, c_user: cUser, error: '' });
+    });
+  });
+}
+
 async function publishCommentFromBackground(payload, url, previousError) {
   const text = String(payload.message || payload.text || '').trim();
   const videoId = getVideoId(payload, url);
@@ -225,6 +249,12 @@ async function handleSendComment(request) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'STREAL_EXTENSION_GET_FACEBOOK_COOKIE') {
+    getFacebookCookies()
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, cookie: '', error: error?.message || String(error) }));
+    return true;
+  }
   if (message?.type !== 'STREAL_EXTENSION_SEND_COMMENT') return false;
   handleSendComment(message)
     .then((response) => sendResponse(response))

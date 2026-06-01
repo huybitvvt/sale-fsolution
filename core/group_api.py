@@ -127,6 +127,21 @@ class FacebookGroupAPI:
         )
         return resp.json()
 
+    def get_page_posts(self, page_id: str, page_token: str, limit: int = 10) -> Optional[List[Dict]]:
+        resp = requests.get(
+            f'{GRAPH_URL}/{page_id}/posts',
+            params={
+                'access_token': page_token,
+                'fields': 'id,message,from,created_time,updated_time,is_hidden,permalink_url,attachments,comments.limit(50).summary(true){id,message,from,created_time},reactions.limit(0).summary(true),shares',
+                'limit': limit,
+            },
+            timeout=30,
+        )
+        data = resp.json()
+        if data.get('error'):
+            return None
+        return data.get('data') or []
+
     def get_pages(self) -> Optional[list]:
         data = self._call('get', f'{GRAPH_URL}/me/accounts', params={'fields': 'id,name,access_token'})
         return data.get('data') if data else None
@@ -144,19 +159,30 @@ class FacebookGroupAPI:
         )
         return resp.json()
 
-    def get_post_comments(self, post_id: str, limit: int = 500) -> Optional[dict]:
+    def get_post_comments(self, post_id: str, limit: int = 500, access_token: str = None) -> Optional[dict]:
         comments: List[Dict] = []
+        token = access_token or self.access_token
         fields = 'id,message,from,created_time,attachment,comments.limit(50).summary(true){id,message,from,created_time,attachment}'
         page_limit = min(max(limit, 1), 100)
         params = {
+            'access_token': token,
             'fields': fields,
             'limit': page_limit,
             'summary': 'true',
             'filter': 'stream',
         }
-        data = self._call('get', f'{GRAPH_URL}/{post_id}/comments', params=dict(params))
+        resp = requests.get(f'{GRAPH_URL}/{post_id}/comments', params=dict(params), timeout=30)
+        data = resp.json()
         if data and data.get('error') and '_' in str(post_id):
-            data = self._call('get', f'{GRAPH_URL}/{_post_object_id(post_id)}/comments', params=dict(params))
+            resp = requests.get(f'{GRAPH_URL}/{_post_object_id(post_id)}/comments', params=dict(params), timeout=30)
+            data = resp.json()
+        if data and self._is_expired(data) and not access_token:
+            new_token = refresh_token(self.cookie, self.token_file)
+            if new_token:
+                self.access_token = new_token
+                params['access_token'] = self.access_token
+                resp = requests.get(f'{GRAPH_URL}/{post_id}/comments', params=dict(params), timeout=30)
+                data = resp.json()
         if data is None:
             return None
         if data.get('error'):

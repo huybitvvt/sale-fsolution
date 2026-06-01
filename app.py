@@ -1467,8 +1467,10 @@ def _iso_from_unix(value) -> str:
 def _flatten_facebook_comment_rows(post: dict, comments: list, keywords: list[str], fetched_at: str, staff: dict) -> list[dict]:
     rows: list[dict] = []
     post_id = str(post.get('id') or '')
-    group_id = str(post.get('_group_id') or DEFAULT_GROUP)
+    page_id = str(post.get('_page_id') or '')
+    group_id = str(post.get('_group_id') or page_id or DEFAULT_GROUP)
     post_url = post.get('permalink_url') or ''
+    source = 'facebook_page' if page_id else 'facebook'
 
     def walk(items: list, parent_id: str = '', depth: int = 0):
         for item in items or []:
@@ -1481,7 +1483,7 @@ def _flatten_facebook_comment_rows(post: dict, comments: list, keywords: list[st
             message = item.get('message') or ''
             matched = _match_comment_keywords(message, keywords)
             rows.append({
-                'source': 'facebook',
+                'source': source,
                 'post_id': post_id,
                 'group_id': group_id,
                 'post_url': post_url,
@@ -2456,6 +2458,7 @@ def api_posts():
     global _seen_ids
     limit = request.args.get('limit', 10, type=int)
     group_ids = [g.strip() for g in request.args.get('groups', DEFAULT_GROUP).split(',') if g.strip()]
+    page_ids = [p.strip() for p in request.args.get('pages', '').split(',') if p.strip()]
     debug = request.args.get('debug', '').lower() in ('1', 'true', 'yes')
     is_first = len(_seen_ids) == 0
 
@@ -2480,6 +2483,8 @@ def api_posts():
             all_posts.extend(posts)
             report.append({
                 'group_id': gid,
+                'target_type': 'group',
+                'target_id': gid,
                 'group_name': next((g.get('name') for g in _merged_facebook_groups() if g.get('id') == gid), gid),
                 'ok': True,
                 'count': len(posts or []),
@@ -2487,9 +2492,46 @@ def api_posts():
                 'error': '',
             })
 
-        if group_ids and not all_posts and any(not item.get('ok') for item in report):
+        for page_id in page_ids:
+            page_name = next((item.get('channel_name') for item in _managed_channels if str(item.get('target_id') or '') == page_id), '')
+            try:
+                page_token = _page_token_from_cache(page_id)
+                if not page_token:
+                    raise RuntimeError('Không lấy được Page token')
+                posts = get_api(DEFAULT_GROUP).get_page_posts(page_id, page_token, limit)
+            except Exception:
+                posts = None
+            if posts is None:
+                report.append({
+                    'group_id': page_id,
+                    'target_type': 'page',
+                    'target_id': page_id,
+                    'group_name': page_name or page_id,
+                    'ok': False,
+                    'count': 0,
+                    'source': 'facebook_page_graph',
+                    'error': 'Không đọc được bài từ Page. Kiểm tra quyền quản trị Page và cookie.',
+                })
+                continue
+            for p in posts:
+                p['_page_id'] = page_id
+                p['_page_name'] = page_name or (_pages_cache.get(page_id) or {}).get('name') or page_id
+                p['_source'] = 'facebook_page_graph'
+            all_posts.extend(posts)
+            report.append({
+                'group_id': page_id,
+                'target_type': 'page',
+                'target_id': page_id,
+                'group_name': page_name or (_pages_cache.get(page_id) or {}).get('name') or page_id,
+                'ok': True,
+                'count': len(posts or []),
+                'source': 'facebook_page_graph',
+                'error': '',
+            })
+
+        if (group_ids or page_ids) and not all_posts and any(not item.get('ok') for item in report):
             payload = {
-                'error': 'Không lấy được bài từ Facebook. Kiểm tra cookie nhân sự và quyền vào các nhóm.',
+                'error': 'Không lấy được bài từ Facebook. Kiểm tra cookie nhân sự, quyền nhóm/Page và quyền quản trị Page.',
                 'posts': [],
                 'report': report,
                 'source': 'facebook_graph',
@@ -2596,7 +2638,7 @@ def api_comment():
     if not post_id or (not message and not image_url):
         return jsonify({'ok': False, 'error': 'Thiếu post_id hoặc nội dung/ảnh bình luận'}), 400
     try:
-        page_token = _pages_cache.get(page_id, {}).get('access_token') if page_id else None
+        page_token = _page_token_from_cache(page_id) if page_id else None
         result = get_api(group_id).post_comment(post_id, message, page_token, image_url)
         if result and 'id' in result:
             log_text = message or '[Bình luận bằng ảnh]'
@@ -2658,11 +2700,18 @@ def fetch_facebook_post_comments():
     keywords = _normalize_keywords(body.get('keywords') or [])
     limit = max(1, min(int(body.get('limit') or 500), 1000))
     post_id = str(post.get('id'))
-    group_id = str(post.get('_group_id') or DEFAULT_GROUP)
+    page_id = str(post.get('_page_id') or body.get('page_id') or '').strip()
+    group_id = str(post.get('_group_id') or page_id or DEFAULT_GROUP)
     try:
-        loaded = get_api(group_id).get_post_comments(post_id, limit=limit)
+        if page_id:
+            page_token = _page_token_from_cache(page_id)
+            if not page_token:
+                return jsonify({'ok': False, 'error': 'Không lấy được Page token. Kiểm tra quyền quản trị Page/cookie.'}), 502
+            loaded = get_api(DEFAULT_GROUP).get_post_comments(post_id, limit=limit, access_token=page_token)
+        else:
+            loaded = get_api(group_id).get_post_comments(post_id, limit=limit)
         if loaded is None:
-            return jsonify({'ok': False, 'error': 'Không đọc được bình luận Facebook. Kiểm tra cookie/quyền nhóm.'}), 502
+            return jsonify({'ok': False, 'error': 'Không đọc được bình luận Facebook. Kiểm tra cookie/quyền nhóm/Page.'}), 502
         comments = loaded.get('comments') or []
         total_count = int(loaded.get('total_count') or len(comments))
         fetched_at = datetime.utcnow().isoformat(timespec='seconds') + 'Z'

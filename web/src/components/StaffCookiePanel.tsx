@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { CookieRefreshGuide } from '@/components/CookieRefreshGuide';
 import type { StaffAccount } from '@/lib/types';
 
@@ -51,6 +51,30 @@ export function StaffCookiePanel({
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState('');
   const [form, setForm] = useState<StaffPayload>(EMPTY);
+  const [bridgeReady, setBridgeReady] = useState(false);
+  const [cookieBridgeStatus, setCookieBridgeStatus] = useState('');
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== window) return;
+      const data = event.data || {};
+      if (data.source !== 'streal-tiktok-extension') return;
+      if (data.type === 'STREAL_TIKTOK_BRIDGE_READY') {
+        setBridgeReady(true);
+      }
+    };
+    window.addEventListener('message', onMessage);
+    window.postMessage(
+      {
+        source: 'streal-web-page',
+        type: 'STREAL_TIKTOK_BRIDGE_PING',
+        requestId: `staff_cookie_ping_${Date.now()}`,
+      },
+      window.location.origin,
+    );
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -93,6 +117,40 @@ export function StaffCookiePanel({
     e.preventDefault();
     const ok = await onSave(form, editingId || undefined);
     if (ok) resetModal();
+  }
+
+  function getFacebookCookieFromChrome() {
+    if (typeof window === 'undefined') return;
+    setCookieBridgeStatus('Đang lấy cookie Facebook từ Chrome...');
+    const requestId = `fb_cookie_${Date.now()}`;
+    const timer = window.setTimeout(() => {
+      window.removeEventListener('message', onMessage);
+      setCookieBridgeStatus('Không thấy extension phản hồi. Hãy cài/cập nhật ST.Real Social Bridge rồi thử lại.');
+    }, 12000);
+
+    function onMessage(event: MessageEvent) {
+      if (event.source !== window) return;
+      const data = event.data || {};
+      if (data.source !== 'streal-tiktok-extension' || data.type !== 'STREAL_FACEBOOK_COOKIE_RESPONSE' || data.requestId !== requestId) return;
+      window.clearTimeout(timer);
+      window.removeEventListener('message', onMessage);
+      if (data.ok && data.cookie) {
+        setField('cookie', data.cookie);
+        setCookieBridgeStatus(`Đã lấy cookie Facebook từ Chrome${data.c_user ? ` · c_user=${data.c_user}` : ''}.`);
+      } else {
+        setCookieBridgeStatus(data.error || 'Không lấy được cookie Facebook từ Chrome.');
+      }
+    }
+
+    window.addEventListener('message', onMessage);
+    window.postMessage(
+      {
+        source: 'streal-web-page',
+        type: 'STREAL_FACEBOOK_COOKIE_REQUEST',
+        requestId,
+      },
+      window.location.origin,
+    );
   }
 
   return (
@@ -230,11 +288,18 @@ export function StaffCookiePanel({
             </div>
             <div className="field staff-cookie-field">
               <label>Cookie Facebook</label>
+              <div className="staff-cookie-tools">
+                <button type="button" className="btn-cancel" onClick={getFacebookCookieFromChrome}>
+                  Lấy từ Chrome
+                </button>
+                <span>{bridgeReady ? 'Extension đã kết nối' : 'Có thể dán thủ công nếu chưa cài extension'}</span>
+              </div>
               <textarea
                 value={form.cookie}
                 onChange={(e) => setField('cookie', e.target.value)}
                 placeholder={editingId ? 'Dán cookie mới nếu cần đổi' : 'Dán cookie Facebook có c_user=...'}
               />
+              {cookieBridgeStatus ? <div className="modal-result">{cookieBridgeStatus}</div> : null}
             </div>
           </div>
           <CookieRefreshGuide compact />

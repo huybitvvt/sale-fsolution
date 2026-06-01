@@ -23,6 +23,9 @@ export type FbPost = {
   permalink_url?: string;
   is_hidden?: boolean;
   _group_id?: string;
+  _page_id?: string;
+  _page_name?: string;
+  _source?: string;
   reactions?: { summary?: { total_count?: number } };
   shares?: { count?: number };
   comments?: { data?: FbComment[]; summary?: { total_count?: number } };

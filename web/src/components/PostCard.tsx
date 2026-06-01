@@ -83,7 +83,9 @@ export function PostCard({
   const long = text.length > 300;
   const pid = postShortId(post);
   const gid = post._group_id || '';
+  const pageIdFromPost = post._page_id || '';
   const gName = gid && groupNames[gid] ? groupNames[gid] : gid;
+  const pageName = post._page_name || pageIdFromPost;
 
   const [expanded, setExpanded] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false);
@@ -148,11 +150,11 @@ export function PostCard({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           post_id: post.id,
-          group_id: gid,
+          group_id: gid || pageIdFromPost,
           post_url: post.permalink_url || '',
           message,
           image_url: image,
-          page_id: pageId,
+          page_id: pageId || pageIdFromPost,
         }),
       });
       const d = await r.json();
@@ -215,6 +217,14 @@ export function PostCard({
                 <span className="meta-dot" />
                 <span className="badge badge-group" title={`${gName}\nID: ${gid}`}>
                   📋 {gName}
+                </span>
+              </>
+            ) : null}
+            {pageIdFromPost ? (
+              <>
+                <span className="meta-dot" />
+                <span className="badge badge-group" title={`${pageName}\nID: ${pageIdFromPost}`}>
+                  📄 {pageName}
                 </span>
               </>
             ) : null}

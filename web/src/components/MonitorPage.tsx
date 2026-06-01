@@ -64,6 +64,8 @@ type TikTokBridgeResult = {
 };
 type PostFetchReport = {
   group_id?: string;
+  target_type?: 'group' | 'page' | string;
+  target_id?: string;
   group_name?: string;
   ok?: boolean;
   count?: number;
@@ -171,12 +173,16 @@ export function MonitorPage() {
 
   const autoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const groupsRef = useRef<string[]>([]);
+  const channelsRef = useRef<ManagedChannel[]>([]);
   const limitRef = useRef(10);
   const autoOnRef = useRef(false);
 
   useEffect(() => {
     groupsRef.current = groups;
   }, [groups]);
+  useEffect(() => {
+    channelsRef.current = channels;
+  }, [channels]);
   useEffect(() => {
     limitRef.current = limit;
   }, [limit]);
@@ -269,14 +275,18 @@ export function MonitorPage() {
       const r = await api('/api/channels');
       const d = await r.json();
       if (d.ok) {
-        setChannels(d.channels || []);
+        const rows = d.channels || [];
+        channelsRef.current = rows;
+        setChannels(rows);
         setChannelStatus('');
+        return rows as ManagedChannel[];
       } else {
         setChannelStatus('❌ ' + (d.error || 'Không tải được danh sách kênh'));
       }
     } catch {
       setChannelStatus('❌ Lỗi kết nối khi tải kênh');
     }
+    return [] as ManagedChannel[];
   }, []);
 
   const loadContentPipeline = useCallback(async () => {
@@ -339,7 +349,9 @@ export function MonitorPage() {
       });
       const d = await r.json();
       if (d.ok) {
-        setChannels(d.channels || []);
+        const rows = d.channels || [];
+        channelsRef.current = rows;
+        setChannels(rows);
         setChannelStatus(id ? '✅ Đã cập nhật kênh' : '✅ Đã thêm kênh');
         const saved = d.channel || payload;
         if ((saved.platform || '').toLowerCase() === 'facebook' && ['Nhóm', 'Nhom', 'Group'].includes(saved.channel_type || '') && saved.target_id) {
@@ -365,7 +377,9 @@ export function MonitorPage() {
       const r = await api(`/api/channels/${id}`, { method: 'DELETE' });
       const d = await r.json();
       if (d.ok) {
-        setChannels(d.channels || []);
+        const rows = d.channels || [];
+        channelsRef.current = rows;
+        setChannels(rows);
         setChannelStatus('✅ Đã xoá kênh');
       } else {
         setChannelStatus('❌ ' + (d.error || 'Không xoá được kênh'));
@@ -434,14 +448,25 @@ export function MonitorPage() {
 
   const loadPosts = useCallback(async (): Promise<FbPost[] | null> => {
     const gids = groupsRef.current;
+    const pageIds = channelsRef.current
+      .filter((item) => (item.platform || '').toLowerCase() === 'facebook')
+      .filter((item) => ['page', 'fanpage'].includes((item.channel_type || '').trim().toLowerCase()))
+      .map((item) => item.target_id || '')
+      .filter(Boolean);
     const lim = limitRef.current;
-    if (!gids.length) return null;
+    if (!gids.length && !pageIds.length) return null;
     setLoading(true);
     setFeedError('');
     setPostFetchReport([]);
     setToolStatus('Đang tải...');
     try {
-      const res = await api(`/api/posts?debug=1&limit=${lim}&groups=${gids.join(',')}`);
+      const params = new URLSearchParams({
+        debug: '1',
+        limit: String(lim),
+        groups: gids.join(','),
+        pages: pageIds.join(','),
+      });
+      const res = await api(`/api/posts?${params.toString()}`);
       const data = await res.json();
       if (!res.ok || data.error) {
         setPostFetchReport(Array.isArray(data.report) ? data.report : []);
@@ -472,9 +497,12 @@ export function MonitorPage() {
       rows.forEach((p: FbPost) => knownSet.add(p.id));
       const nextKnown = [...knownSet].slice(-500);
       if (typeof window !== 'undefined') localStorage.setItem('seenIds', JSON.stringify(nextKnown));
-      const okGroups = report.filter((item) => item.ok).length;
-      const failedGroups = report.filter((item) => !item.ok).length;
-      const reportText = report.length ? ` · Facebook thật · ${okGroups}/${report.length} nhóm đọc được${failedGroups ? ` · ${failedGroups} nhóm lỗi` : ''}` : '';
+      const okTargets = report.filter((item) => item.ok).length;
+      const failedTargets = report.filter((item) => !item.ok).length;
+      const pageCount = report.filter((item) => item.target_type === 'page').length;
+      const groupCount = report.filter((item) => item.target_type !== 'page').length;
+      const targetText = [groupCount ? `${groupCount} nhóm` : '', pageCount ? `${pageCount} page` : ''].filter(Boolean).join(', ');
+      const reportText = report.length ? ` · Facebook thật · ${okTargets}/${report.length} nguồn đọc được${targetText ? ` (${targetText})` : ''}${failedTargets ? ` · ${failedTargets} nguồn lỗi` : ''}` : '';
       const base = `${rows.length} bài · ${now}${reportText}`;
       statusBaseRef.current = base;
       const nb = fresh.length && knownSet.size > fresh.length ? ` +${fresh.length} mới` : '';
@@ -495,9 +523,11 @@ export function MonitorPage() {
       const n = groupNames[groups[0]!] || groups[0];
       setHeaderSub(n || '...');
     } else {
-      setHeaderSub(groups.length ? `${groups.length} nhóm đang theo dõi` : '...');
+      const pageCount = channels.filter((item) => (item.platform || '').toLowerCase() === 'facebook' && ['page', 'fanpage'].includes((item.channel_type || '').trim().toLowerCase())).length;
+      const parts = [groups.length ? `${groups.length} nhóm` : '', pageCount ? `${pageCount} page` : ''].filter(Boolean);
+      setHeaderSub(parts.length ? `${parts.join(' · ')} đang theo dõi` : '...');
     }
-  }, [groups, groupNames]);
+  }, [channels, groups, groupNames]);
 
   const matchKw = useCallback(
     (post: FbPost) => {
@@ -1875,7 +1905,7 @@ export function MonitorPage() {
             <div className="post-fetch-report-list">
               {postFetchReport.map((item) => (
                 <span key={item.group_id || item.group_name} className={`post-fetch-pill ${item.ok ? 'ok' : 'fail'}`}>
-                  {item.ok ? '✅' : '⚠️'} {item.group_name || item.group_id}: {item.count || 0} bài
+                  {item.ok ? '✅' : '⚠️'} {item.target_type === 'page' ? 'Page' : 'Nhóm'} {item.group_name || item.group_id}: {item.count || 0} bài
                   {item.error ? ` · ${item.error}` : ''}
                 </span>
               ))}
