@@ -996,7 +996,7 @@ export function MonitorPage() {
         cleanup();
         resolve({
           ok: false,
-          error: 'Không thấy extension phản hồi. Hãy cài/bật ST.Real TikTok Bridge rồi tải lại trang.',
+          error: 'Không thấy extension phản hồi. Hãy cài/bật Seeding Fsolution Bridge rồi tải lại trang.',
         });
       }, 120000);
 
@@ -1059,7 +1059,7 @@ export function MonitorPage() {
       return;
     }
     if (!tiktokBridgeReady) {
-      setTiktokCommentStatus('Chưa thấy extension ST.Real TikTok Bridge. Cài extension, đăng nhập TikTok trên Chrome rồi tải lại trang.');
+      setTiktokCommentStatus('Chưa thấy extension Seeding Fsolution Bridge. Cài extension, đăng nhập TikTok trên Chrome rồi tải lại trang.');
       return;
     }
     setTiktokCommentBusy(true);
@@ -1521,9 +1521,9 @@ export function MonitorPage() {
     return (
       <main className="auth-page">
         <div className="auth-loading">
-          <img src="/st-real-logo.jpg" alt="ST.Real" />
+          <img src="/st-real-logo.jpg" alt="Seeding Fsolution" />
           <div>
-            <b>ST.Real Social Console</b>
+            <b>Seeding Fsolution</b>
             <span>Đang kiểm tra phiên đăng nhập...</span>
           </div>
         </div>
@@ -1548,7 +1548,7 @@ export function MonitorPage() {
     <>
       <div className="console-shell">
         <aside className="console-rail">
-          <img className="console-logo" src="/st-real-logo.jpg" alt="ST.Real" />
+          <img className="console-logo" src="/st-real-logo.jpg" alt="Seeding Fsolution" />
           {navItems.map((item) => (
             <button
               key={item.key}
@@ -1570,7 +1570,7 @@ export function MonitorPage() {
             <div>
               <div className="console-page-title">{navItems.find((item) => item.key === activeView)?.label || 'Trang chủ'}</div>
               <div className="console-page-sub" title={groups.length === 1 ? `ID: ${groups[0]}` : ''}>
-                {activeView === 'manage' ? headerSub : 'ST.Real Social Console'}
+                {activeView === 'manage' ? headerSub : 'Seeding Fsolution'}
               </div>
             </div>
             <div className="header-spacer" />

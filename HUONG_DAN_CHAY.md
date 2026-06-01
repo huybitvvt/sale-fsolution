@@ -1,9 +1,9 @@
-# Huong dan chay cho khach clone
+# Huong dan chay Seeding Fsolution cho khach clone
 
 ## 1. Cai dat
 
 ```powershell
-cd E:\fb-moni
+cd E:\Seeding-Fsolution
 python -m pip install -r requirements.txt
 cd web
 npm install
@@ -24,6 +24,7 @@ APP_SECRET_KEY=doi_chuoi_nay_thanh_chuoi_dai_ngau_nhien
 ```
 
 Trong `web`, copy `web/.env.local.example` thanh `web/.env.local` neu can doi backend URL.
+Khi deploy Vercel moi, phai thay `API_PROXY_BASE_URL` bang domain backend moi, khong dung domain cua ban cu.
 
 ## 3. Tao bang Supabase
 
@@ -97,7 +98,7 @@ Lam theo thu tu:
 2. Bam `Load unpacked`.
 3. Chon thu muc `browser-extension`.
 4. Dang nhap TikTok tren Chrome.
-5. Mo web ST.Real Social Console va bam `Gui CMT TikTok`.
+5. Mo web Seeding Fsolution va bam `Gui CMT TikTok`.
 
 Khong can dan cookie TikTok vao web de gui comment. Neu TikTok bat dang nhap lai, dang nhap truc tiep tren tab TikTok roi bam gui lai.
 

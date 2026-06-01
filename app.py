@@ -445,7 +445,7 @@ def _fetch_pipeline_rss(source: dict, limit: int = 12) -> list[dict]:
         return []
     resp = _req.get(
         url,
-        headers={'User-Agent': 'Mozilla/5.0 ST.Real Social Console/1.0'},
+        headers={'User-Agent': 'Mozilla/5.0 Seeding Fsolution/1.0'},
         timeout=15,
     )
     resp.raise_for_status()
@@ -498,7 +498,7 @@ def _pipeline_write_article(article: dict, fmt: str) -> dict:
     hashtags = '#STReal #Marketing #AIContent'
     classifier = _get_classifier()
     if classifier.api_key:
-        prompt = f"""Bạn là content marketer tiếng Việt cho ST.Real Social Console.
+        prompt = f"""Bạn là content marketer tiếng Việt cho Seeding Fsolution.
 
 Viết lại tin sau thành một bài đăng Facebook/LinkedIn chuyên nghiệp.
 - Format: {fmt_label}
