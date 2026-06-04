@@ -389,6 +389,27 @@ export function MonitorPage() {
     }
   }, []);
 
+  const syncFacebookPages = useCallback(async () => {
+    setChannelBusy(true);
+    setChannelStatus('Đang đồng bộ Page Facebook từ cookie hiện tại...');
+    try {
+      const r = await api('/api/channels/sync-facebook-pages', { method: 'POST' });
+      const d = await r.json().catch(() => ({ ok: false, error: `Server lỗi ${r.status}` }));
+      if (d.ok) {
+        const rows = Array.isArray(d.channels) ? d.channels : [];
+        channelsRef.current = rows;
+        setChannels(rows);
+        setChannelStatus(`✅ Đã đồng bộ Page Facebook: thêm ${d.added || 0}, cập nhật ${d.updated || 0}`);
+      } else {
+        setChannelStatus('❌ ' + (d.error || 'Không đồng bộ được Page Facebook'));
+      }
+    } catch {
+      setChannelStatus('❌ Lỗi kết nối khi đồng bộ Page Facebook');
+    } finally {
+      setChannelBusy(false);
+    }
+  }, []);
+
   const loadCommentLogs = useCallback(async () => {
     setHistoryStatus('Đang tải lịch sử...');
     try {
@@ -1592,6 +1613,7 @@ export function MonitorPage() {
               onSave={saveChannel}
               onDelete={deleteChannel}
               onReload={loadChannels}
+              onSyncFacebookPages={syncFacebookPages}
             />
           ) : null}
           {activeView === 'history' ? <HistoryPanel rows={commentLogs} status={historyStatus} onReload={loadCommentLogs} /> : null}
@@ -1903,8 +1925,11 @@ export function MonitorPage() {
           <div className="post-fetch-report">
             <div className="post-fetch-report-head">Nguồn bài viết: Facebook Graph API thật</div>
             <div className="post-fetch-report-list">
-              {postFetchReport.map((item) => (
-                <span key={item.group_id || item.group_name} className={`post-fetch-pill ${item.ok ? 'ok' : 'fail'}`}>
+              {postFetchReport.map((item, index) => (
+                <span
+                  key={`${item.target_type || 'source'}-${item.group_id || item.group_name || 'unknown'}-${index}`}
+                  className={`post-fetch-pill ${item.ok ? 'ok' : 'fail'}`}
+                >
                   {item.ok ? '✅' : '⚠️'} {item.target_type === 'page' ? 'Page' : 'Nhóm'} {item.group_name || item.group_id}: {item.count || 0} bài
                   {item.error ? ` · ${item.error}` : ''}
                 </span>

@@ -19,6 +19,7 @@ type Props = {
   onSave: (payload: Payload, id?: string) => Promise<boolean>;
   onDelete: (id: string) => Promise<void>;
   onReload: () => Promise<unknown>;
+  onSyncFacebookPages?: () => Promise<unknown>;
 };
 
 const EMPTY: Payload = {
@@ -33,7 +34,7 @@ const EMPTY: Payload = {
 const PLATFORM_OPTIONS = ['Facebook', 'TikTok', 'YouTube', 'Instagram', 'Zalo'];
 const TYPE_OPTIONS = ['Page', 'Video', 'Nhóm'];
 
-export function ChannelManagerPanel({ channels, status, busy, onSave, onDelete, onReload }: Props) {
+export function ChannelManagerPanel({ channels, status, busy, onSave, onDelete, onReload, onSyncFacebookPages }: Props) {
   const [form, setForm] = useState<Payload>(EMPTY);
   const [editingId, setEditingId] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
@@ -119,6 +120,14 @@ export function ChannelManagerPanel({ channels, status, busy, onSave, onDelete, 
     const normalizedType = form.channel_type.trim().toLowerCase();
     const normalizedId = form.target_id.trim();
     const normalizedLink = form.link.trim().replace(/\/+$/, '').toLowerCase();
+    if (
+      normalizedPlatform === 'facebook' &&
+      ['page', 'fanpage', 'trang'].includes(normalizedType) &&
+      /facebook\.com\/(?:groups|group)\//.test(normalizedLink)
+    ) {
+      setFormError('Link này là link Nhóm Facebook. Hãy đổi Loại thành "Nhóm", hoặc dán đúng link Page.');
+      return;
+    }
     const duplicated = channels.find((item) => {
       if ((item.id || '') === editingId) return false;
       const sameIdentity =
@@ -149,6 +158,11 @@ export function ChannelManagerPanel({ channels, status, busy, onSave, onDelete, 
           <button type="button" className="table-icon-button" title="Tải lại" onClick={() => void onReload()}>
             ↻
           </button>
+          {onSyncFacebookPages ? (
+            <button type="button" className="btn-cancel" disabled={busy} onClick={() => void onSyncFacebookPages()}>
+              Đồng bộ Page FB
+            </button>
+          ) : null}
           <button type="button" className="btn-submit channel-add-button" onClick={openCreate}>
             + Thêm
           </button>

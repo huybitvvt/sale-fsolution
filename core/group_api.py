@@ -128,10 +128,11 @@ class FacebookGroupAPI:
         return resp.json()
 
     def get_page_posts(self, page_id: str, page_token: str, limit: int = 10) -> Optional[List[Dict]]:
+        token = page_token or self.access_token
         resp = requests.get(
             f'{GRAPH_URL}/{page_id}/posts',
             params={
-                'access_token': page_token,
+                'access_token': token,
                 'fields': 'id,message,from,created_time,updated_time,is_hidden,permalink_url,attachments,comments.limit(50).summary(true){id,message,from,created_time},reactions.limit(0).summary(true),shares',
                 'limit': limit,
             },

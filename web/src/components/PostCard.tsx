@@ -349,12 +349,12 @@ export function PostCard({
                 }
               }}
             >
-              {summaryBusy ? '⏳ Đang tóm tắt...' : '📊 Tóm tắt CMT'}
+              {summaryBusy ? '⏳ Đang tóm tắt...' : pageIdFromPost ? '📊 Tóm tắt CMT Page' : '📊 Tóm tắt CMT'}
             </button>
           ) : null}
           {onExploreComments ? (
             <button type="button" className="btn-reply-ai" onClick={() => onExploreComments(post)}>
-              🔎 Lọc CMT
+              {pageIdFromPost ? '📥 Lấy CMT Page' : '🔎 Lọc CMT'}
             </button>
           ) : null}
           <button type="button" className="btn-write-comment" onClick={() => setCmtOpen((o) => !o)}>

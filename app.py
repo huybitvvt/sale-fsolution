@@ -1155,6 +1155,20 @@ def _clean_managed_channel(body: dict, current: dict | None = None) -> dict:
     }
 
 
+def _facebook_channel_validation_error(row: dict) -> str:
+    platform = str(row.get('platform') or '').strip().lower()
+    channel_type = str(row.get('channel_type') or '').strip().lower()
+    target_id = str(row.get('target_id') or '').strip()
+    link = str(row.get('link') or '').strip().lower()
+    if platform != 'facebook':
+        return ''
+    if channel_type in ('page', 'fanpage', 'trang') and re.search(r'facebook\.com/(?:groups|group)/', link):
+        return 'Link đang là link Nhóm Facebook nhưng loại đang chọn là Page. Hãy đổi Loại thành "Nhóm", hoặc dán đúng link Page.'
+    if channel_type in ('nhóm', 'nhom', 'group', 'page', 'fanpage') and target_id and not re.fullmatch(r'\d{10,20}', target_id):
+        return 'ID Facebook chưa hợp lệ. Hãy nhập ID số thật của Group/Page (10-20 chữ số), không nhập tên như "page" hoặc ID ngắn như "1".'
+    return ''
+
+
 def _resolve_facebook_group_channel(row: dict) -> dict:
     platform = str(row.get('platform') or '').strip().lower()
     channel_type = str(row.get('channel_type') or '').strip().lower()
@@ -2496,8 +2510,6 @@ def api_posts():
             page_name = next((item.get('channel_name') for item in _managed_channels if str(item.get('target_id') or '') == page_id), '')
             try:
                 page_token = _page_token_from_cache(page_id)
-                if not page_token:
-                    raise RuntimeError('Không lấy được Page token')
                 posts = get_api(DEFAULT_GROUP).get_page_posts(page_id, page_token, limit)
             except Exception:
                 posts = None
@@ -2510,7 +2522,7 @@ def api_posts():
                     'ok': False,
                     'count': 0,
                     'source': 'facebook_page_graph',
-                    'error': 'Không đọc được bài từ Page. Kiểm tra quyền quản trị Page và cookie.',
+                    'error': 'Không đọc được bài từ Page. Kiểm tra ID Page, cookie và quyền quản trị/Page public.',
                 })
                 continue
             for p in posts:
@@ -2705,9 +2717,7 @@ def fetch_facebook_post_comments():
     try:
         if page_id:
             page_token = _page_token_from_cache(page_id)
-            if not page_token:
-                return jsonify({'ok': False, 'error': 'Không lấy được Page token. Kiểm tra quyền quản trị Page/cookie.'}), 502
-            loaded = get_api(DEFAULT_GROUP).get_post_comments(post_id, limit=limit, access_token=page_token)
+            loaded = get_api(DEFAULT_GROUP).get_post_comments(post_id, limit=limit, access_token=page_token or None)
         else:
             loaded = get_api(group_id).get_post_comments(post_id, limit=limit)
         if loaded is None:
@@ -3071,12 +3081,83 @@ def channels_get():
     return jsonify({'ok': True, 'channels': rows})
 
 
+@app.route('/api/channels/sync-facebook-pages', methods=['POST'])
+def channels_sync_facebook_pages():
+    """Đồng bộ các Facebook Page mà cookie hiện tại có quyền quản trị vào bảng kênh theo dõi."""
+    global _managed_channels, _pages_cache
+    try:
+        pages = get_api(DEFAULT_GROUP).get_pages() or []
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'Không lấy được danh sách Page Facebook: {e}'}), 500
+
+    if not pages:
+        return jsonify({
+            'ok': False,
+            'error': 'Không tìm thấy Page nào qua Facebook API. Có thể Page mới tạo chưa được Facebook trả về; hãy bấm + Thêm và nhập thủ công ID Page.',
+        }), 400
+
+    _pages_cache = {
+        str(p.get('id') or ''): {'name': p.get('name', ''), 'access_token': p.get('access_token', '')}
+        for p in pages
+        if p.get('id')
+    }
+    existing_by_page_id = {
+        str(item.get('target_id') or '').strip(): item
+        for item in _managed_channels
+        if str(item.get('platform') or '').strip().lower() == 'facebook'
+        and str(item.get('channel_type') or '').strip().lower() in ('page', 'fanpage')
+    }
+    by_id = {str(item.get('id') or ''): item for item in _managed_channels if item.get('id')}
+    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    added = 0
+    updated = 0
+
+    for page in pages:
+        page_id = str(page.get('id') or '').strip()
+        if not re.fullmatch(r'\d{10,20}', page_id):
+            continue
+        page_name = str(page.get('name') or page_id).strip()[:160]
+        current = existing_by_page_id.get(page_id) or {}
+        row_id = str(current.get('id') or uuid.uuid4().hex[:12])
+        row = {
+            **current,
+            'id': row_id,
+            'platform': 'Facebook',
+            'channel_name': page_name,
+            'channel_type': 'Page',
+            'link': str(current.get('link') or f'https://www.facebook.com/{page_id}'),
+            'target_id': page_id,
+            'note': str(current.get('note') or 'Đồng bộ từ Page Facebook khách đang quản trị')[:500],
+            'created_at': current.get('created_at') or now,
+            'updated_at': now,
+        }
+        if USE_SUPABASE:
+            try:
+                row = {**row, **sb.upsert_managed_channel(row, SUPABASE_CHANNEL_TABLE)}
+            except Exception as e:
+                return jsonify({'ok': False, 'error': f'Không lưu Page lên Supabase: {_managed_channel_store_error(e)}'}), 500
+        by_id[row_id] = row
+        if current:
+            updated += 1
+        else:
+            added += 1
+
+    _managed_channels = list(by_id.values())
+    _save_managed_channels()
+    rows = [_public_managed_channel(item) for item in _managed_channels]
+    rows.sort(key=lambda item: item.get('created_at') or item.get('updated_at') or '', reverse=True)
+    return jsonify({'ok': True, 'added': added, 'updated': updated, 'channels': rows})
+
+
 @app.route('/api/channels', methods=['POST'])
 def channels_create():
     global _managed_channels
     body = request.get_json() or {}
     row = _clean_managed_channel(body)
     row = _resolve_facebook_group_channel(row)
+    validation_error = _facebook_channel_validation_error(row)
+    if validation_error:
+        return jsonify({'ok': False, 'error': validation_error}), 400
     if not row['platform']:
         return jsonify({'ok': False, 'error': 'Thiếu nền tảng'}), 400
     if not row['channel_name']:
@@ -3124,6 +3205,9 @@ def channels_update(channel_id):
     body = request.get_json() or {}
     row = {**current, **_clean_managed_channel(body, current), 'updated_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z'}
     row = _resolve_facebook_group_channel(row)
+    validation_error = _facebook_channel_validation_error(row)
+    if validation_error:
+        return jsonify({'ok': False, 'error': validation_error}), 400
     if not row.get('platform') or not row.get('channel_name'):
         return jsonify({'ok': False, 'error': 'Thiếu nền tảng hoặc tên kênh'}), 400
     if not row.get('target_id') and not row.get('link'):
@@ -3731,7 +3815,8 @@ def ai_summarize_comments():
         if not post or not post.get('id'):
             return jsonify({'ok': False, 'error': 'Không có bài viết'}), 400
         post_id = str(post.get('id'))
-        group_id = str(post.get('_group_id') or DEFAULT_GROUP)
+        page_id = str(post.get('_page_id') or body.get('page_id') or '').strip()
+        group_id = str(post.get('_group_id') or page_id or DEFAULT_GROUP)
         if not force and post_id in _comment_summaries:
             return jsonify({'ok': True, 'summary': _comment_summaries[post_id], 'storage': 'local'})
 
@@ -3739,9 +3824,13 @@ def ai_summarize_comments():
         if not classifier.api_key:
             return jsonify({'ok': False, 'error': 'Chưa cấu hình API key — thêm GEMINI_API_KEY vào .env hoặc key trong UI'}), 400
 
-        loaded = get_api(group_id).get_post_comments(post_id, limit=500)
+        if page_id:
+            page_token = _page_token_from_cache(page_id)
+            loaded = get_api(DEFAULT_GROUP).get_post_comments(post_id, limit=500, access_token=page_token or None)
+        else:
+            loaded = get_api(group_id).get_post_comments(post_id, limit=500)
         if loaded is None:
-            return jsonify({'ok': False, 'error': 'Không đọc được bình luận từ Facebook. Kiểm tra cookie/quyền nhóm.'}), 502
+            return jsonify({'ok': False, 'error': 'Không đọc được bình luận từ Facebook. Kiểm tra cookie/quyền nhóm hoặc quyền quản trị Page.'}), 502
         comments = loaded.get('comments') or []
         total_count = int(loaded.get('total_count') or len(comments))
 
