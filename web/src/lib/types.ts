@@ -160,8 +160,9 @@ export type CommentSummary = {
 };
 
 export type StoredPostComment = {
-  source?: 'facebook' | 'tiktok' | string;
+  source?: 'facebook' | 'facebook_page' | 'tiktok' | 'instagram' | string;
   post_id?: string;
+  group_id?: string;
   post_url?: string;
   comment_id?: string;
   parent_comment_id?: string;

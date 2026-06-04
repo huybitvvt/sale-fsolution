@@ -1,6 +1,6 @@
 'use client';
 
-type ModuleKey = 'home' | 'staff' | 'channels' | 'manage' | 'cookies' | 'history' | 'leads' | 'marketing';
+type ModuleKey = 'home' | 'staff' | 'channels' | 'comments' | 'manage' | 'cookies' | 'history' | 'leads' | 'marketing';
 
 type Card = {
   key: ModuleKey;
@@ -13,6 +13,7 @@ type Card = {
 const CARDS: Card[] = [
   { key: 'staff', icon: '👥', title: 'Nhân sự', desc: 'Quản lý tài khoản sale và quyền thao tác.', tone: 'green' },
   { key: 'channels', icon: '📋', title: 'Quản lý nhóm', desc: 'Lưu nền tảng, kênh, page, video và nhóm.', tone: 'orange' },
+  { key: 'comments', icon: '💬', title: 'Bình luận', desc: 'Inbox comment đa kênh, lọc tag và tách lead.', tone: 'purple' },
   { key: 'manage', icon: '☑', title: 'Quản lý', desc: 'Theo dõi bài viết, phân loại và vận hành.', tone: 'blue' },
   { key: 'cookies', icon: '🍪', title: 'Cooki', desc: 'Quản lý phiên đăng nhập và cookie nhân sự.', tone: 'purple' },
   { key: 'history', icon: '🗓', title: 'Lịch thử thao tác', desc: 'Xem lịch sử comment và trạng thái thao tác.', tone: 'red' },

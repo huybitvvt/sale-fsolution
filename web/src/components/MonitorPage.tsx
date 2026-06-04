@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AuthPanel } from '@/components/AuthPanel';
 import { ChannelManagerPanel } from '@/components/ChannelManagerPanel';
+import { CommentLeadInboxPanel } from '@/components/CommentLeadInboxPanel';
 import { ConsoleHome } from '@/components/ConsoleHome';
 import { CookieRefreshGuide } from '@/components/CookieRefreshGuide';
 import { HistoryPanel } from '@/components/HistoryPanel';
@@ -38,7 +39,7 @@ type AiConfig = {
 };
 
 type JoinPrompt = { id: string; name: string };
-type ViewKey = 'home' | 'staff' | 'channels' | 'manage' | 'cookies' | 'history' | 'leads' | 'marketing';
+type ViewKey = 'home' | 'staff' | 'channels' | 'comments' | 'manage' | 'cookies' | 'history' | 'leads' | 'marketing';
 type ContentPipelineData = {
   articles?: ContentPipelineArticle[];
   posts?: ContentPipelinePost[];
@@ -1524,6 +1525,7 @@ export function MonitorPage() {
     { key: 'home', icon: '⌂', label: 'Trang chủ' },
     { key: 'staff', icon: '👥', label: 'Nhân sự' },
     { key: 'channels', icon: '📋', label: 'Quản lý nhóm' },
+    { key: 'comments', icon: '💬', label: 'Bình luận' },
     { key: 'manage', icon: '☑', label: 'Quản lý' },
     { key: 'cookies', icon: '🍪', label: 'Cooki' },
     { key: 'history', icon: '🗓', label: 'Lịch thử thao tác' },
@@ -1616,6 +1618,7 @@ export function MonitorPage() {
               onSyncFacebookPages={syncFacebookPages}
             />
           ) : null}
+          {activeView === 'comments' ? <CommentLeadInboxPanel /> : null}
           {activeView === 'history' ? <HistoryPanel rows={commentLogs} status={historyStatus} onReload={loadCommentLogs} /> : null}
           {activeView === 'leads' ? <LeadManagerPanel leads={leads} onExtract={extractLeadsAll} onSyncPhones={syncPhoneLeadsFromComments} /> : null}
           {activeView === 'marketing' ? (

@@ -1650,6 +1650,7 @@ def _public_comment_row(row: dict) -> dict:
     return {
         'source': row.get('source') or '',
         'post_id': row.get('post_id') or '',
+        'group_id': row.get('group_id') or '',
         'post_url': post_url,
         'comment_url': f'{post_url}?comment={cid.replace("tiktok_", "")}' if post_url and cid else post_url,
         'comment_id': cid,
