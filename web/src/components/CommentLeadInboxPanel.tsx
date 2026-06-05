@@ -7,6 +7,7 @@ import type { StoredPostComment } from '@/lib/types';
 type TabKey = 'inbox' | 'customers' | 'stats' | 'templates';
 type SourceKey = 'all' | 'fb-page' | 'fb-group' | 'tiktok' | 'instagram';
 type TagKey = 'hot' | 'closed' | 'need' | 'price' | 'review' | 'vip';
+type WorkflowFilter = 'all' | 'open' | 'done' | 'starred';
 
 type CommentPayload = {
   ok?: boolean;
@@ -69,6 +70,22 @@ const QUICK_REPLIES = [
   },
 ];
 
+const WORKFLOW_STORAGE_KEY = 'streal-comment-inbox-workflow-v1';
+
+function readWorkflowStore() {
+  if (typeof window === 'undefined') return { processed: [] as string[], starred: [] as string[] };
+  try {
+    const raw = window.localStorage.getItem(WORKFLOW_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return {
+      processed: Array.isArray(parsed.processed) ? parsed.processed.filter(Boolean) : [],
+      starred: Array.isArray(parsed.starred) ? parsed.starred.filter(Boolean) : [],
+    };
+  } catch {
+    return { processed: [] as string[], starred: [] as string[] };
+  }
+}
+
 function normalizeText(value?: string) {
   return (value || '').toLowerCase();
 }
@@ -89,6 +106,19 @@ function sourceLabel(row: StoredPostComment) {
 
 function commentText(row: StoredPostComment) {
   return row.message || '';
+}
+
+function commentKey(row: StoredPostComment) {
+  return (
+    row.comment_id ||
+    [
+      row.source || 'comment',
+      row.post_id || row.group_id || 'post',
+      row.author_id || row.author_name || 'author',
+      row.created_time || row.fetched_at || 'time',
+      (row.message || '').slice(0, 80),
+    ].join('|')
+  );
 }
 
 function commentTags(row: StoredPostComment): TagMeta[] {
@@ -142,6 +172,7 @@ export function CommentLeadInboxPanel() {
   const [selectedId, setSelectedId] = useState('');
   const [sourceFilter, setSourceFilter] = useState<SourceKey>('all');
   const [tagFilter, setTagFilter] = useState<TagKey | ''>('');
+  const [workflowFilter, setWorkflowFilter] = useState<WorkflowFilter>('all');
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
@@ -150,6 +181,11 @@ export function CommentLeadInboxPanel() {
   const [replyStatus, setReplyStatus] = useState('');
   const [tiktokBridgeReady, setTiktokBridgeReady] = useState(false);
   const [tiktokBridgeVersion, setTiktokBridgeVersion] = useState('');
+  const [processedIds, setProcessedIds] = useState<string[]>(() => readWorkflowStore().processed);
+  const [starredIds, setStarredIds] = useState<string[]>(() => readWorkflowStore().starred);
+
+  const processedSet = useMemo(() => new Set(processedIds), [processedIds]);
+  const starredSet = useMemo(() => new Set(starredIds), [starredIds]);
 
   const loadComments = async () => {
     setBusy(true);
@@ -160,7 +196,7 @@ export function CommentLeadInboxPanel() {
       if (data.ok) {
         const rows = Array.isArray(data.comments) ? data.comments : [];
         setComments(rows);
-        setSelectedId((current) => current || rows[0]?.comment_id || '');
+        setSelectedId((current) => current || (rows[0] ? commentKey(rows[0]) : ''));
         setStatus(data.warning ? `⚠️ ${data.warning}` : rows.length ? `✅ Đã tải ${rows.length} bình luận thật` : 'Chưa có bình luận. Hãy lấy CMT từ bài Facebook/TikTok trước.');
       } else {
         setStatus(`❌ ${data.error || 'Không tải được bình luận'}`);
@@ -175,6 +211,18 @@ export function CommentLeadInboxPanel() {
   useEffect(() => {
     void loadComments();
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      WORKFLOW_STORAGE_KEY,
+      JSON.stringify({ processed: processedIds, starred: starredIds }),
+    );
+  }, [processedIds, starredIds]);
+
+  useEffect(() => {
+    setReplyStatus('');
+  }, [selectedId]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -214,7 +262,11 @@ export function CommentLeadInboxPanel() {
   const filtered = useMemo(() => {
     const kw = normalizeText(query);
     return comments.filter((row) => {
+      const key = commentKey(row);
       if (sourceFilter !== 'all' && sourceKey(row) !== sourceFilter) return false;
+      if (workflowFilter === 'open' && processedSet.has(key)) return false;
+      if (workflowFilter === 'done' && !processedSet.has(key)) return false;
+      if (workflowFilter === 'starred' && !starredSet.has(key)) return false;
       const tags = commentTags(row);
       if (tagFilter && !tags.some((tag) => tag.key === tagFilter)) return false;
       if (!kw) return true;
@@ -222,9 +274,20 @@ export function CommentLeadInboxPanel() {
         .filter(Boolean)
         .some((value) => normalizeText(String(value)).includes(kw));
     });
-  }, [comments, query, sourceFilter, tagFilter]);
+  }, [comments, query, sourceFilter, tagFilter, workflowFilter, processedSet, starredSet]);
 
-  const selected = filtered.find((row) => row.comment_id === selectedId) || filtered[0] || null;
+  const selected = filtered.find((row) => commentKey(row) === selectedId) || filtered[0] || null;
+
+  const workflowCounts = useMemo(() => {
+    let done = 0;
+    let starred = 0;
+    comments.forEach((row) => {
+      const key = commentKey(row);
+      if (processedSet.has(key)) done += 1;
+      if (starredSet.has(key)) starred += 1;
+    });
+    return { all: comments.length, done, open: Math.max(comments.length - done, 0), starred };
+  }, [comments, processedSet, starredSet]);
 
   const sourceCounts = useMemo(() => {
     const counts: Record<SourceKey, number> = { all: comments.length, 'fb-page': 0, 'fb-group': 0, tiktok: 0, instagram: 0 };
@@ -270,6 +333,17 @@ export function CommentLeadInboxPanel() {
     } catch {
       setStatus('Đã chèn mẫu câu vào ô trả lời');
     }
+  };
+
+  const toggleWorkflow = (row: StoredPostComment, type: 'processed' | 'starred') => {
+    const key = commentKey(row);
+    if (type === 'processed') {
+      setProcessedIds((current) => (current.includes(key) ? current.filter((item) => item !== key) : [...current, key]));
+      setStatus(processedSet.has(key) ? 'Đã chuyển comment về trạng thái chưa xử lý' : '✅ Đã đánh dấu comment đã xử lý');
+      return;
+    }
+    setStarredIds((current) => (current.includes(key) ? current.filter((item) => item !== key) : [...current, key]));
+    setStatus(starredSet.has(key) ? 'Đã bỏ ghim/VIP comment' : '⭐ Đã ghim/VIP comment để ưu tiên xử lý');
   };
 
   function requestTiktokExtensionComment(payload: Record<string, unknown>): Promise<TikTokBridgeResult> {
@@ -479,14 +553,24 @@ export function CommentLeadInboxPanel() {
           <div className="comment-list-pane">
             <div className="comment-list-toolbar">
               <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="🔍 Tìm tên, SĐT, nội dung..." />
-              <button type="button" className={!tagFilter ? 'active' : ''} onClick={() => setTagFilter('')}>
+              <button
+                type="button"
+                className={!tagFilter && workflowFilter === 'all' ? 'active' : ''}
+                onClick={() => {
+                  setTagFilter('');
+                  setWorkflowFilter('all');
+                }}
+              >
                 Tất cả
               </button>
-              <button type="button" onClick={() => setTagFilter('review')}>
-                Chưa xử lý
+              <button type="button" className={workflowFilter === 'open' ? 'active' : ''} onClick={() => setWorkflowFilter((current) => (current === 'open' ? 'all' : 'open'))}>
+                Chưa xử lý {workflowCounts.open}
               </button>
-              <button type="button" onClick={() => setTagFilter('vip')}>
-                ⭐
+              <button type="button" className={workflowFilter === 'done' ? 'active' : ''} onClick={() => setWorkflowFilter((current) => (current === 'done' ? 'all' : 'done'))}>
+                Đã xử lý {workflowCounts.done}
+              </button>
+              <button type="button" className={workflowFilter === 'starred' ? 'active' : ''} onClick={() => setWorkflowFilter((current) => (current === 'starred' ? 'all' : 'starred'))}>
+                ⭐ {workflowCounts.starred}
               </button>
             </div>
 
@@ -494,12 +578,15 @@ export function CommentLeadInboxPanel() {
               {filtered.length ? filtered.map((row) => {
                 const meta = sourceLabel(row);
                 const tags = commentTags(row);
+                const key = commentKey(row);
+                const isProcessed = processedSet.has(key);
+                const isStarred = starredSet.has(key);
                 return (
                   <button
-                    key={row.comment_id || `${row.post_id}-${row.author_name}-${row.fetched_at}`}
+                    key={key}
                     type="button"
-                    className={`comment-card ${selected?.comment_id === row.comment_id ? 'active' : ''}`}
-                    onClick={() => setSelectedId(row.comment_id || '')}
+                    className={`comment-card ${selected && commentKey(selected) === key ? 'active' : ''} ${isProcessed ? 'processed' : ''}`}
+                    onClick={() => setSelectedId(key)}
                   >
                     <div className="comment-avatar">{(row.author_name || '?').trim().charAt(0).toUpperCase()}</div>
                     <div className="comment-card-body">
@@ -510,6 +597,8 @@ export function CommentLeadInboxPanel() {
                       <span className={`source-pill ${meta.className}`}>{meta.icon} {meta.label}</span>
                       <p>{commentText(row) || '(Không có nội dung chữ)'}</p>
                       <div className="comment-tags">
+                        {isStarred ? <span className="comment-state-pill starred">⭐ VIP</span> : null}
+                        <span className={`comment-state-pill ${isProcessed ? 'done' : 'open'}`}>{isProcessed ? 'Đã xử lý' : 'Chưa xử lý'}</span>
                         {tags.map((tag) => <span key={tag.key} className={`comment-tag ${tag.className}`}>{tag.icon} {tag.label}</span>)}
                       </div>
                     </div>
@@ -533,6 +622,10 @@ export function CommentLeadInboxPanel() {
                 </div>
                 <div className="comment-detail-message">{selected.message || '(Không có nội dung chữ)'}</div>
                 <div className="comment-detail-tags">
+                  {starredSet.has(commentKey(selected)) ? <span className="comment-state-pill starred">⭐ VIP</span> : null}
+                  <span className={`comment-state-pill ${processedSet.has(commentKey(selected)) ? 'done' : 'open'}`}>
+                    {processedSet.has(commentKey(selected)) ? 'Đã xử lý' : 'Chưa xử lý'}
+                  </span>
                   {commentTags(selected).map((tag) => <span key={tag.key} className={`comment-tag ${tag.className}`}>{tag.icon} {tag.label}</span>)}
                 </div>
                 <div className="comment-detail-grid">
@@ -544,6 +637,12 @@ export function CommentLeadInboxPanel() {
                 <div className="comment-detail-actions">
                   {(selected.comment_url || selected.post_url) ? <a className="btn-cancel" href={selected.comment_url || selected.post_url} target="_blank" rel="noreferrer">Mở link</a> : null}
                   <button type="button" className="btn-submit" onClick={() => void syncLead(selected)}>Đưa vào Lead</button>
+                  <button type="button" className="btn-cancel" onClick={() => toggleWorkflow(selected, 'processed')}>
+                    {processedSet.has(commentKey(selected)) ? 'Bỏ xử lý' : 'Đã xử lý'}
+                  </button>
+                  <button type="button" className="btn-cancel" onClick={() => toggleWorkflow(selected, 'starred')}>
+                    {starredSet.has(commentKey(selected)) ? 'Bỏ VIP' : 'Ghim VIP'}
+                  </button>
                 </div>
                 <div className="reply-box">
                   <label>Trả lời comment ngay tại đây</label>

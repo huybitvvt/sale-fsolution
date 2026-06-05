@@ -30,6 +30,9 @@ export function CookieRefreshGuide({ compact = false }: Props) {
       <div className="cookie-refresh-note">
         Lưu ý: mỗi nhân sự dùng cookie Facebook riêng. Không dùng chung cookie cho nhiều tài khoản.
       </div>
+      <div className="cookie-refresh-note page-note">
+        Nếu lấy bài/comment từ Page: tài khoản trong cookie phải đang quản trị Page đó. Vào Quản lý nhóm, bấm Đồng bộ Page FB để hệ thống lấy Page/token mới, sau đó chọn đúng Page cần theo dõi.
+      </div>
     </div>
   );
 }
