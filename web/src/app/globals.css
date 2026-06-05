@@ -587,6 +587,25 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
   font-family: inherit;
   resize: vertical;
 }
+.reply-hint {
+  margin: -2px 0 10px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.reply-send-row {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.reply-send-row span {
+  min-width: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.4;
+}
 .comment-empty {
   padding: 42px 18px;
   color: #94a3b8;

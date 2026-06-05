@@ -2675,6 +2675,91 @@ def api_comment():
         return jsonify(payload), 500
 
 
+@app.route('/api/post-comments/reply', methods=['POST'])
+def api_reply_post_comment():
+    body = request.get_json() or {}
+    comment_id = str(body.get('comment_id') or '').strip()
+    post_id = str(body.get('post_id') or '').strip()
+    message = str(body.get('message') or body.get('text') or '').strip()
+    group_id = str(body.get('group_id') or DEFAULT_GROUP).strip()
+    post_url = str(body.get('post_url') or body.get('comment_url') or '').strip()
+    source = str(body.get('source') or '').strip().lower()
+    page_id = str(body.get('page_id') or '').strip()
+    if not page_id and ('page' in source):
+        page_id = group_id
+
+    if not comment_id:
+        return jsonify({'ok': False, 'error': 'Thiếu comment_id để trả lời'}), 400
+    if not message:
+        return jsonify({'ok': False, 'error': 'Nhập nội dung trả lời'}), 400
+    if comment_id.startswith('tiktok_') or 'tiktok' in source:
+        return jsonify({
+            'ok': False,
+            'error': 'TikTok chưa hỗ trợ reply đúng vào từng comment qua server. Hãy dùng nút gửi TikTok bằng extension hoặc mở link để trả lời trực tiếp.',
+        }), 400
+    if 'instagram' in source or source == 'ig':
+        return jsonify({'ok': False, 'error': 'Instagram chưa hỗ trợ trả lời comment trong bản này'}), 400
+
+    try:
+        page_token = _page_token_from_cache(page_id) if page_id else None
+        api_group_id = DEFAULT_GROUP if page_token else (group_id or DEFAULT_GROUP)
+        result = get_api(api_group_id).post_comment(comment_id, message, page_token)
+        if result and result.get('id'):
+            log = _record_comment_log(post_id or comment_id, group_id, post_url, message, page_id, 'success', comment_id=result['id'])
+            now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+            staff = _current_staff()
+            row = {
+                'source': 'facebook_page' if page_token or 'page' in source else 'facebook',
+                'post_id': post_id or comment_id,
+                'group_id': group_id,
+                'post_url': post_url,
+                'comment_id': str(result['id']),
+                'parent_comment_id': comment_id,
+                'depth': int(body.get('depth') or 0) + 1,
+                'author_id': staff.get('id', ''),
+                'author_name': staff.get('name') or staff.get('username') or 'Nhân sự',
+                'message': message,
+                'attachment_type': '',
+                'created_time': now,
+                'matched_keywords': [],
+                'is_matched': False,
+                'raw_comment': {'outbound_reply': True, 'reply_to_comment_id': comment_id, 'publish_response': result},
+                'fetched_by_staff_id': staff.get('id', ''),
+                'fetched_by_staff_name': staff.get('name', ''),
+                'fetched_by_staff_username': staff.get('username', ''),
+                'fetched_at': now,
+            }
+            storage, storage_warning = _store_post_comment_rows([row])
+            payload = {
+                'ok': True,
+                'comment_id': result['id'],
+                'storage': storage,
+                'log_storage': log.get('storage'),
+            }
+            warnings = []
+            if storage_warning:
+                warnings.append(f'Reply đã gửi, nhưng Supabase post_comments chưa ghi được: {storage_warning}')
+            if log.get('storage_warning'):
+                warnings.append(f"Lịch sử comment đã lưu local, Supabase chưa ghi được: {log['storage_warning']}")
+            if warnings:
+                payload['warning'] = ' | '.join(warnings)
+            return jsonify(payload)
+
+        err = (result or {}).get('error', {}).get('message') or 'Facebook không nhận trả lời comment'
+        log = _record_comment_log(post_id or comment_id, group_id, post_url, message, page_id, 'failed', error_message=err)
+        payload = {'ok': False, 'error': err, 'log_storage': log.get('storage')}
+        if log.get('storage_warning'):
+            payload['warning'] = f"Đã lưu local, Supabase chưa ghi được: {log['storage_warning']}"
+        return jsonify(payload), 502
+    except Exception as e:
+        err = str(e)
+        log = _record_comment_log(post_id or comment_id, group_id, post_url, message, page_id, 'failed', error_message=err)
+        payload = {'ok': False, 'error': err, 'log_storage': log.get('storage')}
+        if log.get('storage_warning'):
+            payload['warning'] = f"Đã lưu local, Supabase chưa ghi được: {log['storage_warning']}"
+        return jsonify(payload), 500
+
+
 @app.route('/api/comment-logs', methods=['GET'])
 def comment_logs_get():
     if not _is_admin():

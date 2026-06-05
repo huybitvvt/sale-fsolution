@@ -16,6 +16,16 @@ type CommentPayload = {
   error?: string;
 };
 
+type TikTokBridgeResult = {
+  ok?: boolean;
+  comment_id?: string;
+  cid?: string;
+  id?: string;
+  url?: string;
+  error?: string;
+  method?: string;
+};
+
 type TagMeta = {
   key: TagKey;
   label: string;
@@ -136,6 +146,10 @@ export function CommentLeadInboxPanel() {
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
   const [replyText, setReplyText] = useState('');
+  const [replyBusy, setReplyBusy] = useState(false);
+  const [replyStatus, setReplyStatus] = useState('');
+  const [tiktokBridgeReady, setTiktokBridgeReady] = useState(false);
+  const [tiktokBridgeVersion, setTiktokBridgeVersion] = useState('');
 
   const loadComments = async () => {
     setBusy(true);
@@ -160,6 +174,41 @@ export function CommentLeadInboxPanel() {
 
   useEffect(() => {
     void loadComments();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const handleBridgeMessage = (event: MessageEvent) => {
+      if (event.source !== window) return;
+      const data = event.data || {};
+      if (data.source !== 'streal-tiktok-extension') return;
+      if (data.type === 'STREAL_TIKTOK_BRIDGE_READY') {
+        setTiktokBridgeReady(true);
+        setTiktokBridgeVersion(data.version || '');
+      }
+    };
+
+    const pingBridge = () => {
+      window.postMessage(
+        {
+          source: 'streal-web-page',
+          type: 'STREAL_TIKTOK_BRIDGE_PING',
+          requestId: `comment_inbox_ping_${Date.now()}`,
+        },
+        window.location.origin,
+      );
+    };
+
+    window.addEventListener('message', handleBridgeMessage);
+    pingBridge();
+    const pingTimer = window.setInterval(pingBridge, 2500);
+    const stopTimer = window.setTimeout(() => window.clearInterval(pingTimer), 15000);
+    return () => {
+      window.removeEventListener('message', handleBridgeMessage);
+      window.clearInterval(pingTimer);
+      window.clearTimeout(stopTimer);
+    };
   }, []);
 
   const filtered = useMemo(() => {
@@ -220,6 +269,138 @@ export function CommentLeadInboxPanel() {
       setStatus('✅ Đã copy mẫu câu');
     } catch {
       setStatus('Đã chèn mẫu câu vào ô trả lời');
+    }
+  };
+
+  function requestTiktokExtensionComment(payload: Record<string, unknown>): Promise<TikTokBridgeResult> {
+    return new Promise((resolve) => {
+      if (typeof window === 'undefined') {
+        resolve({ ok: false, error: 'Chỉ gửi được TikTok trên Chrome có cài extension' });
+        return;
+      }
+
+      const requestId = `comment_inbox_tiktok_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const timer = window.setTimeout(() => {
+        cleanup();
+        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cài/bật Lead Hunter Bridge rồi tải lại trang.' });
+      }, 120000);
+
+      const handleMessage = (event: MessageEvent) => {
+        if (event.source !== window) return;
+        const data = event.data || {};
+        if (data.source !== 'streal-tiktok-extension') return;
+        if (data.type !== 'STREAL_TIKTOK_COMMENT_RESPONSE') return;
+        if (data.requestId !== requestId) return;
+        cleanup();
+        resolve(data as TikTokBridgeResult);
+      };
+
+      function cleanup() {
+        window.removeEventListener('message', handleMessage);
+        window.clearTimeout(timer);
+      }
+
+      window.addEventListener('message', handleMessage);
+      window.postMessage(
+        {
+          source: 'streal-web-page',
+          type: 'STREAL_TIKTOK_COMMENT_REQUEST',
+          requestId,
+          payload,
+        },
+        window.location.origin,
+      );
+    });
+  }
+
+  async function recordTiktokExtensionResult(row: StoredPostComment, statusValue: 'success' | 'failed', message: string, result: TikTokBridgeResult) {
+    const r = await api('/api/tiktok/comment/result', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: statusValue,
+        post_id: row.post_id,
+        post_url: row.post_url || row.comment_url || result.url,
+        video_title: row.video_title,
+        channel_name: row.channel_name,
+        message,
+        comment_id: result.comment_id || result.cid || result.id,
+        error: result.error,
+        extension_result: result,
+      }),
+    });
+    return r.json().catch(() => ({ ok: false, error: `Server lỗi ${r.status}` }));
+  }
+
+  const sendReply = async () => {
+    if (!selected) {
+      setReplyStatus('Chọn bình luận trước khi trả lời');
+      return;
+    }
+    const message = replyText.trim();
+    if (!message) {
+      setReplyStatus('Nhập nội dung trả lời');
+      return;
+    }
+
+    const src = sourceKey(selected);
+    setReplyBusy(true);
+    setReplyStatus(src === 'tiktok' ? 'Đang gửi bình luận TikTok bằng extension...' : 'Đang gửi trả lời...');
+    try {
+      if (src === 'tiktok') {
+        if (!tiktokBridgeReady) {
+          setReplyStatus('Chưa thấy extension. Cài/bật Lead Hunter Bridge, đăng nhập TikTok trên Chrome rồi tải lại trang.');
+          return;
+        }
+        const extensionResult = await requestTiktokExtensionComment({
+          post_id: selected.post_id,
+          post_url: selected.post_url || selected.comment_url,
+          video_title: selected.video_title,
+          channel_name: selected.channel_name,
+          message,
+        });
+        if (extensionResult.ok) {
+          const saved = await recordTiktokExtensionResult(selected, 'success', message, extensionResult);
+          setReplyText('');
+          setReplyStatus(saved.warning ? `✅ Đã gửi CMT TikTok, nhưng ${saved.warning}` : '✅ Đã gửi CMT TikTok lên video. TikTok không hỗ trợ gắn reply đúng thread trong bản này.');
+          await loadComments();
+        } else {
+          await recordTiktokExtensionResult(selected, 'failed', message, extensionResult).catch(() => null);
+          setReplyStatus(`❌ ${extensionResult.error || 'Extension chưa gửi được bình luận TikTok'}`);
+        }
+        return;
+      }
+
+      if (src === 'instagram') {
+        setReplyStatus('Instagram chưa hỗ trợ trả lời comment trong bản này');
+        return;
+      }
+
+      const r = await api('/api/post-comments/reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: selected.source,
+          post_id: selected.post_id,
+          group_id: selected.group_id,
+          post_url: selected.post_url || selected.comment_url,
+          comment_id: selected.comment_id,
+          depth: selected.depth || 0,
+          message,
+        }),
+      });
+      const data = await r.json().catch(() => ({ ok: false, error: `Server lỗi ${r.status}` }));
+      if (data.ok) {
+        setReplyText('');
+        setReplyStatus(data.warning ? `✅ Đã trả lời Facebook, nhưng ${data.warning}` : '✅ Đã trả lời comment Facebook và lưu lịch sử');
+        await loadComments();
+      } else {
+        setReplyStatus(`❌ ${data.error || 'Không gửi được trả lời'}`);
+      }
+    } catch {
+      setReplyStatus('❌ Lỗi kết nối khi gửi trả lời');
+    } finally {
+      setReplyBusy(false);
     }
   };
 
@@ -365,13 +546,28 @@ export function CommentLeadInboxPanel() {
                   <button type="button" className="btn-submit" onClick={() => void syncLead(selected)}>Đưa vào Lead</button>
                 </div>
                 <div className="reply-box">
-                  <label>Mẫu phản hồi nhanh</label>
+                  <label>Trả lời comment ngay tại đây</label>
+                  {sourceKey(selected) === 'tiktok' ? (
+                    <div className="reply-hint">
+                      {tiktokBridgeReady
+                        ? `Extension đã kết nối${tiktokBridgeVersion ? ` v${tiktokBridgeVersion}` : ''}. TikTok sẽ nhận bình luận trên video, không gắn thread cụ thể.`
+                        : 'TikTok cần Chrome extension để gửi bình luận từ phiên đăng nhập thật.'}
+                    </div>
+                  ) : (
+                    <div className="reply-hint">Facebook sẽ reply trực tiếp vào Comment ID đang chọn.</div>
+                  )}
                   <div className="reply-template-row">
                     {QUICK_REPLIES.map((item) => (
                       <button key={item.title} type="button" onClick={() => void copyReply(item.text)}>{item.title}</button>
                     ))}
                   </div>
                   <textarea value={replyText} onChange={(e) => setReplyText(e.target.value)} placeholder="Chọn mẫu câu hoặc nhập nội dung phản hồi..." />
+                  <div className="reply-send-row">
+                    <button type="button" className="btn-submit" disabled={replyBusy || !replyText.trim()} onClick={() => void sendReply()}>
+                      {replyBusy ? 'Đang gửi...' : sourceKey(selected) === 'tiktok' ? 'Gửi CMT TikTok' : 'Gửi trả lời'}
+                    </button>
+                    <span>{replyStatus}</span>
+                  </div>
                 </div>
               </>
             ) : (
