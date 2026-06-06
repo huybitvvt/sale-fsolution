@@ -1,5 +1,7 @@
 import os
 import re
+import subprocess
+import sys
 import uuid
 
 from flask import Flask, jsonify, request
@@ -77,6 +79,57 @@ def _click_first_visible(locator) -> bool:
     return False
 
 
+def _install_playwright_browsers() -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                '-m',
+                'playwright',
+                'install',
+                'chromium',
+                'chromium-headless-shell',
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=240,
+        )
+        return result.returncode == 0, (result.stdout or '')[-1200:]
+    except Exception as e:
+        return False, str(e)
+
+
+def _launch_persistent_context(p, launch_opts: dict):
+    try:
+        return p.chromium.launch_persistent_context(
+            PLAYWRIGHT_USER_DATA_DIR,
+            **launch_opts,
+        )
+    except Exception as first_error:
+        message = str(first_error)
+        missing_browser = (
+            "Executable doesn't exist" in message
+            or 'Please run the following command to download new browsers' in message
+            or 'playwright install' in message
+        )
+        if not missing_browser:
+            raise
+
+        ok, install_output = _install_playwright_browsers()
+        if not ok:
+            raise RuntimeError(
+                'Playwright thiếu browser và tự cài lại không thành công: '
+                f'{install_output[:900]}'
+            ) from first_error
+
+        return p.chromium.launch_persistent_context(
+            PLAYWRIGHT_USER_DATA_DIR,
+            **launch_opts,
+        )
+
+
 def _run_comment(body: dict) -> tuple[dict, str]:
     try:
         from playwright.sync_api import sync_playwright
@@ -116,17 +169,7 @@ def _run_comment(body: dict) -> tuple[dict, str]:
                     '--no-first-run',
                 ],
             }
-            try:
-                context = p.chromium.launch_persistent_context(
-                    PLAYWRIGHT_USER_DATA_DIR,
-                    channel='chrome',
-                    **launch_opts,
-                )
-            except Exception:
-                context = p.chromium.launch_persistent_context(
-                    PLAYWRIGHT_USER_DATA_DIR,
-                    **launch_opts,
-                )
+            context = _launch_persistent_context(p, launch_opts)
             if cookie:
                 try:
                     context.add_cookies(_parse_cookie_header(cookie))
