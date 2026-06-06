@@ -46,6 +46,34 @@
       return;
     }
 
+    if (data.type === 'STREAL_TIKTOK_COLLECT_VIDEOS_REQUEST') {
+      chrome.runtime.sendMessage(
+        {
+          type: 'STREAL_EXTENSION_COLLECT_TIKTOK_VIDEOS',
+          requestId: data.requestId,
+          payload: data.payload || {},
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            postToPage({
+              type: 'STREAL_TIKTOK_COLLECT_VIDEOS_RESPONSE',
+              requestId: data.requestId,
+              ok: false,
+              videos: [],
+              error: chrome.runtime.lastError.message || 'Extension khong phan hoi',
+            });
+            return;
+          }
+          postToPage({
+            type: 'STREAL_TIKTOK_COLLECT_VIDEOS_RESPONSE',
+            requestId: data.requestId,
+            ...(response || { ok: false, videos: [], error: 'Extension khong tra danh sach video' }),
+          });
+        },
+      );
+      return;
+    }
+
     if (data.type !== 'STREAL_TIKTOK_COMMENT_REQUEST') return;
 
     chrome.runtime.sendMessage(

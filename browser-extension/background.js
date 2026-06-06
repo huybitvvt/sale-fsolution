@@ -248,11 +248,111 @@ async function handleSendComment(request) {
   return publishCommentFromBackground({ ...payload, message: text }, url, response?.error || '');
 }
 
+async function collectTikTokChannelVideos(request) {
+  const payload = request.payload || {};
+  const rawChannel = String(payload.channel || payload.channel_url || payload.url || '').trim();
+  const maxVideos = Math.max(1, Math.min(Number(payload.max_videos || 20) || 20, 50));
+  const handle = rawChannel.match(/tiktok\.com\/@([^/?#]+)/i)?.[1] || rawChannel.replace(/^@+/, '').trim();
+  if (!handle) {
+    return { ok: false, final: true, error: 'Thieu link kenh TikTok hoac @username de gom video.' };
+  }
+  const channelUrl = rawChannel.includes('tiktok.com')
+    ? rawChannel
+    : `${TIKTOK_HOST}/@${encodeURIComponent(handle)}`;
+
+  const tab = await chrome.tabs.create({ url: channelUrl, active: true });
+  await waitForTabLoaded(tab.id, 35000);
+  await sleep(4000);
+
+  let result = { ok: false, videos: [], error: 'Khong gom duoc video tu trang TikTok.' };
+  try {
+    const injected = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      args: [maxVideos],
+      func: async (limit) => {
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const normalize = (href) => {
+          try {
+            const url = new URL(href, window.location.href);
+            const match = url.href.match(/\/@([^/?#]+)\/video\/(\d{8,})/);
+            if (!match) return null;
+            return {
+              video_id: match[2],
+              post_url: `https://www.tiktok.com/@${match[1]}/video/${match[2]}`,
+              channel_name: `@${match[1]}`,
+              video_title: '',
+            };
+          } catch {
+            return null;
+          }
+        };
+        const collect = () => {
+          const byId = new Map();
+          document.querySelectorAll('a[href*="/video/"]').forEach((a) => {
+            const item = normalize(a.href);
+            if (!item || byId.has(item.video_id)) return;
+            const cardText = (a.closest('div')?.innerText || a.getAttribute('title') || '').trim();
+            item.video_title = cardText.slice(0, 180) || `Video ${item.video_id}`;
+            byId.set(item.video_id, item);
+          });
+          return Array.from(byId.values());
+        };
+
+        window.scrollTo(0, 0);
+        await sleep(1000);
+        let rows = collect();
+        for (let i = 0; i < 18 && rows.length < limit; i += 1) {
+          window.scrollBy(0, Math.max(700, window.innerHeight || 900));
+          await sleep(1200);
+          rows = collect();
+        }
+        return {
+          ok: rows.length > 0,
+          videos: rows.slice(0, limit),
+          page_title: document.title,
+          url: window.location.href,
+        };
+      },
+    });
+    result = injected?.[0]?.result || result;
+  } catch (error) {
+    result = { ok: false, videos: [], error: error?.message || String(error) };
+  }
+
+  try {
+    const closeResult = chrome.tabs.remove(tab.id);
+    if (closeResult?.catch) closeResult.catch(() => {});
+  } catch (error) {
+    // Khong chan ket qua gom video neu Chrome khong dong duoc tab phu.
+  }
+  if (!result.ok) {
+    return {
+      ok: false,
+      final: true,
+      error: result.error || 'Chrome da mo kenh TikTok nhung khong thay link video. Hay mo kenh cong khai va thu lai.',
+      videos: result.videos || [],
+    };
+  }
+  return {
+    ok: true,
+    final: true,
+    videos: result.videos || [],
+    url: result.url || channelUrl,
+    message: `Da gom ${result.videos?.length || 0} video tu Chrome`,
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'STREAL_EXTENSION_GET_FACEBOOK_COOKIE') {
     getFacebookCookies()
       .then((response) => sendResponse(response))
       .catch((error) => sendResponse({ ok: false, cookie: '', error: error?.message || String(error) }));
+    return true;
+  }
+  if (message?.type === 'STREAL_EXTENSION_COLLECT_TIKTOK_VIDEOS') {
+    collectTikTokChannelVideos(message)
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, final: true, error: error?.message || String(error), videos: [] }));
     return true;
   }
   if (message?.type !== 'STREAL_EXTENSION_SEND_COMMENT') return false;
