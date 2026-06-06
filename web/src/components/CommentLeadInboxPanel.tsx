@@ -34,6 +34,7 @@ type TikTokOpenCommentResult = {
   error?: string;
   message?: string;
   method?: string;
+  target_found?: boolean;
 };
 
 type TagMeta = {
@@ -673,14 +674,16 @@ export function CommentLeadInboxPanel() {
     const result: TikTokBridgeResult = {
       ok: true,
       manual: true,
-      method: openResult.ok ? 'manual-copy-focus-comment' : 'manual-copy-open',
+      method: openResult.ok ? 'manual-copy-open-context' : 'manual-copy-open',
       url: openResult.url || targetUrl,
       comment_id: `manual_${row.comment_id || Date.now()}`,
     };
     await recordTiktokExtensionResult(row, 'success', message, result).catch(() => null);
     setProcessedIds((current) => (current.includes(commentKey(row)) ? current : [...current, commentKey(row)]));
-    if (openResult.ok) {
-      setReplyStatus('✅ Đã copy câu trả lời, mở video và tô xanh comment cần trả lời. Dán Ctrl+V rồi gửi thủ công.');
+    if (openResult.ok && openResult.target_found) {
+      setReplyStatus('✅ Đã copy câu trả lời, mở video, tô xanh comment đang hiển thị và ghim bảng xử lý. Dán Ctrl+V rồi gửi thủ công.');
+    } else if (openResult.ok) {
+      setReplyStatus('✅ Đã copy câu trả lời và mở TikTok kèm bảng comment cần xử lý. Không tự cuộn để tránh TikTok nhảy video.');
     } else {
       setReplyStatus(`✅ Đã copy câu trả lời và mở video TikTok. Nếu chưa thấy comment, dùng Ctrl+F tìm: "${(row.message || '').slice(0, 80)}"${openResult.error ? ` · ${openResult.error}` : ''}`);
     }
@@ -930,7 +933,7 @@ export function CommentLeadInboxPanel() {
                   <label>Trả lời comment ngay tại đây</label>
                   {sourceKey(selected) === 'tiktok' ? (
                     <div className="reply-hint">
-                      TikTok đang chặn gửi tự động. Bấm nút bên dưới để copy câu trả lời, mở đúng video và tô xanh comment đang chọn, sau đó dán và gửi thủ công trên TikTok.
+                      TikTok đang chặn gửi tự động. Bấm nút bên dưới để copy câu trả lời, mở đúng video và ghim bảng comment cần xử lý trên TikTok, sau đó dán và gửi thủ công.
                     </div>
                   ) : (
                     <div className="reply-hint">Facebook sẽ reply trực tiếp vào Comment ID đang chọn.</div>
@@ -954,7 +957,7 @@ export function CommentLeadInboxPanel() {
                   </div>
                   <div className="reply-send-row">
                     <button type="button" className="btn-submit" disabled={replyBusy || !replyText.trim()} onClick={() => void sendReply()}>
-                      {replyBusy ? 'Đang mở...' : sourceKey(selected) === 'tiktok' ? 'Copy & mở đúng CMT' : 'Gửi trả lời'}
+                      {replyBusy ? 'Đang mở...' : sourceKey(selected) === 'tiktok' ? 'Copy & mở TikTok' : 'Gửi trả lời'}
                     </button>
                     <span>{replyStatus}</span>
                   </div>

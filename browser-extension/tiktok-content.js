@@ -137,8 +137,117 @@
     return String(value || '').replace(/^tiktok_/, '').trim();
   }
 
+  async function copyText(value) {
+    const text = String(value || '');
+    if (!text) return false;
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (error) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', 'true');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      textarea.style.top = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return ok;
+    }
+  }
+
+  function compact(value, fallback) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    return text || fallback || '-';
+  }
+
+  function escapeHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function renderCommentContextCard(payload, found) {
+    const old = document.querySelector('[data-streal-comment-context-card="true"]');
+    if (old) old.remove();
+
+    const commentText = compact(payload.comment_text, '(Comment không có nội dung chữ)');
+    const replyText = compact(payload.reply_text, '');
+    const authorName = compact(payload.author_name, 'Ẩn danh');
+    const card = document.createElement('section');
+    card.setAttribute('data-streal-comment-context-card', 'true');
+    card.style.position = 'fixed';
+    card.style.zIndex = '2147483647';
+    card.style.right = '24px';
+    card.style.bottom = '24px';
+    card.style.width = 'min(420px, calc(100vw - 32px))';
+    card.style.maxHeight = 'calc(100vh - 48px)';
+    card.style.overflow = 'auto';
+    card.style.borderRadius = '18px';
+    card.style.background = '#0f172a';
+    card.style.color = '#e5e7eb';
+    card.style.font = '500 14px/1.45 Arial, sans-serif';
+    card.style.boxShadow = '0 24px 70px rgba(0,0,0,.45)';
+    card.style.border = '1px solid rgba(148,163,184,.28)';
+    card.style.padding = '16px';
+
+    const safeFoundText = found
+      ? 'Đã thấy comment đang hiển thị và tô xanh. Không tự cuộn thêm.'
+      : 'Không tự cuộn để tránh TikTok nhảy video. Dùng nội dung bên dưới để dò comment trong panel.';
+
+    card.innerHTML = `
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px">
+        <div>
+          <div style="font-size:16px;font-weight:800;color:#fff">Lead Hunter - comment cần xử lý</div>
+          <div style="margin-top:4px;color:#93c5fd;font-weight:700">${escapeHtml(authorName)}</div>
+        </div>
+        <button type="button" data-streal-close-card="true" style="border:0;background:rgba(255,255,255,.08);color:#fff;border-radius:999px;width:32px;height:32px;cursor:pointer;font-size:18px">×</button>
+      </div>
+      <div style="border-radius:14px;background:rgba(255,255,255,.08);padding:12px;margin-bottom:12px">
+        <div style="color:#9ca3af;font-size:12px;text-transform:uppercase;font-weight:800;margin-bottom:6px">Comment gốc</div>
+        <div data-streal-original-text="true" style="white-space:pre-wrap;color:#fff">${escapeHtml(commentText)}</div>
+      </div>
+      <div style="border-radius:14px;background:rgba(37,99,235,.18);padding:12px;margin-bottom:12px">
+        <div style="color:#bfdbfe;font-size:12px;text-transform:uppercase;font-weight:800;margin-bottom:6px">Câu trả lời đã copy</div>
+        <div data-streal-reply-text="true" style="white-space:pre-wrap;color:#fff">${escapeHtml(replyText || 'Chưa có câu trả lời')}</div>
+      </div>
+      <div style="color:#cbd5e1;margin-bottom:12px">${safeFoundText}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" data-streal-copy-reply="true" style="border:0;background:#2563eb;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Copy câu trả lời</button>
+        <button type="button" data-streal-copy-comment="true" style="border:1px solid rgba(148,163,184,.5);background:transparent;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Copy comment gốc</button>
+        <button type="button" data-streal-open-search="true" style="border:1px solid rgba(148,163,184,.5);background:transparent;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Gợi ý tìm</button>
+      </div>
+      <div data-streal-card-status="true" style="margin-top:10px;color:#86efac;font-size:13px"></div>
+    `;
+
+    const status = card.querySelector('[data-streal-card-status="true"]');
+    const setStatus = (text) => {
+      if (status) status.textContent = text;
+    };
+    card.querySelector('[data-streal-close-card="true"]')?.addEventListener('click', () => card.remove());
+    card.querySelector('[data-streal-copy-reply="true"]')?.addEventListener('click', async () => {
+      await copyText(replyText);
+      setStatus('Đã copy câu trả lời. Dán vào ô bình luận TikTok để gửi thủ công.');
+    });
+    card.querySelector('[data-streal-copy-comment="true"]')?.addEventListener('click', async () => {
+      await copyText(commentText);
+      setStatus('Đã copy comment gốc. Có thể dùng Ctrl+F để tìm nếu TikTok hỗ trợ.');
+    });
+    card.querySelector('[data-streal-open-search="true"]')?.addEventListener('click', async () => {
+      await copyText(commentText);
+      setStatus('Đã copy comment gốc. TikTok web không hỗ trợ deep-link tới từng comment ổn định, nên không tự cuộn.');
+    });
+
+    document.body.appendChild(card);
+    void copyText(replyText);
+  }
+
   function highlightCommentElement(target, payload) {
-    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     target.style.outline = '4px solid #2563eb';
     target.style.boxShadow = '0 0 0 8px rgba(37, 99, 235, 0.22)';
     target.style.borderRadius = '12px';
@@ -206,37 +315,19 @@
     }
 
     maybeOpenCommentPanel();
-    await sleep(1500);
-    let target = findCommentCandidate(payload);
-    for (let i = 0; i < 28 && !target; i += 1) {
-      const scrollers = Array.from(document.querySelectorAll('div')).filter((el) => {
-        if (!isVisible(el)) return false;
-        return el.scrollHeight > el.clientHeight + 120 && el.getBoundingClientRect().height > 180;
-      });
-      const panel = scrollers.sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
-      if (panel) panel.scrollBy(0, Math.max(320, panel.clientHeight * 0.75));
-      else window.scrollBy(0, Math.max(500, window.innerHeight || 800));
-      await sleep(900);
-      maybeOpenCommentPanel();
-      target = findCommentCandidate(payload);
-    }
-
-    if (!target) {
-      return {
-        ok: false,
-        final: FINAL,
-        error: 'Đã mở video nhưng chưa tìm thấy đúng nội dung comment. Hãy dùng Ctrl+F và dán nội dung comment gốc để tìm nhanh.',
-        url: window.location.href,
-      };
-    }
-
-    highlightCommentElement(target, payload);
+    await sleep(1200);
+    const target = findCommentCandidate(payload);
+    if (target) highlightCommentElement(target, payload);
+    renderCommentContextCard(payload, Boolean(target));
     return {
       ok: true,
       final: FINAL,
-      message: 'Đã mở video và tô xanh comment cần trả lời.',
+      target_found: Boolean(target),
+      message: target
+        ? 'Đã mở video, tô xanh comment đang hiển thị và ghim bảng xử lý.'
+        : 'Đã mở video và ghim bảng comment cần xử lý. Không tự cuộn để tránh TikTok nhảy video.',
       url: window.location.href,
-      method: 'focus-comment',
+      method: target ? 'focus-visible-comment' : 'open-context-card',
     };
   }
 
