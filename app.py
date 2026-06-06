@@ -3078,6 +3078,7 @@ def fetch_tiktok_channel_comments():
 
     all_rows: list[dict] = []
     errors: list[str] = []
+    reports: list[dict] = []
     fetched_at = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
     for video in videos:
         comments, fetch_error = _fetch_tiktok_comments(video['video_id'], limit=per_video_limit, cookie=cookie)
@@ -3094,9 +3095,35 @@ def fetch_tiktok_channel_comments():
             video.get('video_title') or '',
         )
         all_rows.extend(rows)
+        reports.append({
+            'video_id': video.get('video_id'),
+            'post_url': video.get('post_url'),
+            'video_title': video.get('video_title'),
+            'ok': bool(rows),
+            'comment_count': len(rows),
+            'error': fetch_error,
+        })
 
     if not all_rows and errors:
-        return jsonify({'ok': False, 'error': ' | '.join(errors[:3]), 'videos': videos}), 502
+        return jsonify({
+            'ok': True,
+            'source': 'tiktok',
+            'channel': channel,
+            'video_count': len(videos),
+            'comment_count': 0,
+            'fetched_comment_count': 0,
+            'matched_count': 0,
+            'phone_count': 0,
+            'videos': videos,
+            'reports': reports,
+            'comments': [],
+            'storage': 'local',
+            'warning': (
+                f"Đã tìm thấy {len(videos)} video trong kênh nhưng TikTok chưa trả comment. "
+                f"Chi tiết: {' | '.join(errors[:3])}. "
+                "Thử tab Một video với link cụ thể có comment, hoặc cập nhật TikTok cookie/quyền xem comment."
+            ),
+        })
 
     storage, warning = _store_post_comment_rows(all_rows)
     matched_count = sum(1 for row in all_rows if row.get('is_matched'))
@@ -3111,6 +3138,7 @@ def fetch_tiktok_channel_comments():
         'matched_count': matched_count,
         'phone_count': phone_count,
         'videos': videos,
+        'reports': reports,
         'comments': all_rows,
         'storage': storage,
     }
@@ -3130,6 +3158,7 @@ def fetch_configured_tiktok_channels_comments():
     keywords = _normalize_keywords(body.get('keywords') or [])
     max_videos = max(1, min(int(body.get('max_videos') or 5), 20))
     per_video_limit = max(1, min(int(body.get('limit_per_video') or 150), 400))
+    cookie = str(body.get('cookie') or '').strip()
     selected_ids = {
         str(item).strip()
         for item in (body.get('channel_ids') or [])
@@ -3148,18 +3177,19 @@ def fetch_configured_tiktok_channels_comments():
     reports: list[dict] = []
     for channel in tiktok_channels:
         raw = channel.get('link') or channel.get('target_id') or channel.get('channel_name') or ''
-        videos, video_error = _fetch_tiktok_channel_videos(raw, max_videos=max_videos)
+        videos, video_error = _fetch_tiktok_channel_videos(raw, max_videos=max_videos, cookie=cookie)
         if not videos:
             reports.append({'channel_id': channel.get('id'), 'channel_name': channel.get('channel_name'), 'ok': False, 'error': video_error})
             continue
         fetched_at = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
         channel_rows: list[dict] = []
         channel_errors: list[str] = []
+        video_reports: list[dict] = []
         for video in videos:
-            comments, fetch_error = _fetch_tiktok_comments(video['video_id'], limit=per_video_limit)
+            comments, fetch_error = _fetch_tiktok_comments(video['video_id'], limit=per_video_limit, cookie=cookie)
             if fetch_error:
                 channel_errors.append(f"{video.get('video_id')}: {fetch_error}")
-            channel_rows.extend(_flatten_tiktok_comment_rows(
+            video_rows = _flatten_tiktok_comment_rows(
                 video['video_id'],
                 video['post_url'],
                 comments,
@@ -3168,7 +3198,16 @@ def fetch_configured_tiktok_channels_comments():
                 _current_staff(),
                 channel.get('channel_name') or video.get('channel_name') or '',
                 video.get('video_title') or '',
-            ))
+            )
+            channel_rows.extend(video_rows)
+            video_reports.append({
+                'video_id': video.get('video_id'),
+                'post_url': video.get('post_url'),
+                'video_title': video.get('video_title'),
+                'ok': bool(video_rows),
+                'comment_count': len(video_rows),
+                'error': fetch_error,
+            })
         merged_rows.extend(channel_rows)
         reports.append({
             'channel_id': channel.get('id'),
@@ -3177,11 +3216,12 @@ def fetch_configured_tiktok_channels_comments():
             'video_count': len(videos),
             'comment_count': len(channel_rows),
             'error': ' | '.join(channel_errors[:2]),
+            'videos': video_reports,
         })
 
     storage, warning = _store_post_comment_rows(merged_rows)
     payload = {
-        'ok': any(item.get('ok') for item in reports),
+        'ok': True,
         'channel_count': len(tiktok_channels),
         'comment_count': len(merged_rows),
         'fetched_comment_count': len(merged_rows),
@@ -3193,9 +3233,10 @@ def fetch_configured_tiktok_channels_comments():
     }
     if warning:
         payload['warning'] = warning if storage == 'supabase' else f'Đã lưu local, Supabase chưa ghi được: {warning}'
-    if not payload['ok']:
-        payload['error'] = 'Chưa lấy được comment từ kênh TikTok nào. Kiểm tra link kênh/cookie TikTok hoặc thử từng video.'
-    return jsonify(payload), (200 if payload['ok'] else 502)
+    if not merged_rows:
+        no_comment_warning = 'Chưa lấy được comment từ kênh TikTok nào. Kiểm tra link kênh/cookie TikTok hoặc thử tab Một video với video chắc chắn có comment.'
+        payload['warning'] = (payload.get('warning') + ' | ' if payload.get('warning') else '') + no_comment_warning
+    return jsonify(payload)
 
 
 @app.route('/api/tiktok/comment', methods=['POST'])

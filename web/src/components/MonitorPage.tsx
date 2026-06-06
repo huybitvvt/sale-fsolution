@@ -1041,12 +1041,20 @@ export function MonitorPage() {
       if (d.ok) {
         setTiktokRows(d.comments || []);
         const warn = d.warning ? ` · ${d.warning}` : '';
+        const reportText = Array.isArray(d.reports) && d.reports.length
+          ? ` · báo cáo: ${d.reports.slice(0, 3).map((item: Record<string, unknown>) => {
+              const label = String(item.video_id || item.channel_name || item.channel_id || 'nguồn');
+              const count = Number(item.comment_count || 0);
+              const error = item.error ? ` (${String(item.error).slice(0, 90)})` : '';
+              return `${label}: ${count} cmt${error}`;
+            }).join(' | ')}`
+          : '';
         const prefix = tiktokMode === 'video'
           ? 'Video'
           : tiktokMode === 'managed'
             ? `${selectedChannel?.channel_name || 'Các kênh đã lưu'}`
             : `Kênh ${url}`;
-        setTiktokStatus(`${prefix}: đã đọc ${d.fetched_comment_count || d.comment_count || 0} comment · ${d.video_count ? `${d.video_count} video · ` : ''}khớp ${d.matched_count || 0} · có SĐT ${d.phone_count || 0} · lưu ${d.storage}${warn}`);
+        setTiktokStatus(`${prefix}: đã đọc ${d.fetched_comment_count || d.comment_count || 0} comment · ${d.video_count ? `${d.video_count} video · ` : ''}khớp ${d.matched_count || 0} · có SĐT ${d.phone_count || 0} · lưu ${d.storage}${warn}${reportText}`);
         void loadTiktokStats(d.post_id || '');
       } else {
         setTiktokRows([]);
