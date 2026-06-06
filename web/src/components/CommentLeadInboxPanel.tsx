@@ -25,6 +25,7 @@ type TikTokBridgeResult = {
   url?: string;
   error?: string;
   method?: string;
+  manual?: boolean;
 };
 
 type TagMeta = {
@@ -577,6 +578,40 @@ export function CommentLeadInboxPanel() {
     return r.json().catch(() => ({ ok: false, error: `Server lỗi ${r.status}` }));
   }
 
+  async function prepareManualTikTokReply(row: StoredPostComment, message: string) {
+    const targetUrl = row.comment_url || row.post_url || '';
+    if (!targetUrl) {
+      setReplyStatus('Comment TikTok này chưa có link video để mở.');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(message);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = message;
+      textarea.setAttribute('readonly', 'true');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+
+    window.open(targetUrl, '_blank', 'noopener,noreferrer');
+    const result: TikTokBridgeResult = {
+      ok: true,
+      manual: true,
+      method: 'manual-copy-open',
+      url: targetUrl,
+      comment_id: `manual_${row.comment_id || Date.now()}`,
+    };
+    await recordTiktokExtensionResult(row, 'success', message, result).catch(() => null);
+    setProcessedIds((current) => (current.includes(commentKey(row)) ? current : [...current, commentKey(row)]));
+    setReplyStatus('✅ Đã copy câu trả lời và mở TikTok. Vào ô bình luận, dán Ctrl+V rồi bấm gửi thủ công.');
+  }
+
   const sendReply = async () => {
     if (!selected) {
       setReplyStatus('Chọn bình luận trước khi trả lời');
@@ -590,29 +625,12 @@ export function CommentLeadInboxPanel() {
 
     const src = sourceKey(selected);
     setReplyBusy(true);
-    setReplyStatus(src === 'tiktok' ? 'Đang gửi bình luận TikTok bằng extension...' : 'Đang gửi trả lời...');
+    setReplyStatus(src === 'tiktok' ? 'Đang copy câu trả lời và mở TikTok...' : 'Đang gửi trả lời...');
     try {
       if (src === 'tiktok') {
-        if (!tiktokBridgeReady) {
-          setReplyStatus('Chưa thấy extension. Cài/bật Lead Hunter Bridge, đăng nhập TikTok trên Chrome rồi tải lại trang.');
-          return;
-        }
-        const extensionResult = await requestTiktokExtensionComment({
-          post_id: selected.post_id,
-          post_url: selected.post_url || selected.comment_url,
-          video_title: selected.video_title,
-          channel_name: selected.channel_name,
-          message,
-        });
-        if (extensionResult.ok) {
-          const saved = await recordTiktokExtensionResult(selected, 'success', message, extensionResult);
-          setReplyText('');
-          setReplyStatus(saved.warning ? `✅ Đã gửi CMT TikTok, nhưng ${saved.warning}` : '✅ Đã gửi CMT TikTok lên video. TikTok không hỗ trợ gắn reply đúng thread trong bản này.');
-          await loadComments();
-        } else {
-          await recordTiktokExtensionResult(selected, 'failed', message, extensionResult).catch(() => null);
-          setReplyStatus(`❌ ${extensionResult.error || 'Extension chưa gửi được bình luận TikTok'}`);
-        }
+        await prepareManualTikTokReply(selected, message);
+        setReplyText('');
+        await loadComments();
         return;
       }
 
@@ -838,9 +856,7 @@ export function CommentLeadInboxPanel() {
                   <label>Trả lời comment ngay tại đây</label>
                   {sourceKey(selected) === 'tiktok' ? (
                     <div className="reply-hint">
-                      {tiktokBridgeReady
-                        ? `Extension đã kết nối${tiktokBridgeVersion ? ` v${tiktokBridgeVersion}` : ''}. TikTok sẽ nhận bình luận trên video, không gắn thread cụ thể.`
-                        : 'TikTok cần Chrome extension để gửi bình luận từ phiên đăng nhập thật.'}
+                      TikTok đang chặn gửi tự động. Bấm nút bên dưới để copy câu trả lời và mở đúng video/comment, sau đó dán và gửi thủ công trên TikTok.
                     </div>
                   ) : (
                     <div className="reply-hint">Facebook sẽ reply trực tiếp vào Comment ID đang chọn.</div>
@@ -864,7 +880,7 @@ export function CommentLeadInboxPanel() {
                   </div>
                   <div className="reply-send-row">
                     <button type="button" className="btn-submit" disabled={replyBusy || !replyText.trim()} onClick={() => void sendReply()}>
-                      {replyBusy ? 'Đang gửi...' : sourceKey(selected) === 'tiktok' ? 'Gửi CMT TikTok' : 'Gửi trả lời'}
+                      {replyBusy ? 'Đang mở...' : sourceKey(selected) === 'tiktok' ? 'Copy & mở TikTok' : 'Gửi trả lời'}
                     </button>
                     <span>{replyStatus}</span>
                   </div>

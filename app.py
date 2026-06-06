@@ -2191,6 +2191,8 @@ def _record_tiktok_extension_comment(body: dict) -> tuple[dict, int]:
     status = str(body.get('status') or '').strip().lower()
     error = str(body.get('error') or '').strip()
     extension_result = body.get('extension_result') if isinstance(body.get('extension_result'), dict) else {}
+    is_manual = bool(extension_result.get('manual')) or str(extension_result.get('method') or '').startswith('manual')
+    delivery = 'manual_copy_open' if is_manual else 'chrome_extension'
 
     if post_id.startswith('tiktok_') and not raw_video_id:
         raw_video_id = post_id.replace('tiktok_', '', 1)
@@ -2238,7 +2240,7 @@ def _record_tiktok_extension_comment(body: dict) -> tuple[dict, int]:
     if not comment_id.startswith('tiktok_'):
         comment_id = f'tiktok_{comment_id}'
 
-    log = _record_comment_log(final_post_id, 'tiktok', final_url, message, 'tiktok-extension', 'success', comment_id=comment_id)
+    log = _record_comment_log(final_post_id, 'tiktok', final_url, message, delivery, 'success', comment_id=comment_id)
     rows = [{
         'source': 'tiktok',
         'post_id': final_post_id,
@@ -2256,7 +2258,8 @@ def _record_tiktok_extension_comment(body: dict) -> tuple[dict, int]:
         'is_matched': False,
         'raw_comment': {
             'outbound': True,
-            'delivery': 'chrome_extension',
+            'delivery': delivery,
+            'manual_prepared': is_manual,
             'extension_result': extension_result,
             '_video_meta': {
                 'channel_name': str(body.get('channel_name') or _derive_tiktok_channel_name(final_url)),
@@ -2276,13 +2279,15 @@ def _record_tiktok_extension_comment(body: dict) -> tuple[dict, int]:
         'post_id': final_post_id,
         'post_url': final_url,
         'comment_id': comment_id,
-        'delivery': 'chrome_extension',
+        'delivery': delivery,
+        'manual_prepared': is_manual,
         'storage': storage,
         'log_storage': log.get('storage'),
     }
     warnings = []
     if storage_warning:
-        warnings.append(f'Comment đã gửi, nhưng Supabase post_comments chưa ghi được: {storage_warning}')
+        prefix = 'Comment đã chuẩn bị thủ công' if is_manual else 'Comment đã gửi'
+        warnings.append(f'{prefix}, nhưng Supabase post_comments chưa ghi được: {storage_warning}')
     if log.get('storage_warning'):
         warnings.append(f"Lịch sử comment đã lưu local, Supabase chưa ghi được: {log['storage_warning']}")
     if warnings:

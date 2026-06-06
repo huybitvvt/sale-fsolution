@@ -62,6 +62,8 @@ type TikTokBridgeResult = {
   comment_id?: string;
   url?: string;
   version?: string;
+  manual?: boolean;
+  method?: string;
 };
 type PostFetchReport = {
   group_id?: string;
@@ -1153,6 +1155,39 @@ export function MonitorPage() {
     return r.json();
   }
 
+  async function prepareManualTikTokComment(message: string) {
+    if (!selectedTiktokStat?.post_url) {
+      setTiktokCommentStatus('Video TikTok này chưa có link để mở.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(message);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = message;
+      textarea.setAttribute('readonly', 'true');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    window.open(selectedTiktokStat.post_url, '_blank', 'noopener,noreferrer');
+    const result: TikTokBridgeResult = {
+      ok: true,
+      manual: true,
+      method: 'manual-copy-open',
+      url: selectedTiktokStat.post_url,
+      comment_id: `manual_${selectedTiktokStat.video_id || Date.now()}`,
+    };
+    const d = await recordTiktokExtensionResult('success', message, result);
+    setTiktokCommentText('');
+    setTiktokCommentStatus(`Đã copy nội dung và mở TikTok. Dán Ctrl+V vào ô bình luận rồi gửi thủ công${d.warning ? ` · ${d.warning}` : ''}`);
+    await loadTiktokStats(d.post_id || selectedTiktokStat.post_id || '');
+    await loadTodayCommentStats();
+  }
+
   async function sendTiktokComment() {
     if (!selectedTiktokStat?.post_id && !selectedTiktokStat?.video_id) {
       setTiktokCommentStatus('Chọn video TikTok trước');
@@ -1163,35 +1198,12 @@ export function MonitorPage() {
       setTiktokCommentStatus('Nhập nội dung bình luận');
       return;
     }
-    if (!tiktokBridgeReady) {
-      setTiktokCommentStatus('Chưa thấy extension Seeding Fsolution Bridge. Cài extension, đăng nhập TikTok trên Chrome rồi tải lại trang.');
-      return;
-    }
     setTiktokCommentBusy(true);
-    setTiktokCommentStatus('Đang mở TikTok bằng extension...');
+    setTiktokCommentStatus('Đang copy nội dung và mở TikTok...');
     try {
-      const extensionResult = await requestTiktokExtensionComment({
-        post_id: selectedTiktokStat.post_id,
-        video_id: selectedTiktokStat.video_id,
-        post_url: selectedTiktokStat.post_url,
-        video_title: selectedTiktokStat.video_title,
-        channel_name: selectedTiktokStat.channel_name,
-        message,
-      });
-
-      if (extensionResult.ok) {
-        setTiktokCommentStatus('Extension đã gửi, đang lưu lịch sử...');
-        const d = await recordTiktokExtensionResult('success', message, extensionResult);
-        setTiktokCommentText('');
-        setTiktokCommentStatus(`Đã gửi bình luận TikTok bằng Chrome${d.warning ? ` · ${d.warning}` : ''}`);
-        await loadTiktokStats(d.post_id || selectedTiktokStat.post_id || '');
-        await loadTodayCommentStats();
-      } else {
-        await recordTiktokExtensionResult('failed', message, extensionResult).catch(() => null);
-        setTiktokCommentStatus(`Lỗi: ${extensionResult.error || 'Extension chưa gửi được bình luận TikTok'}`);
-      }
+      await prepareManualTikTokComment(message);
     } catch {
-      setTiktokCommentStatus('Lỗi kết nối extension hoặc backend');
+      setTiktokCommentStatus('Không copy/mở được TikTok. Hãy bấm “Mở” video rồi dán nội dung thủ công.');
     }
     setTiktokCommentBusy(false);
   }
@@ -2395,20 +2407,18 @@ export function MonitorPage() {
               </div>
               <div className="tiktok-comment-send">
                 <div className="tiktok-extension-status">
-                  <span className={`status-pill ${tiktokBridgeReady ? 'ok' : 'warn'}`}>
-                    {tiktokBridgeReady ? `Extension đã kết nối${tiktokBridgeVersion ? ` v${tiktokBridgeVersion}` : ''}` : 'Chưa kết nối extension'}
-                  </span>
-                  <small>Gửi bình luận bằng Chrome đang đăng nhập TikTok, không dùng cookie server.</small>
+                  <span className="status-pill ok">Chế độ thủ công an toàn</span>
+                  <small>TikTok đang chặn gửi tự động. Nút dưới sẽ copy nội dung và mở video để bạn dán rồi gửi trực tiếp.</small>
                 </div>
                 <textarea
                   value={tiktokCommentText}
                   onChange={(e) => setTiktokCommentText(e.target.value)}
-                  placeholder="Nhập bình luận để gửi lên video TikTok đang chọn..."
+                  placeholder="Nhập bình luận, bấm nút để copy và mở video TikTok..."
                   rows={2}
                 />
                 <div className="tiktok-comment-send-row">
                   <button type="button" className="btn-submit" disabled={tiktokCommentBusy || !selectedTiktokStat} onClick={() => void sendTiktokComment()}>
-                    {tiktokCommentBusy ? 'Đang gửi...' : 'Gửi CMT TikTok'}
+                    {tiktokCommentBusy ? 'Đang mở...' : 'Copy & mở TikTok'}
                   </button>
                   <span>{tiktokCommentStatus}</span>
                 </div>
