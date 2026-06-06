@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import uuid
 
 from flask import Flask, jsonify, request
@@ -102,11 +103,25 @@ def _install_playwright_browsers() -> tuple[bool, str]:
 
 
 def _launch_persistent_context(p, launch_opts: dict):
-    try:
+    def launch_once():
         return p.chromium.launch_persistent_context(
             PLAYWRIGHT_USER_DATA_DIR,
             **launch_opts,
         )
+
+    first_error = None
+    for attempt in range(4):
+        try:
+            return launch_once()
+        except Exception as e:
+            first_error = e
+            message = str(e)
+            if 'ETXTBSY' not in message and 'Text file busy' not in message:
+                break
+            time.sleep(2 + attempt)
+
+    try:
+        return launch_once()
     except Exception as first_error:
         message = str(first_error)
         missing_browser = (
@@ -124,10 +139,15 @@ def _launch_persistent_context(p, launch_opts: dict):
                 f'{install_output[:900]}'
             ) from first_error
 
-        return p.chromium.launch_persistent_context(
-            PLAYWRIGHT_USER_DATA_DIR,
-            **launch_opts,
-        )
+        time.sleep(3)
+        for attempt in range(4):
+            try:
+                return launch_once()
+            except Exception as e:
+                if 'ETXTBSY' not in str(e) and 'Text file busy' not in str(e):
+                    raise
+                time.sleep(2 + attempt)
+        return launch_once()
 
 
 def _run_comment(body: dict) -> tuple[dict, str]:
