@@ -1244,7 +1244,7 @@ export function MonitorPage() {
     return r.json();
   }
 
-  async function prepareManualTikTokComment(message: string) {
+  async function prepareManualTikTokComment(message: string, fallbackReason = '') {
     if (!selectedTiktokStat?.post_url) {
       setTiktokCommentStatus('Video TikTok này chưa có link để mở.');
       return;
@@ -1272,9 +1272,27 @@ export function MonitorPage() {
     };
     const d = await recordTiktokExtensionResult('success', message, result);
     setTiktokCommentText('');
-    setTiktokCommentStatus(`Đã copy nội dung và mở TikTok. Dán Ctrl+V vào ô bình luận rồi gửi thủ công${d.warning ? ` · ${d.warning}` : ''}`);
+    const prefix = fallbackReason ? `TikTok chưa nhận gửi trực tiếp (${fallbackReason}). ` : '';
+    setTiktokCommentStatus(`${prefix}Đã copy nội dung và mở TikTok. Dán Ctrl+V vào ô bình luận rồi gửi thủ công${d.warning ? ` · ${d.warning}` : ''}`);
     await loadTiktokStats(d.post_id || selectedTiktokStat.post_id || '');
     await loadTodayCommentStats();
+  }
+
+  async function sendDirectTikTokComment(message: string) {
+    if (!selectedTiktokStat) {
+      return { ok: false, error: 'Chưa chọn video TikTok' } as TikTokBridgeResult;
+    }
+    if (!tiktokBridgeReady) {
+      return { ok: false, error: 'Chưa thấy extension Seeding Fsolution Bridge' } as TikTokBridgeResult;
+    }
+    return requestTiktokExtensionComment({
+      post_id: selectedTiktokStat.post_id,
+      video_id: selectedTiktokStat.video_id,
+      post_url: selectedTiktokStat.post_url,
+      video_title: selectedTiktokStat.video_title,
+      channel_name: selectedTiktokStat.channel_name,
+      message,
+    });
   }
 
   async function sendTiktokComment() {
@@ -1288,11 +1306,26 @@ export function MonitorPage() {
       return;
     }
     setTiktokCommentBusy(true);
-    setTiktokCommentStatus('Đang copy nội dung và mở TikTok...');
+    setTiktokCommentStatus('Đang gửi TikTok bằng Chrome đang đăng nhập...');
     try {
-      await prepareManualTikTokComment(message);
-    } catch {
-      setTiktokCommentStatus('Không copy/mở được TikTok. Hãy bấm “Mở” video rồi dán nội dung thủ công.');
+      const directResult = await sendDirectTikTokComment(message);
+      if (directResult.ok) {
+        const d = await recordTiktokExtensionResult('success', message, directResult);
+        setTiktokCommentText('');
+        setTiktokCommentStatus(`Đã gửi comment TikTok trực tiếp từ UI qua Chrome extension${d.warning ? ` · ${d.warning}` : ''}`);
+        await loadTiktokStats(d.post_id || selectedTiktokStat.post_id || '');
+        await loadTodayCommentStats();
+      } else {
+        await recordTiktokExtensionResult('failed', message, directResult).catch(() => null);
+        await prepareManualTikTokComment(message, directResult.error || 'TikTok chặn phiên gửi tự động');
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Không gửi được TikTok';
+      try {
+        await prepareManualTikTokComment(message, reason);
+      } catch {
+        setTiktokCommentStatus('Không gửi/copy/mở được TikTok. Hãy bấm “Mở” video rồi dán nội dung thủ công.');
+      }
     }
     setTiktokCommentBusy(false);
   }
@@ -2496,8 +2529,8 @@ export function MonitorPage() {
               </div>
               <div className="tiktok-comment-send">
                 <div className="tiktok-extension-status">
-                  <span className="status-pill ok">Chế độ thủ công an toàn</span>
-                  <small>TikTok đang chặn gửi tự động. Nút dưới sẽ copy nội dung và mở video để bạn dán rồi gửi trực tiếp.</small>
+                  <span className="status-pill ok">Gửi qua Chrome extension</span>
+                  <small>Web sẽ thử gửi trực tiếp bằng phiên TikTok đang đăng nhập trên Chrome. Nếu TikTok chặn, hệ thống tự copy nội dung và mở video để gửi thủ công.</small>
                 </div>
                 <textarea
                   value={tiktokCommentText}
@@ -2507,7 +2540,7 @@ export function MonitorPage() {
                 />
                 <div className="tiktok-comment-send-row">
                   <button type="button" className="btn-submit" disabled={tiktokCommentBusy || !selectedTiktokStat} onClick={() => void sendTiktokComment()}>
-                    {tiktokCommentBusy ? 'Đang mở...' : 'Copy & mở TikTok'}
+                    {tiktokCommentBusy ? 'Đang gửi...' : 'Gửi CMT TikTok'}
                   </button>
                   <span>{tiktokCommentStatus}</span>
                 </div>

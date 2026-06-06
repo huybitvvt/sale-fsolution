@@ -93,10 +93,16 @@
   function findPostButton() {
     const selectors = [
       '[data-e2e="comment-post"]',
+      '[data-e2e*="comment-post"]',
+      '[data-e2e*="comment-submit"]',
       'button[data-e2e*="comment-post"]',
+      'button[type="submit"]',
       'button[aria-label*="post" i]',
       'button[aria-label*="đăng" i]',
       'button[aria-label*="gửi" i]',
+      'div[role="button"][aria-label*="post" i]',
+      'div[role="button"][aria-label*="đăng" i]',
+      'div[role="button"][aria-label*="gửi" i]',
     ];
     for (const selector of selectors) {
       const direct = Array.from(document.querySelectorAll(selector)).find((button) => isVisible(button) && !isDisabled(button));
@@ -108,6 +114,17 @@
       const text = buttonText(button);
       return text === 'post' || text === 'đăng' || text === 'gửi' || text.includes('comment-post');
     });
+  }
+
+  function submitCommentByKeyboard(input) {
+    input.focus();
+    const events = [
+      new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true, ctrlKey: true }),
+      new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true, ctrlKey: true }),
+      new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }),
+      new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }),
+    ];
+    events.forEach((event) => input.dispatchEvent(event));
   }
 
   async function waitFor(getter, timeoutMs, onTick) {
@@ -447,7 +464,19 @@
       if (tiktokPageError()) {
         return publishCommentByApi(payload, 'Khung binh luan TikTok dang loi.');
       }
-      return publishCommentByApi(payload, 'Da dien noi dung nhung khong thay nut dang binh luan TikTok.');
+      submitCommentByKeyboard(input);
+      await sleep(1800);
+      if (!tiktokPageError()) {
+        return {
+          ok: true,
+          final: FINAL,
+          comment_id: `extension_keyboard_${Date.now()}`,
+          message: 'Extension da thu gui binh luan TikTok bang phim Enter',
+          url: window.location.href,
+          method: 'dom-keyboard',
+        };
+      }
+      return publishCommentByApi(payload, 'Da dien noi dung nhung TikTok khong hien nut dang binh luan.');
     }
 
     button.click();
@@ -459,6 +488,7 @@
       comment_id: `extension_${Date.now()}`,
       message: 'Extension da bam gui binh luan TikTok',
       url: window.location.href,
+      method: 'dom-click',
     };
   }
 

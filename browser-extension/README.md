@@ -20,13 +20,14 @@ Khi source có thay đổi extension:
 
 1. Mở `chrome://extensions`.
 2. Bấm nút reload trên `Seeding Fsolution Bridge` hoặc bấm `Update`.
-3. Đảm bảo version hiện tại là `0.1.6` trở lên.
+3. Đảm bảo version hiện tại là `0.1.7` trở lên.
 4. Tải lại web Seeding Fsolution trước khi test lại `TikTok CMT`.
 
 ## Lưu ý vận hành
 
 - Không cần dán cookie TikTok vào web để gửi comment.
 - Lấy comment theo kênh TikTok cần extension đang bật, vì TikTok chỉ hiện đủ danh sách video sau khi Chrome render/scroll trang kênh.
+- Khi bấm gửi TikTok từ UI, web sẽ thử gửi trực tiếp qua extension bằng tab TikTok đang đăng nhập. Nếu TikTok chặn/captcha/không nhận, web sẽ fallback sang copy nội dung và mở video để sale gửi thủ công.
 - Khi trả lời TikTok từ Inbox, extension sẽ mở đúng video, copy câu trả lời và ghim một bảng nổi chứa đúng comment cần xử lý. Extension không tự cuộn comment vì TikTok web dễ hiểu thành thao tác chuyển video.
 - Facebook cookie chỉ được lấy khi admin bấm nút, không tự động thu thập nền.
 - Nếu TikTok hỏi đăng nhập lại, hãy đăng nhập trực tiếp trên tab TikTok rồi bấm gửi lại.
