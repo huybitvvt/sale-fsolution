@@ -76,6 +76,8 @@ TIKTOK_PLAYWRIGHT_USER_DATA_DIR = os.environ.get(
     os.path.join(RUNTIME_DATA_DIR, 'playwright', 'tiktok-profile'),
 )
 TIKTOK_PLAYWRIGHT_TIMEOUT_MS = int(os.environ.get('TIKTOK_PLAYWRIGHT_TIMEOUT_MS', '60000') or 60000)
+TIKTOK_PLAYWRIGHT_WORKER_URL = (os.environ.get('TIKTOK_PLAYWRIGHT_WORKER_URL') or '').rstrip('/')
+TIKTOK_PLAYWRIGHT_WORKER_KEY = os.environ.get('TIKTOK_PLAYWRIGHT_WORKER_KEY', '')
 SIMPLE_LOGIN_ONLY = os.environ.get('SIMPLE_LOGIN_ONLY', 'true').lower() not in ('0', 'false', 'no')
 MAX_COMMENT_IMAGE_BYTES = int(os.environ.get('MAX_COMMENT_IMAGE_BYTES', 8 * 1024 * 1024))
 ALLOWED_COMMENT_IMAGE_TYPES = {
@@ -2384,6 +2386,38 @@ def _run_tiktok_playwright_comment(body: dict) -> tuple[dict, str]:
             pass
 
 
+def _run_tiktok_playwright_worker_comment(body: dict) -> tuple[dict, str]:
+    if not TIKTOK_PLAYWRIGHT_WORKER_URL:
+        return {}, 'Chưa cấu hình TIKTOK_PLAYWRIGHT_WORKER_URL để gọi Browser Worker.'
+
+    headers = {'Content-Type': 'application/json'}
+    if TIKTOK_PLAYWRIGHT_WORKER_KEY:
+        headers['Authorization'] = f'Bearer {TIKTOK_PLAYWRIGHT_WORKER_KEY}'
+        headers['X-Worker-Key'] = TIKTOK_PLAYWRIGHT_WORKER_KEY
+
+    try:
+        resp = _req.post(
+            f'{TIKTOK_PLAYWRIGHT_WORKER_URL}/tiktok/comment',
+            headers=headers,
+            json=body,
+            timeout=max(20, min((TIKTOK_PLAYWRIGHT_TIMEOUT_MS // 1000) + 15, 120)),
+        )
+    except Exception as e:
+        return {}, f'Không gọi được Browser Worker: {str(e)[:220]}'
+
+    try:
+        payload = resp.json()
+    except Exception:
+        return {}, f'Browser Worker trả phản hồi không hợp lệ ({resp.status_code}): {resp.text[:180]}'
+
+    if resp.status_code in (401, 403):
+        return {}, payload.get('error') or 'Browser Worker từ chối API key.'
+    if resp.status_code >= 400 or not payload.get('ok'):
+        return {}, payload.get('error') or f'Browser Worker lỗi {resp.status_code}'
+    payload.setdefault('method', 'playwright-worker')
+    return payload, ''
+
+
 def _record_tiktok_extension_comment(body: dict) -> tuple[dict, int]:
     raw_url = str(body.get('url') or body.get('video_url') or body.get('post_url') or '').strip()
     raw_video_id = str(body.get('video_id') or '').strip()
@@ -3628,7 +3662,10 @@ def send_tiktok_comment():
 @app.route('/api/tiktok/comment/playwright', methods=['POST'])
 def send_tiktok_comment_playwright():
     body = request.get_json() or {}
-    payload, error = _run_tiktok_playwright_comment(body)
+    if TIKTOK_PLAYWRIGHT_WORKER_URL:
+        payload, error = _run_tiktok_playwright_worker_comment(body)
+    else:
+        payload, error = _run_tiktok_playwright_comment(body)
     raw_url = str(body.get('url') or body.get('video_url') or body.get('post_url') or '').strip()
     raw_video_id = str(body.get('video_id') or '').strip()
     post_id = str(body.get('post_id') or '').strip()
@@ -3640,7 +3677,7 @@ def send_tiktok_comment_playwright():
         return jsonify({
             'ok': False,
             'source': 'tiktok',
-            'method': 'playwright-browser',
+            'method': 'playwright-worker' if TIKTOK_PLAYWRIGHT_WORKER_URL else 'playwright-browser',
             'fallback_allowed': True,
             'error': error,
         }), status_code

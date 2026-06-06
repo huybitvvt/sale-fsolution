@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: lead-hunter-tiktok-worker
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && python -m playwright install chromium
+    startCommand: python tiktok_playwright_worker.py
+    envVars:
+      - key: WORKER_API_KEY
+        sync: false
+      - key: PLAYWRIGHT_HEADLESS
+        value: "true"
+      - key: PLAYWRIGHT_TIMEOUT_MS
+        value: "90000"
+      - key: PLAYWRIGHT_USER_DATA_DIR
+        value: /opt/render/project/src/data/playwright/tiktok-worker-profile
+      - key: TIKTOK_COOKIE
+        sync: false

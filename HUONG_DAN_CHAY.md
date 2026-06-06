@@ -133,6 +133,25 @@ Lan dau bam `Gui CMT TikTok`, Chrome se mo profile rieng. Dang nhap TikTok trong
 
 Luu y: Vercel serverless khong phu hop de chay Chrome dang nhap TikTok lau dai. Neu khach muon dung that cho nhieu sale, nen dat backend Playwright tren VPS/mini PC rieng.
 
+### 6.1. Chay Playwright bang Browser Worker rieng
+
+Neu UI/API dang deploy tren Vercel, cach on hon la tach Playwright ra service rieng. Xem chi tiet trong `TIKTOK_BROWSER_WORKER.md`.
+
+Tom tat:
+
+1. Deploy `tiktok_playwright_worker.py` len Render/VPS.
+2. Dat env tren worker: `WORKER_API_KEY`, `PLAYWRIGHT_HEADLESS`, `TIKTOK_COOKIE`.
+3. Dat env tren backend Vercel:
+
+```env
+TIKTOK_PLAYWRIGHT_WORKER_URL=https://your-worker.onrender.com
+TIKTOK_PLAYWRIGHT_WORKER_KEY=cung_gia_tri_voi_WORKER_API_KEY
+```
+
+4. Redeploy backend Vercel.
+
+Sau do nut `Gui CMT TikTok` tren web se thu theo thu tu: Browser Worker -> Playwright local -> Chrome extension -> copy/mo link thu cong.
+
 ## 7. Loi hay gap
 
 - Neu hien `Vui long dang nhap`: dang nhap lai bang tai khoan trong bang `staff_users`.
