@@ -18,6 +18,11 @@ export type FbAttachment = {
 export type FbPost = {
   id: string;
   message?: string;
+  title?: string;
+  content?: string;
+  image_url?: string;
+  scheduled_at?: string;
+  video_urls?: string[];
   from?: FbUser;
   created_time?: string;
   permalink_url?: string;

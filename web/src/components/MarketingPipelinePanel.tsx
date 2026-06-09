@@ -342,10 +342,10 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
     <section className="module-panel marketing-panel seeding-studio">
       <div className="module-head">
         <div>
-          <div className="module-kicker">Đăng nhóm / Fanpage</div>
-          <h2>Đăng bài hội nhóm</h2>
+          <div className="module-kicker">Bài viết</div>
+          <h2>Bài viết chuẩn</h2>
           <p className="module-subline">
-            Soạn một kịch bản gốc, chọn nhiều nhóm/Page, tạo biến thể caption bằng AI rồi đăng hoặc lưu lịch trong một màn hình.
+            Đồng bộ theo khung đối tác: tiêu đề, nội dung, link ảnh/video, lịch đăng và chọn nơi đăng trong một màn hình.
           </p>
         </div>
         <div className="module-actions">
@@ -360,7 +360,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
 
       <div className="seeding-layout">
         <div className="seeding-compose-card">
-          <div className="seeding-section-title">📣 Đăng bài hội nhóm</div>
+          <div className="seeding-section-title">📄 Bài viết chuẩn</div>
 
           <label className="seeding-field">
             <span>Tiêu đề bài viết</span>

@@ -1703,7 +1703,7 @@ export function MonitorPage() {
     { key: 'cookies', icon: '🍪', label: 'Cooki' },
     { key: 'history', icon: '🗓', label: 'Lịch thử thao tác' },
     { key: 'leads', icon: '◎', label: 'Lead' },
-    { key: 'marketing', icon: '✦', label: 'Marketing' },
+    { key: 'marketing', icon: '✦', label: 'Bài viết' },
   ];
 
   useEffect(() => {

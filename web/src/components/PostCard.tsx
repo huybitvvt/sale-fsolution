@@ -44,6 +44,21 @@ function postShortId(post: FbPost): string {
   return parts[1] || post.id;
 }
 
+function formatSchedule(value?: string): string {
+  if (!value) return '';
+  try {
+    return new Date(value).toLocaleString('vi-VN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
+  } catch {
+    return value;
+  }
+}
+
 export function PostCard({
   post,
   groupNames,
@@ -87,8 +102,16 @@ export function PostCard({
   const gName = gid && groupNames[gid] ? groupNames[gid] : gid;
   const pageName = post._page_name || pageIdFromPost;
 
+  // ── Bài viết chuẩn: structured fields ──
+  const structuredTitle = (post.title || '').trim();
+  const structuredContent = (post.content || '').trim();
+  const bodyText = structuredContent || text;
+  const bodyLong = bodyText.length > 300;
+  const mediaUrl = (post.image_url || '').trim();
+  const scheduleStr = formatSchedule(post.scheduled_at);
+  const videoUrls = (post.video_urls || []).filter(Boolean);
+
   const [expanded, setExpanded] = useState(false);
-  const [commentsOpen, setCommentsOpen] = useState(false);
   const [cmtOpen, setCmtOpen] = useState(false);
   const [cmtMsg, setCmtMsg] = useState('');
   const [sending, setSending] = useState(false);
@@ -257,16 +280,67 @@ export function PostCard({
           </div>
         </div>
       </div>
-      {text ? (
-        <div className="card-body">
-          <div className={`post-text${long && !expanded ? ' collapsed' : ''}`} id={`pt-${pid}`}>
-            <HighlightText text={text} keywords={keywords} />
+      {structuredTitle ? (
+        <div className="card-body" style={{ paddingBottom: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+            Tiêu đề
           </div>
-          {long && !expanded ? (
+          <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.35, color: '#111827' }}>{structuredTitle}</div>
+        </div>
+      ) : null}
+      {bodyText ? (
+        <div className="card-body">
+          {structuredContent ? (
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              Nội dung
+            </div>
+          ) : null}
+          <div className={`post-text${bodyLong && !expanded ? ' collapsed' : ''}`} id={`pt-${pid}`}>
+            <HighlightText text={bodyText} keywords={keywords} />
+          </div>
+          {bodyLong && !expanded ? (
             <span className="see-more" onClick={() => setExpanded(true)} role="button" tabIndex={0}>
               Xem thêm ▾
             </span>
           ) : null}
+        </div>
+      ) : null}
+      {mediaUrl ? (
+        <div className="card-body" style={{ paddingTop: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+            Link ảnh / media
+          </div>
+          <div className="attachment attachment-link">
+            🖼️{' '}
+            <a href={mediaUrl} target="_blank" rel="noreferrer">
+              {mediaUrl}
+            </a>
+          </div>
+        </div>
+      ) : null}
+      {scheduleStr ? (
+        <div className="card-body" style={{ paddingTop: 0, paddingBottom: 4 }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 12, background: '#f3f4f6', color: '#374151', fontSize: 13, fontWeight: 600 }}>
+            <span>🗓️</span>
+            <span>Lịch đăng: {scheduleStr}</span>
+          </div>
+        </div>
+      ) : null}
+      {videoUrls.length ? (
+        <div className="card-body" style={{ paddingTop: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+            Video đi kèm
+          </div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {videoUrls.map((url, index) => (
+              <div key={`${post.id}-video-${index}`} className="attachment attachment-link">
+                🎥{' '}
+                <a href={url} target="_blank" rel="noreferrer">
+                  {url}
+                </a>
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
       {atts.some(Boolean) ? <div className="card-body" style={{ paddingTop: 0 }}>{atts}</div> : null}
@@ -281,33 +355,6 @@ export function PostCard({
           <span className="stat-icon">↗️</span> {shares}
         </div>
       </div>
-      {cCount > 0 ? (
-        <div className="comments-wrap">
-          <span className="comments-toggle" onClick={() => setCommentsOpen((o) => !o)} role="button" tabIndex={0}>
-            💬 {cCount} bình luận {commentsOpen ? '▴' : '▾'}
-          </span>
-          {commentsOpen ? (
-            <div className="comments-list">
-              {cList.length ? (
-                cList.map((c, i) => {
-                  const cn = c.from?.name || 'Ẩn danh';
-                  return (
-                    <div key={i} className="comment">
-                      <div className="comment-av">{initials(cn)}</div>
-                      <div className="comment-bubble">
-                        <div className="comment-name">{cn}</div>
-                        <div className="comment-msg">{c.message || ''}</div>
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <div style={{ fontSize: 13, color: '#65676b' }}>Không có bình luận</div>
-              )}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
       <LeadBlock items={postLeads} />
       {replySuggestion ? <ReplySuggestionBlock item={replySuggestion} /> : null}
       {visibleCommentSummary ? <CommentSummaryBlock item={visibleCommentSummary} /> : null}
