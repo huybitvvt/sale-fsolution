@@ -502,6 +502,23 @@ def _pipeline_post_message(post: dict) -> str:
     return '\n\n'.join([str(post.get('content') or '').strip(), str(post.get('hashtags') or '').strip()]).strip()
 
 
+_VIDEO_EXT_RE = re.compile(r'\.(mp4|mov|m4v|webm|avi|mkv|flv|wmv|3gp|ogv)(\?|$)', re.I)
+_VIDEO_HOST_RE = re.compile(r'(youtube|youtu\.be|tiktok|facebook\.com|fb\.watch|fb\.gg|reel|short)', re.I)
+
+
+def _is_video_url(url: str) -> bool:
+    url = (url or '').strip()
+    if not url:
+        return False
+    if _VIDEO_EXT_RE.search(url):
+        return True
+    try:
+        host = url.split('/')[2] if '://' in url else url.split('/')[0]
+    except Exception:
+        host = url
+    return bool(_VIDEO_HOST_RE.search(host))
+
+
 def _page_token_from_cache(page_id: str) -> str:
     global _pages_cache
     page_id = str(page_id or '').strip()
@@ -515,10 +532,20 @@ def _page_token_from_cache(page_id: str) -> str:
     return (_pages_cache.get(page_id) or {}).get('access_token') or ''
 
 
+def _extract_post_media(post: dict) -> tuple[str, str]:
+    media_url = str(post.get('media_url') or post.get('image_url') or post.get('article_url') or '').strip()
+    native_video_url = str(post.get('native_video_url') or '').strip()
+    if not native_video_url and media_url and _is_video_url(media_url):
+        native_video_url = media_url
+        media_url = ''
+    return media_url, native_video_url
+
+
 def _publish_content_pipeline_post(post: dict, targets: list[dict]) -> dict:
     message = _pipeline_post_message(post)
     if not message:
         return {'ok': False, 'error': 'Bản nháp chưa có nội dung', 'results': []}
+    media_url, native_video_url = _extract_post_media(post)
     results = []
     ok_count = 0
     for target in targets:
@@ -530,21 +557,21 @@ def _publish_content_pipeline_post(post: dict, targets: list[dict]) -> dict:
                 page_token = _page_token_from_cache(target_id)
                 if not page_token:
                     raise RuntimeError('Không lấy được Page token')
-                result = get_api(DEFAULT_GROUP).create_page_post(target_id, message, page_token)
+                result = get_api(DEFAULT_GROUP).create_page_post(target_id, message, page_token, media_url, native_video_url)
             else:
                 if not target_id:
                     raise RuntimeError('Thiếu group_id')
                 page_id = str((target or {}).get('page_id') or '').strip()
                 page_token = _page_token_from_cache(page_id) if page_id else None
-                result = get_api(target_id).create_post(message, page_token)
+                result = get_api(target_id).create_post(message, page_token, media_url, native_video_url)
             if result and result.get('id'):
                 ok_count += 1
-                results.append({'ok': True, 'type': target_type or 'group', 'id': target_id, 'name': target_name, 'post_id': result.get('id')})
+                results.append({'ok': True, 'type': target_type or 'group', 'id': target_id, 'name': target_name, 'post_id': result.get('id'), 'delivery': 'native_video' if native_video_url else ('link_preview' if media_url else 'text')})
             else:
                 err = (result or {}).get('error', {}).get('message') or 'Lỗi không xác định'
-                results.append({'ok': False, 'type': target_type or 'group', 'id': target_id, 'name': target_name, 'error': err})
+                results.append({'ok': False, 'type': target_type or 'group', 'id': target_id, 'name': target_name, 'error': err, 'delivery': 'native_video' if native_video_url else ('link_preview' if media_url else 'text')})
         except Exception as e:
-            results.append({'ok': False, 'type': target_type or 'group', 'id': target_id, 'name': target_name, 'error': str(e)})
+            results.append({'ok': False, 'type': target_type or 'group', 'id': target_id, 'name': target_name, 'error': str(e), 'delivery': 'native_video' if native_video_url else ('link_preview' if media_url else 'text')})
     return {'ok': ok_count > 0, 'success_count': ok_count, 'failed_count': len(results) - ok_count, 'results': results}
 
 
@@ -3085,17 +3112,61 @@ def api_create_post():
     group_id = body.get('group_id', '').strip()
     message = body.get('message', '').strip()
     page_id = body.get('page_id', '').strip()
+    media_url, native_video_url = _extract_post_media(body)
     if not group_id or not message:
         return jsonify({'ok': False, 'error': 'Thiếu group_id hoặc message'}), 400
     try:
         page_token = _pages_cache.get(page_id, {}).get('access_token') if page_id else None
-        result = get_api(group_id).create_post(message, page_token)
+        result = get_api(group_id).create_post(message, page_token, media_url, native_video_url)
         if result and 'id' in result:
-            return jsonify({'ok': True, 'post_id': result['id']})
+            return jsonify({
+                'ok': True,
+                'post_id': result['id'],
+                'delivery': 'native_video' if native_video_url else ('link_preview' if media_url else 'text'),
+                'target': {'type': 'group', 'id': group_id},
+            })
         err = (result or {}).get('error', {}).get('message', 'Lỗi không xác định')
-        return jsonify({'ok': False, 'error': err})
+        return jsonify({'ok': False, 'error': err, 'target': {'type': 'group', 'id': group_id}})
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        return jsonify({'ok': False, 'error': str(e), 'target': {'type': 'group', 'id': group_id}}), 500
+
+
+@app.route('/api/publish', methods=['POST'])
+def api_publish_targets():
+    body = request.get_json(silent=True) or {}
+    raw_targets = body.get('targets') or []
+    message = str(body.get('message') or '').strip()
+    media_url, native_video_url = _extract_post_media(body)
+    if not message:
+        return jsonify({'ok': False, 'error': 'Thiếu nội dung bài đăng'}), 400
+    if not isinstance(raw_targets, list) or not raw_targets:
+        return jsonify({'ok': False, 'error': 'Chọn ít nhất một Page hoặc nhóm để đăng'}), 400
+
+    targets = []
+    for item in raw_targets:
+        if not isinstance(item, dict):
+            continue
+        target_type = str(item.get('type') or 'group').strip().lower() or 'group'
+        target_id = str(item.get('id') or item.get('group_id') or item.get('page_id') or '').strip()
+        if not target_id:
+            continue
+        targets.append({
+            'type': 'page' if target_type == 'page' else 'group',
+            'id': target_id,
+            'name': str(item.get('name') or '').strip(),
+            'page_id': str(item.get('page_id') or '').strip(),
+        })
+
+    if not targets:
+        return jsonify({'ok': False, 'error': 'Danh sách target không hợp lệ'}), 400
+
+    result = _publish_content_pipeline_post({
+        'content': message,
+        'hashtags': '',
+        'media_url': media_url,
+        'native_video_url': native_video_url,
+    }, targets)
+    return jsonify(result), (200 if result.get('ok') else 502)
 
 
 @app.route('/api/page-post', methods=['POST'])
@@ -3103,19 +3174,25 @@ def api_create_page_post():
     body = request.get_json() or {}
     page_id = str(body.get('page_id') or '').strip()
     message = str(body.get('message') or '').strip()
+    media_url, native_video_url = _extract_post_media(body)
     if not page_id or not message:
         return jsonify({'ok': False, 'error': 'Thiếu page_id hoặc message'}), 400
     try:
         page_token = _page_token_from_cache(page_id)
         if not page_token:
             return jsonify({'ok': False, 'error': 'Không lấy được Page token. Kiểm tra quyền quản trị Page/cookie.'}), 400
-        result = get_api(DEFAULT_GROUP).create_page_post(page_id, message, page_token)
+        result = get_api(DEFAULT_GROUP).create_page_post(page_id, message, page_token, media_url, native_video_url)
         if result and result.get('id'):
-            return jsonify({'ok': True, 'post_id': result['id']})
+            return jsonify({
+                'ok': True,
+                'post_id': result['id'],
+                'delivery': 'native_video' if native_video_url else ('link_preview' if media_url else 'text'),
+                'target': {'type': 'page', 'id': page_id},
+            })
         err = (result or {}).get('error', {}).get('message', 'Lỗi không xác định')
-        return jsonify({'ok': False, 'error': err})
+        return jsonify({'ok': False, 'error': err, 'target': {'type': 'page', 'id': page_id}})
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        return jsonify({'ok': False, 'error': str(e), 'target': {'type': 'page', 'id': page_id}}), 500
 
 
 @app.route('/api/pages')

@@ -112,18 +112,40 @@ class FacebookGroupAPI:
         if data.get('shares'):
             post['shares'] = data['shares']
 
-    def create_post(self, message: str, page_token: str = None) -> Optional[dict]:
+    def create_post(self, message: str, page_token: str = None, link_url: str = '', native_video_url: str = '') -> Optional[dict]:
         token = page_token or self.access_token
+        if native_video_url:
+            resp = requests.post(
+                f'{GRAPH_URL}/{self.group_id}/videos',
+                params={'access_token': token, 'description': message, 'file_url': native_video_url},
+                timeout=120,
+            )
+            return resp.json()
+        params = {'access_token': token, 'message': message}
+        if link_url:
+            params['link'] = link_url
         resp = requests.post(
             f'{GRAPH_URL}/{self.group_id}/feed',
-            params={'access_token': token, 'message': message}
+            params=params,
+            timeout=30,
         )
         return resp.json()
 
-    def create_page_post(self, page_id: str, message: str, page_token: str) -> Optional[dict]:
+    def create_page_post(self, page_id: str, message: str, page_token: str, link_url: str = '', native_video_url: str = '') -> Optional[dict]:
+        if native_video_url:
+            resp = requests.post(
+                f'{GRAPH_URL}/{page_id}/videos',
+                params={'access_token': page_token, 'description': message, 'file_url': native_video_url},
+                timeout=120,
+            )
+            return resp.json()
+        params = {'access_token': page_token, 'message': message}
+        if link_url:
+            params['link'] = link_url
         resp = requests.post(
             f'{GRAPH_URL}/{page_id}/feed',
-            params={'access_token': page_token, 'message': message}
+            params=params,
+            timeout=30,
         )
         return resp.json()
 

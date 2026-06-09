@@ -27,6 +27,7 @@ type PublishResult = {
   target: PublishTarget;
   post_id?: string;
   error?: string;
+  delivery?: string;
 };
 
 type HistoryRow = {
@@ -50,6 +51,16 @@ function targetKey(target: PublishTarget) {
 
 function safeList<T>(payload: unknown): T[] {
   return Array.isArray(payload) ? payload as T[] : [];
+}
+
+function detectVideoMedia(url: string) {
+  const cleanUrl = url.trim();
+  if (!cleanUrl) return { mediaUrl: '', nativeVideoUrl: '' };
+  const isVideoHost = /(youtube|youtu\.be|tiktok|facebook\.com|fb\.watch|fb\.gg|reel|short)/i.test(cleanUrl);
+  const isDirectVideo = /\.(mp4|mov|m4v|webm|avi|mkv|flv|wmv|3gp|ogv)(\?|$)/i.test(cleanUrl);
+  return isDirectVideo || isVideoHost
+    ? { mediaUrl: '', nativeVideoUrl: cleanUrl }
+    : { mediaUrl: cleanUrl, nativeVideoUrl: '' };
 }
 
 function formatDateTime(value?: string) {
@@ -252,45 +263,53 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
     }
     setPublishing(true);
     setLocalStatus(`Đang đăng tới ${selectedTargets.length} nơi...`);
-    const results: PublishResult[] = [];
-    for (const target of selectedTargets) {
-      const message = buildMessage(target);
-      try {
-        const endpoint = target.type === 'page' ? '/api/page-post' : '/api/post';
-        const body = target.type === 'page'
-          ? { page_id: target.id, message }
-          : { group_id: target.id, message };
-        const res = await api(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+    try {
+      // Tự động phát hiện video URL để gửi native_video_url thay vì link preview
+      const detectedMedia = detectVideoMedia(mediaUrl);
+      const body = {
+        message: baseMessage,
+        media_url: detectedMedia.mediaUrl,
+        native_video_url: detectedMedia.nativeVideoUrl,
+        targets: selectedTargets.map((t) => ({ type: t.type, id: t.id, name: t.name })),
+      };
+      const res = await api('/api/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const payload = await readPayload(res);
+
+      if (payload.results) {
+        const results: PublishResult[] = payload.results.map((r: any) => ({
+          ok: !!r.ok,
+          target: { type: r.type || 'group', id: r.id || '', name: r.name || '' },
+          post_id: r.post_id,
+          error: r.error,
+        }));
+        const okCount = results.filter((item) => item.ok).length;
+        const failCount = results.length - okCount;
+        appendHistory({
+          title,
+          content,
+          mediaUrl,
+          hashtags,
+          scheduledAt: '',
+          targets: selectedTargets,
+          status: failCount ? `Đã đăng ${okCount}, lỗi ${failCount}` : 'Đã đăng',
+          results,
         });
-        const payload = await readPayload(res);
-        results.push({
-          ok: !!payload.ok,
-          target,
-          post_id: payload.post_id,
-          error: payload.error,
-        });
-      } catch (err: any) {
-        results.push({ ok: false, target, error: err?.message || 'Lỗi kết nối' });
+        setLocalStatus(
+          `Đã đăng ${okCount}/${results.length} nơi${failCount ? `, lỗi ${failCount}` : ''}.`
+        );
+      } else {
+        setLocalStatus(payload.error || 'Lỗi không xác định từ server.');
       }
+    } catch (err: any) {
+      setLocalStatus(`Lỗi kết nối: ${err?.message || 'Không gọi được backend'}.`);
+    } finally {
+      setPublishing(false);
+      void onReload();
     }
-    const okCount = results.filter((item) => item.ok).length;
-    const failCount = results.length - okCount;
-    appendHistory({
-      title,
-      content,
-      mediaUrl,
-      hashtags,
-      scheduledAt: '',
-      targets: selectedTargets,
-      status: failCount ? `Đã đăng ${okCount}, lỗi ${failCount}` : 'Đã đăng',
-      results,
-    });
-    setLocalStatus(`Đã đăng ${okCount}/${results.length} nơi${failCount ? `, lỗi ${failCount}` : ''}.`);
-    setPublishing(false);
-    void onReload();
   }
 
   function scheduleDraft() {
@@ -327,10 +346,12 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
     }
     try {
       const parsed = new URL(url);
-      const isVideo = /\.(mp4|mov|m4v|webm)(\?|$)/i.test(parsed.pathname) || /youtube|youtu\.be|tiktok|facebook|fb\.watch/i.test(parsed.hostname);
-      setLocalStatus(isVideo
-        ? 'Link hợp lệ. Hiện backend đang đăng link vào nội dung để Facebook tự tạo preview; upload video trực tiếp cần thêm driver upload riêng.'
-        : 'Link hợp lệ. Khi đăng, link sẽ được chèn vào nội dung bài viết.');
+      const isVideo = /\.(mp4|mov|m4v|webm)(\?|$)/i.test(parsed.pathname) || /youtube|youtu\.be|tiktok|facebook|fb\.watch|fb\.gg|reel|short/i.test(parsed.hostname);
+      setLocalStatus(
+        isVideo
+          ? 'Link video hợp lệ. Hệ thống sẽ tự động đăng native video nếu backend có quyền upload; nếu không sẽ fallback link preview.'
+          : 'Link hợp lệ. Khi đăng, link sẽ được chèn vào nội dung bài viết dạng link preview.'
+      );
     } catch {
       setLocalStatus('Link ảnh/video chưa đúng định dạng URL.');
     }
@@ -491,7 +512,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
           </div>
 
           <div className="target-note">
-            Link video hiện được đăng dạng URL preview. Muốn upload video thật như n8n cần thêm driver upload/video riêng.
+            Backend tự phát hiện link video: file .mp4/.mov sẽ đăng native video nếu có quyền; link YouTube/TikTok sẽ đăng link preview.
           </div>
         </aside>
       </div>
