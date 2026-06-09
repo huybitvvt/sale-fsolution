@@ -44,6 +44,20 @@ def _extract_tiktok_video_id(raw: str) -> tuple[str, str]:
     return '', value
 
 
+def _extract_tiktok_handle(raw: str) -> tuple[str, str]:
+    value = (raw or '').strip()
+    if not value:
+        return '', ''
+    match = re.search(r'tiktok\.com/@([^/?#]+)', value, re.I)
+    if match:
+        handle = match.group(1).strip().lstrip('@')
+        return handle, f'https://www.tiktok.com/@{handle}'
+    handle = value.strip().lstrip('@').strip('/ ')
+    if re.fullmatch(r'[A-Za-z0-9._-]{2,80}', handle):
+        return handle, f'https://www.tiktok.com/@{handle}'
+    return '', value
+
+
 def _parse_cookie_header(cookie: str) -> list[dict]:
     rows = []
     for part in (cookie or '').split(';'):
@@ -61,6 +75,46 @@ def _parse_cookie_header(cookie: str) -> list[dict]:
             'path': '/',
             'secure': True,
         })
+    return rows
+
+
+def _collect_video_links_from_page(page, handle: str, max_videos: int) -> list[dict]:
+    rows = []
+    seen = set()
+    for _ in range(8):
+        try:
+            links = page.evaluate(
+                """() => Array.from(document.querySelectorAll('a[href*="/video/"]')).map((a) => ({
+                  href: a.href,
+                  text: (a.innerText || a.getAttribute('aria-label') || a.title || '').trim(),
+                }))"""
+            )
+        except Exception:
+            links = []
+
+        for item in links or []:
+            href = str((item or {}).get('href') or '')
+            match = re.search(r'/video/(\d{8,})', href)
+            if not match:
+                continue
+            video_id = match.group(1)
+            if video_id in seen:
+                continue
+            seen.add(video_id)
+            rows.append({
+                'video_id': video_id,
+                'post_url': href.split('?')[0],
+                'channel_name': f'@{handle}',
+                'video_title': str((item or {}).get('text') or '')[:220] or f'Video {video_id}',
+            })
+            if len(rows) >= max_videos:
+                return rows
+
+        try:
+            page.mouse.wheel(0, 1800)
+            page.wait_for_timeout(1200)
+        except Exception:
+            break
     return rows
 
 
@@ -148,6 +202,67 @@ def _launch_persistent_context(p, launch_opts: dict):
                     raise
                 time.sleep(2 + attempt)
         return launch_once()
+
+
+def _run_channel_videos(body: dict) -> tuple[dict, str]:
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return {}, 'Worker chưa cài Playwright. Chạy: pip install playwright && python -m playwright install chromium'
+
+    raw_channel = str(body.get('channel') or body.get('url') or body.get('profile_url') or '').strip()
+    max_videos = max(1, min(int(body.get('max_videos') or 8), 30))
+    cookie = str(body.get('cookie') or TIKTOK_COOKIE or '').strip()
+    handle, profile_url = _extract_tiktok_handle(raw_channel)
+    if not handle:
+        return {}, 'Không nhận diện được kênh TikTok. Nhập @username hoặc link kênh.'
+
+    os.makedirs(PLAYWRIGHT_USER_DATA_DIR, exist_ok=True)
+    timeout = max(15000, min(PLAYWRIGHT_TIMEOUT_MS, 180000))
+    context = None
+    try:
+        with sync_playwright() as p:
+            launch_opts = {
+                'headless': PLAYWRIGHT_HEADLESS,
+                'viewport': {'width': 1366, 'height': 1000},
+                'locale': 'vi-VN',
+                'args': [
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                    '--no-sandbox',
+                    '--no-first-run',
+                ],
+            }
+            context = _launch_persistent_context(p, launch_opts)
+            if cookie:
+                try:
+                    context.add_cookies(_parse_cookie_header(cookie))
+                except Exception:
+                    pass
+
+            page = context.pages[0] if context.pages else context.new_page()
+            page.set_default_timeout(timeout)
+            page.goto(profile_url, wait_until='domcontentloaded', timeout=timeout)
+            page.wait_for_timeout(3500)
+            videos = _collect_video_links_from_page(page, handle, max_videos)
+            if not videos:
+                return {}, 'Worker đã mở kênh nhưng không thấy video công khai. Kiểm tra kênh, cookie TikTok hoặc trạng thái đăng nhập.'
+            return {
+                'ok': True,
+                'method': 'playwright-worker',
+                'channel': f'@{handle}',
+                'profile_url': profile_url,
+                'count': len(videos),
+                'videos': videos,
+            }, ''
+    except Exception as e:
+        return {}, f'Worker Playwright không gom được video kênh TikTok: {str(e)[:260]}'
+    finally:
+        try:
+            if context:
+                context.close()
+        except Exception:
+            pass
 
 
 def _run_comment(body: dict) -> tuple[dict, str]:
@@ -321,6 +436,17 @@ def tiktok_comment():
         return jsonify({'ok': False, 'error': 'Unauthorized worker key'}), 401
     body = request.get_json() or {}
     payload, error = _run_comment(body)
+    if error:
+        return jsonify({'ok': False, 'error': error, 'method': 'playwright-worker'}), 502
+    return jsonify(payload)
+
+
+@app.post('/tiktok/channel-videos')
+def tiktok_channel_videos():
+    if not _authorized():
+        return jsonify({'ok': False, 'error': 'Unauthorized worker key'}), 401
+    body = request.get_json() or {}
+    payload, error = _run_channel_videos(body)
     if error:
         return jsonify({'ok': False, 'error': error, 'method': 'playwright-worker'}), 502
     return jsonify(payload)

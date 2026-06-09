@@ -69,13 +69,6 @@ type TikTokBridgeResult = {
   fallback_allowed?: boolean;
   warning?: string;
 };
-type TikTokVideoCollectResult = {
-  ok?: boolean;
-  error?: string;
-  videos?: Array<Record<string, unknown>>;
-  message?: string;
-  url?: string;
-};
 type PostFetchReport = {
   group_id?: string;
   target_type?: 'group' | 'page' | string;
@@ -969,19 +962,6 @@ export function MonitorPage() {
       .slice(0, 50);
   }
 
-  function isExtensionVersionAtLeast(version: string, minimum: string): boolean {
-    const parse = (value: string) => value.split('.').map((part) => Number(part) || 0);
-    const current = parse(version);
-    const required = parse(minimum);
-    for (let i = 0; i < Math.max(current.length, required.length); i += 1) {
-      const a = current[i] || 0;
-      const b = required[i] || 0;
-      if (a > b) return true;
-      if (a < b) return false;
-    }
-    return true;
-  }
-
   function openFbCommentExplorer(post: FbPost) {
     setFbCommentModalPost(post);
     setFbCommentRows([]);
@@ -1058,30 +1038,7 @@ export function MonitorPage() {
               max_videos: tiktokMaxVideos,
               limit_per_video: tiktokLimitPerVideo,
             };
-      let collectHint = '';
-      if (tiktokMode === 'channel' && tiktokBridgeReady) {
-        if (!isExtensionVersionAtLeast(tiktokBridgeVersion, '0.1.4')) {
-          collectHint = ` · Extension v${tiktokBridgeVersion || '?'} chưa hỗ trợ gom video kênh, hãy cập nhật lên v0.1.4`;
-        } else {
-          setTiktokStatus('Đang mở kênh TikTok bằng Chrome để gom danh sách video...');
-          const collected = await requestTiktokChannelVideos({
-            channel: url,
-            max_videos: tiktokMaxVideos,
-          });
-          if (collected.ok && Array.isArray(collected.videos) && collected.videos.length) {
-            endpoint = '/api/tiktok/videos-comments/fetch';
-            body = {
-              videos: collected.videos,
-              keywords: parseKeywordInput(tiktokKeywords),
-              limit_per_video: tiktokLimitPerVideo,
-            };
-            collectHint = ` · Chrome gom ${collected.videos.length} video`;
-            setTiktokStatus(`Đã gom ${collected.videos.length} video từ Chrome, đang đọc comment...`);
-          } else if (collected.error) {
-            collectHint = ` · Extension chưa gom được video: ${collected.error}`;
-          }
-        }
-      }
+      const collectHint = '';
       const r = await api(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1175,51 +1132,6 @@ export function MonitorPage() {
         {
           source: 'streal-web-page',
           type: 'STREAL_TIKTOK_COMMENT_REQUEST',
-          requestId,
-          payload,
-        },
-        window.location.origin,
-      );
-    });
-  }
-
-  function requestTiktokChannelVideos(payload: Record<string, unknown>): Promise<TikTokVideoCollectResult> {
-    return new Promise((resolve) => {
-      if (typeof window === 'undefined') {
-        resolve({ ok: false, videos: [], error: 'Chỉ gom video bằng Chrome có cài extension' });
-        return;
-      }
-
-      const requestId = `tiktok_videos_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-      const timer = window.setTimeout(() => {
-        cleanup();
-        resolve({
-          ok: false,
-          videos: [],
-          error: 'Extension chưa phản hồi khi gom video kênh. Hãy cập nhật Seeding Fsolution Bridge rồi tải lại web.',
-        });
-      }, 90000);
-
-      const handleMessage = (event: MessageEvent) => {
-        if (event.source !== window) return;
-        const data = event.data || {};
-        if (data.source !== 'streal-tiktok-extension') return;
-        if (data.type !== 'STREAL_TIKTOK_COLLECT_VIDEOS_RESPONSE') return;
-        if (data.requestId !== requestId) return;
-        cleanup();
-        resolve(data as TikTokVideoCollectResult);
-      };
-
-      function cleanup() {
-        window.removeEventListener('message', handleMessage);
-        window.clearTimeout(timer);
-      }
-
-      window.addEventListener('message', handleMessage);
-      window.postMessage(
-        {
-          source: 'streal-web-page',
-          type: 'STREAL_TIKTOK_COLLECT_VIDEOS_REQUEST',
           requestId,
           payload,
         },

@@ -1976,6 +1976,58 @@ def _extract_tiktok_video_title(html: str, video_id: str) -> str:
     return f'Video {video_id}'
 
 
+def _fetch_tiktok_channel_videos_from_worker(channel: str, max_videos: int = 8, cookie: str = '') -> tuple[list[dict], str]:
+    if not TIKTOK_PLAYWRIGHT_WORKER_URL:
+        return [], 'Chưa cấu hình TIKTOK_PLAYWRIGHT_WORKER_URL để gom video kênh bằng Browser Worker.'
+
+    headers = {'Content-Type': 'application/json'}
+    if TIKTOK_PLAYWRIGHT_WORKER_KEY:
+        headers['Authorization'] = f'Bearer {TIKTOK_PLAYWRIGHT_WORKER_KEY}'
+        headers['X-Worker-Key'] = TIKTOK_PLAYWRIGHT_WORKER_KEY
+
+    try:
+        resp = _req.post(
+            f'{TIKTOK_PLAYWRIGHT_WORKER_URL}/tiktok/channel-videos',
+            headers=headers,
+            json={
+                'channel': channel,
+                'max_videos': max_videos,
+                'cookie': cookie or _configured_tiktok_cookie(),
+            },
+            timeout=max(35, min((TIKTOK_PLAYWRIGHT_TIMEOUT_MS // 1000) + 45, 180)),
+        )
+    except Exception as e:
+        return [], f'Không gọi được Browser Worker để gom video kênh: {str(e)[:220]}'
+
+    try:
+        payload = resp.json()
+    except Exception:
+        return [], f'Browser Worker trả phản hồi không hợp lệ ({resp.status_code}): {resp.text[:180]}'
+
+    if resp.status_code in (401, 403):
+        return [], payload.get('error') or 'Browser Worker từ chối API key.'
+    if resp.status_code >= 400 or not payload.get('ok'):
+        return [], payload.get('error') or f'Browser Worker lỗi {resp.status_code}'
+
+    rows = []
+    for item in payload.get('videos') or []:
+        if not isinstance(item, dict):
+            continue
+        video_id = str(item.get('video_id') or '').strip()
+        post_url = str(item.get('post_url') or '').strip()
+        if not video_id:
+            video_id, post_url = _extract_tiktok_video_id(post_url)
+        if not video_id:
+            continue
+        rows.append({
+            'video_id': video_id,
+            'post_url': post_url or f'https://www.tiktok.com/@/video/{video_id}',
+            'channel_name': item.get('channel_name') or payload.get('channel') or _derive_tiktok_channel_name(post_url),
+            'video_title': item.get('video_title') or f'Video {video_id}',
+        })
+    return rows[:max_videos], '' if rows else 'Browser Worker không trả video hợp lệ.'
+
+
 def _fetch_tiktok_channel_videos(channel: str, max_videos: int = 8, cookie: str = '') -> tuple[list[dict], str]:
     handle, profile_url = _extract_tiktok_handle(channel)
     if not handle:
@@ -1992,11 +2044,20 @@ def _fetch_tiktok_channel_videos(channel: str, max_videos: int = 8, cookie: str 
     try:
         resp = _req.get(profile_url, headers=headers, timeout=25)
     except Exception as e:
-        return [], f'Lỗi kết nối TikTok khi đọc kênh: {str(e)[:180]}'
+        worker_rows, worker_error = _fetch_tiktok_channel_videos_from_worker(channel, max_videos, merged_cookie)
+        if worker_rows:
+            return worker_rows, ''
+        return [], worker_error or f'Lỗi kết nối TikTok khi đọc kênh: {str(e)[:180]}'
     if resp.status_code in (401, 403):
-        return [], 'TikTok đang chặn đọc kênh. Cập nhật TikTok cookie hoặc mở kênh bằng Chrome đang đăng nhập.'
+        worker_rows, worker_error = _fetch_tiktok_channel_videos_from_worker(channel, max_videos, merged_cookie)
+        if worker_rows:
+            return worker_rows, ''
+        return [], worker_error or 'TikTok đang chặn đọc kênh. Cập nhật TikTok cookie hoặc mở kênh bằng Chrome đang đăng nhập.'
     if resp.status_code != 200:
-        return [], f'TikTok trả lỗi {resp.status_code} khi đọc kênh: {resp.text[:120]}'
+        worker_rows, worker_error = _fetch_tiktok_channel_videos_from_worker(channel, max_videos, merged_cookie)
+        if worker_rows:
+            return worker_rows, ''
+        return [], worker_error or f'TikTok trả lỗi {resp.status_code} khi đọc kênh: {resp.text[:120]}'
     html = resp.text or ''
     video_ids: list[str] = []
     for pattern in (rf'tiktok\.com/@{re.escape(handle)}/video/(\d+)', r'/video/(\d{8,})', r'"id"\s*:\s*"(\d{8,})"'):
@@ -2016,7 +2077,11 @@ def _fetch_tiktok_channel_videos(channel: str, max_videos: int = 8, cookie: str 
             'video_title': _extract_tiktok_video_title(html, vid),
         })
     if not rows:
-        return [], 'Không tìm thấy video công khai trên kênh này hoặc TikTok đang ẩn dữ liệu với request server.'
+        worker_rows, worker_error = _fetch_tiktok_channel_videos_from_worker(channel, max_videos, merged_cookie)
+        if worker_rows:
+            return worker_rows, ''
+        detail = f' {worker_error}' if worker_error else ''
+        return [], f'Không tìm thấy video công khai bằng request server. Browser Worker cũng chưa gom được video.{detail}'
     return rows, ''
 
 
