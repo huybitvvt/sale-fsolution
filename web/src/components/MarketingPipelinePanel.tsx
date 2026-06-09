@@ -2,19 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
-import type { ContentPipelineArticle, ContentPipelinePost, FbPage, GroupRow } from '@/lib/types';
-
-type PipelineStats = {
-  sources?: number;
-  articles?: number;
-  new_articles?: number;
-  draft_posts?: number;
-};
+import type { ContentPipelinePost, FbPage, GroupRow } from '@/lib/types';
 
 type PipelinePayload = {
-  articles?: ContentPipelineArticle[];
   posts?: ContentPipelinePost[];
-  stats?: PipelineStats;
 };
 
 type Props = {
@@ -25,434 +16,528 @@ type Props = {
   onResearch: (sourceFilter: string) => Promise<void>;
 };
 
-const FORMATS = [
-  { key: 'pov', label: 'Góc nhìn' },
-  { key: 'info', label: 'Tin ngắn' },
-  { key: 'case', label: 'Case study' },
-  { key: 'howto', label: 'How-to' },
-];
+type PublishTarget = {
+  type: 'group' | 'page';
+  id: string;
+  name: string;
+};
 
-export function MarketingPipelinePanel({ data, busy, status, onReload, onResearch }: Props) {
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [sourceFilter, setSourceFilter] = useState('all');
-  const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [formats, setFormats] = useState<Record<string, string>>({});
-  const [localStatus, setLocalStatus] = useState('');
-  const [writing, setWriting] = useState(false);
-  const [editingPost, setEditingPost] = useState<ContentPipelinePost | null>(null);
-  const [editContent, setEditContent] = useState('');
-  const [editHashtags, setEditHashtags] = useState('');
+type PublishResult = {
+  ok: boolean;
+  target: PublishTarget;
+  post_id?: string;
+  error?: string;
+};
+
+type HistoryRow = {
+  id: string;
+  title: string;
+  content: string;
+  mediaUrl: string;
+  hashtags: string;
+  scheduledAt: string;
+  targets: PublishTarget[];
+  status: string;
+  results?: PublishResult[];
+  createdAt: string;
+};
+
+const HISTORY_KEY = 'seeding-post-history-v2';
+
+function targetKey(target: PublishTarget) {
+  return `${target.type}:${target.id}`;
+}
+
+function safeList<T>(payload: unknown): T[] {
+  return Array.isArray(payload) ? payload as T[] : [];
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return '-';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString('vi-VN');
+}
+
+async function readPayload(res: Response) {
+  try {
+    return await res.json();
+  } catch {
+    return {};
+  }
+}
+
+export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) {
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [mediaUrl, setMediaUrl] = useState('');
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [hashtags, setHashtags] = useState('#guitar #guitarsaithanh');
   const [groups, setGroups] = useState<GroupRow[]>([]);
   const [pages, setPages] = useState<FbPage[]>([]);
-  const [publishPost, setPublishPost] = useState<ContentPipelinePost | null>(null);
   const [selectedGroups, setSelectedGroups] = useState<Record<string, boolean>>({});
   const [selectedPages, setSelectedPages] = useState<Record<string, boolean>>({});
-  const [scheduledAt, setScheduledAt] = useState('');
+  const [captionVariants, setCaptionVariants] = useState<Record<string, string>>({});
+  const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [localStatus, setLocalStatus] = useState('');
+  const [loadingTargets, setLoadingTargets] = useState(false);
   const [publishing, setPublishing] = useState(false);
-  const [publishStatus, setPublishStatus] = useState('');
-
-  const articles = data.articles || [];
-  const posts = data.posts || [];
-  const selectedIds = useMemo(() => Object.entries(selected).filter(([, checked]) => checked).map(([id]) => id), [selected]);
-  const visibleArticles = articles.filter((item) => item.status !== 'written');
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
-    api('/api/groups')
-      .then((res) => res.json())
-      .then((rows) => {
-        const list = Array.isArray(rows) ? rows : [];
-        setGroups(list);
-        const checked: Record<string, boolean> = {};
-        list.forEach((group: GroupRow) => {
-          if (group.id) checked[group.id] = true;
-        });
-        setSelectedGroups(checked);
-      })
-      .catch(() => setGroups([]));
-    api('/api/pages')
-      .then((res) => res.json())
-      .then((rows) => {
-        const list = Array.isArray(rows) ? rows : [];
-        setPages(list);
-        const checked: Record<string, boolean> = {};
-        list.forEach((page: FbPage) => {
-          if (page.id) checked[page.id] = false;
-        });
-        setSelectedPages(checked);
-      })
-      .catch(() => setPages([]));
+    try {
+      const raw = window.localStorage.getItem(HISTORY_KEY);
+      if (raw) setHistory(safeList<HistoryRow>(JSON.parse(raw)));
+    } catch {
+      setHistory([]);
+    }
   }, []);
 
-  async function runResearch() {
-    await onResearch(sourceFilter);
-    setStep(2);
-  }
+  useEffect(() => {
+    void loadTargets();
+  }, []);
 
-  async function writeSelected() {
-    if (!selectedIds.length) {
-      setLocalStatus('Chọn ít nhất một tin trước khi AI viết bài.');
-      return;
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 80)));
+    } catch {
+      // Local history is a convenience only; posting flow must not fail because storage is full.
     }
-    setWriting(true);
+  }, [history]);
+
+  const selectedTargets = useMemo<PublishTarget[]>(() => {
+    const groupTargets = groups
+      .filter((group) => group.id && selectedGroups[group.id])
+      .map((group) => ({ type: 'group' as const, id: group.id, name: group.name || group.id }));
+    const pageTargets = pages
+      .filter((page) => page.id && selectedPages[page.id])
+      .map((page) => ({ type: 'page' as const, id: page.id, name: page.name || page.id }));
+    return [...groupTargets, ...pageTargets];
+  }, [groups, pages, selectedGroups, selectedPages]);
+
+  const importedHistory = useMemo<HistoryRow[]>(() => {
+    return (data.posts || []).map((post) => ({
+      id: `pipeline-${post.id}`,
+      title: post.article_title || 'Bản nháp content',
+      content: post.content || '',
+      mediaUrl: post.article_url || '',
+      hashtags: post.hashtags || '',
+      scheduledAt: post.scheduled_at || '',
+      targets: (post.scheduled_targets || []).map((target) => ({
+        type: target.type === 'page' ? 'page' : 'group',
+        id: target.id || '-',
+        name: target.name || target.id || '-',
+      })),
+      status: post.status || 'draft',
+      createdAt: post.created_at || post.updated_at || '',
+    }));
+  }, [data.posts]);
+
+  const visibleHistory = useMemo(() => {
+    const seen = new Set<string>();
+    return [...history, ...importedHistory].filter((row) => {
+      if (seen.has(row.id)) return false;
+      seen.add(row.id);
+      return true;
+    });
+  }, [history, importedHistory]);
+
+  async function loadTargets() {
+    setLoadingTargets(true);
     setLocalStatus('');
     try {
-      const selections = selectedIds.map((id) => ({ id, format: formats[id] || 'pov' }));
-      const res = await api('/api/content-pipeline/write', {
+      const [groupRes, pageRes] = await Promise.all([api('/api/groups'), api('/api/pages')]);
+      const groupPayload = await readPayload(groupRes);
+      const pagePayload = await readPayload(pageRes);
+      const groupRows = safeList<GroupRow>(groupPayload).filter((item) => item?.id);
+      const pageRows = safeList<FbPage>(pagePayload).filter((item) => item?.id);
+      setGroups(groupRows);
+      setPages(pageRows);
+      setSelectedGroups((prev) => {
+        const next: Record<string, boolean> = {};
+        groupRows.forEach((group) => {
+          next[group.id] = prev[group.id] ?? true;
+        });
+        return next;
+      });
+      setSelectedPages((prev) => {
+        const next: Record<string, boolean> = {};
+        pageRows.forEach((page) => {
+          next[page.id] = prev[page.id] ?? false;
+        });
+        return next;
+      });
+      if (!pageRows.length && !Array.isArray(pagePayload) && pagePayload?.error) {
+        setLocalStatus(`Không đồng bộ được Page: ${pagePayload.error}`);
+      }
+    } catch {
+      setGroups([]);
+      setPages([]);
+      setLocalStatus('Lỗi kết nối khi tải danh sách nhóm/Page.');
+    } finally {
+      setLoadingTargets(false);
+    }
+  }
+
+  function setAllTargets(checked: boolean) {
+    setSelectedGroups(Object.fromEntries(groups.map((group) => [group.id, checked])));
+    setSelectedPages(Object.fromEntries(pages.map((page) => [page.id, checked])));
+  }
+
+  function buildMessage(target?: PublishTarget) {
+    const variant = target ? captionVariants[targetKey(target)] : '';
+    const body = (variant || content).trim();
+    return [
+      title.trim(),
+      body,
+      mediaUrl.trim(),
+      hashtags.trim(),
+    ].filter(Boolean).join('\n\n');
+  }
+
+  function appendHistory(row: Omit<HistoryRow, 'id' | 'createdAt'>) {
+    setHistory((prev) => [{
+      ...row,
+      id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      createdAt: new Date().toISOString(),
+    }, ...prev].slice(0, 80));
+  }
+
+  async function generatePostCaptions() {
+    const base = content.trim() || title.trim();
+    if (!base) {
+      setLocalStatus('Nhập tiêu đề hoặc nội dung gốc trước khi dùng AI viết bài.');
+      return;
+    }
+    if (!selectedTargets.length) {
+      setLocalStatus('Chọn ít nhất một nhóm hoặc Page để AI tạo biến thể theo nơi đăng.');
+      return;
+    }
+    setGenerating(true);
+    setLocalStatus('');
+    try {
+      const res = await api('/api/ai/caption-variants', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ selections }),
+        body: JSON.stringify({
+          content: base,
+          targets: selectedTargets.map((target) => ({ id: target.id, name: target.name, type: target.type })),
+        }),
       });
-      const payload = await res.json();
-      if (!payload.ok) throw new Error(payload.error || 'AI chưa tạo được bài');
-      setSelected({});
-      setLocalStatus(`Đã tạo ${payload.count || 0} bản nháp.${payload.warning ? ` Lưu ý: ${payload.warning}` : ''}`);
-      await onReload();
-      setStep(3);
+      const payload = await readPayload(res);
+      if (!res.ok || !payload.ok) throw new Error(payload.error || 'AI chưa tạo được biến thể');
+      const next: Record<string, string> = {};
+      safeList<{ id?: string; type?: string; caption?: string }>(payload.captions).forEach((item) => {
+        const type = item.type === 'page' ? 'page' : 'group';
+        if (item.id && item.caption) next[`${type}:${item.id}`] = item.caption;
+      });
+      setCaptionVariants(next);
+      setLocalStatus(`Đã tạo ${Object.keys(next).length} biến thể nội dung.${payload.warning ? ` ${payload.warning}` : ''}`);
     } catch (err: any) {
-      setLocalStatus('Lỗi: ' + (err?.message || 'Không tạo được content'));
+      setLocalStatus(`Lỗi AI viết bài: ${err?.message || 'Không tạo được biến thể'}`);
     } finally {
-      setWriting(false);
+      setGenerating(false);
     }
-  }
-
-  function openEdit(post: ContentPipelinePost) {
-    setEditingPost(post);
-    setEditContent(post.content || '');
-    setEditHashtags(post.hashtags || '');
-  }
-
-  async function savePost() {
-    if (!editingPost?.id) return;
-    try {
-      const res = await api(`/api/content-pipeline/posts/${encodeURIComponent(editingPost.id)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: editContent, hashtags: editHashtags }),
-      });
-      const payload = await res.json();
-      if (!payload.ok) throw new Error('Không lưu được bản nháp');
-      setEditingPost(null);
-      setLocalStatus('Đã cập nhật bản nháp.');
-      await onReload();
-    } catch (err: any) {
-      setLocalStatus('Lỗi: ' + (err?.message || 'Không lưu được'));
-    }
-  }
-
-  async function deletePost(postId: string) {
-    if (!confirm('Xoá bản nháp content này?')) return;
-    await api(`/api/content-pipeline/posts/${encodeURIComponent(postId)}`, { method: 'DELETE' });
-    setLocalStatus('Đã xoá bản nháp.');
-    await onReload();
-  }
-
-  function openPublish(post: ContentPipelinePost) {
-    setPublishPost(post);
-    setPublishStatus('');
-    const checked: Record<string, boolean> = {};
-    groups.forEach((group) => {
-      if (group.id) checked[group.id] = true;
-    });
-    setSelectedGroups(checked);
-    setSelectedPages(Object.fromEntries(pages.map((page) => [page.id, false])));
-    setScheduledAt('');
-  }
-
-  function publishTargets() {
-    return [
-      ...groups
-        .filter((group) => group.id && selectedGroups[group.id])
-        .map((group) => ({ type: 'group', id: group.id, name: group.name || group.id })),
-      ...pages
-        .filter((page) => page.id && selectedPages[page.id])
-        .map((page) => ({ type: 'page', id: page.id, name: page.name || page.id })),
-    ];
   }
 
   async function publishNow() {
-    if (!publishPost) return;
-    const targets = publishTargets();
-    if (!targets.length) {
-      setPublishStatus('Chọn ít nhất một Page hoặc nhóm để đăng.');
+    const baseMessage = buildMessage();
+    if (!baseMessage) {
+      setLocalStatus('Nhập nội dung bài viết trước khi đăng.');
       return;
     }
-    const message = [publishPost.content || '', publishPost.hashtags || ''].filter(Boolean).join('\n\n').trim();
-    if (!message) {
-      setPublishStatus('Bản nháp chưa có nội dung.');
+    if (!selectedTargets.length) {
+      setLocalStatus('Chọn ít nhất một nhóm hoặc Page để đăng.');
       return;
     }
     setPublishing(true);
-    try {
-      const res = await api(`/api/content-pipeline/posts/${encodeURIComponent(publishPost.id)}/publish`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targets }),
-      });
-      const payload = await res.json();
-      const ok = payload.success_count || 0;
-      const fail = payload.failed_count || 0;
-      setPublishStatus(`Đã đăng ${ok}/${targets.length} nơi nhận, lỗi ${fail}.`);
-      await onReload();
-    } catch {
-      setPublishStatus('Lỗi kết nối khi đăng bài.');
-    } finally {
-      setPublishing(false);
+    setLocalStatus(`Đang đăng tới ${selectedTargets.length} nơi...`);
+    const results: PublishResult[] = [];
+    for (const target of selectedTargets) {
+      const message = buildMessage(target);
+      try {
+        const endpoint = target.type === 'page' ? '/api/page-post' : '/api/post';
+        const body = target.type === 'page'
+          ? { page_id: target.id, message }
+          : { group_id: target.id, message };
+        const res = await api(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const payload = await readPayload(res);
+        results.push({
+          ok: !!payload.ok,
+          target,
+          post_id: payload.post_id,
+          error: payload.error,
+        });
+      } catch (err: any) {
+        results.push({ ok: false, target, error: err?.message || 'Lỗi kết nối' });
+      }
     }
+    const okCount = results.filter((item) => item.ok).length;
+    const failCount = results.length - okCount;
+    appendHistory({
+      title,
+      content,
+      mediaUrl,
+      hashtags,
+      scheduledAt: '',
+      targets: selectedTargets,
+      status: failCount ? `Đã đăng ${okCount}, lỗi ${failCount}` : 'Đã đăng',
+      results,
+    });
+    setLocalStatus(`Đã đăng ${okCount}/${results.length} nơi${failCount ? `, lỗi ${failCount}` : ''}.`);
+    setPublishing(false);
+    void onReload();
   }
 
-  async function schedulePost() {
-    if (!publishPost) return;
-    const targets = publishTargets();
-    if (!targets.length) {
-      setPublishStatus('Chọn ít nhất một Page hoặc nhóm để lên lịch.');
+  function scheduleDraft() {
+    const message = buildMessage();
+    if (!message) {
+      setLocalStatus('Nhập nội dung bài viết trước khi đặt lịch.');
       return;
     }
     if (!scheduledAt) {
-      setPublishStatus('Chọn ngày giờ lên lịch.');
+      setLocalStatus('Chọn ngày giờ cần đăng.');
       return;
     }
-    setPublishing(true);
-    try {
-      const res = await api(`/api/content-pipeline/posts/${encodeURIComponent(publishPost.id)}/schedule`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scheduled_at: scheduledAt, targets }),
-      });
-      const payload = await res.json();
-      if (!payload.ok) throw new Error(payload.error || 'Không lên lịch được');
-      setPublishStatus('Đã lưu lịch đăng.');
-      await onReload();
-    } catch (err: any) {
-      setPublishStatus('Lỗi: ' + (err?.message || 'Không lên lịch được'));
-    } finally {
-      setPublishing(false);
+    if (!selectedTargets.length) {
+      setLocalStatus('Chọn ít nhất một nhóm hoặc Page để đặt lịch.');
+      return;
     }
+    appendHistory({
+      title,
+      content,
+      mediaUrl,
+      hashtags,
+      scheduledAt,
+      targets: selectedTargets,
+      status: 'Đã lưu lịch',
+    });
+    setLocalStatus('Đã lưu lịch đăng trong màn hình. Muốn tự chạy nền cần bật worker/cron phía backend.');
   }
 
-  async function runScheduled() {
-    setPublishing(true);
+  function checkLinks() {
+    const url = mediaUrl.trim();
+    if (!url) {
+      setLocalStatus('Chưa nhập link ảnh/video để kiểm tra.');
+      return;
+    }
     try {
-      const res = await api('/api/content-pipeline/scheduled/run', { method: 'POST' });
-      const payload = await res.json();
-      setLocalStatus(`Đã kiểm tra lịch, chạy ${payload.ran || 0} bài đến hạn.`);
-      await onReload();
+      const parsed = new URL(url);
+      const isVideo = /\.(mp4|mov|m4v|webm)(\?|$)/i.test(parsed.pathname) || /youtube|youtu\.be|tiktok|facebook|fb\.watch/i.test(parsed.hostname);
+      setLocalStatus(isVideo
+        ? 'Link hợp lệ. Hiện backend đang đăng link vào nội dung để Facebook tự tạo preview; upload video trực tiếp cần thêm driver upload riêng.'
+        : 'Link hợp lệ. Khi đăng, link sẽ được chèn vào nội dung bài viết.');
     } catch {
-      setLocalStatus('Lỗi kết nối khi chạy lịch.');
-    } finally {
-      setPublishing(false);
+      setLocalStatus('Link ảnh/video chưa đúng định dạng URL.');
     }
   }
 
-  const stepLabel = step === 1 ? 'Research' : step === 2 ? 'Lọc & chọn format' : 'Review & đăng bài';
+  const targetCount = selectedTargets.length;
 
   return (
-    <section className="module-panel marketing-panel">
+    <section className="module-panel marketing-panel seeding-studio">
       <div className="module-head">
         <div>
-          <div className="module-kicker">Marketing Pipeline</div>
-          <h2>AI Content Pipeline</h2>
-          <p className="module-subline">Cào tin thật từ nguồn RSS, chọn format, tạo bản nháp AI rồi đăng vào nhóm đang theo dõi.</p>
+          <div className="module-kicker">Đăng nhóm / Fanpage</div>
+          <h2>Đăng bài hội nhóm</h2>
+          <p className="module-subline">
+            Soạn một kịch bản gốc, chọn nhiều nhóm/Page, tạo biến thể caption bằng AI rồi đăng hoặc lưu lịch trong một màn hình.
+          </p>
         </div>
         <div className="module-actions">
-          <button type="button" className="btn-cancel" disabled={busy || writing} onClick={() => void onReload()}>
-            Tải lại
+          <button type="button" className="btn-cancel" disabled={loadingTargets || busy} onClick={() => void loadTargets()}>
+            {loadingTargets ? 'Đang tải...' : 'Tải nhóm/Page'}
           </button>
-          <button type="button" className="btn-cancel" disabled={publishing} onClick={() => void runScheduled()}>
-            Chạy lịch đến hạn
-          </button>
-          <button type="button" className="btn-submit" disabled={busy || writing} onClick={() => void runResearch()}>
-            {busy ? 'Đang quét...' : 'Auto-scan'}
+          <button type="button" className="btn-cancel" disabled={busy} onClick={() => void onReload()}>
+            Tải lịch sử
           </button>
         </div>
       </div>
 
-      <div className="pipeline-stepper">
-        <button type="button" className={step === 1 ? 'active' : ''} onClick={() => setStep(1)}>1 Research</button>
-        <span>→</span>
-        <button type="button" className={step === 2 ? 'active' : ''} onClick={() => setStep(2)}>2 Lọc & Chọn Format</button>
-        <span>→</span>
-        <button type="button" className={step === 3 ? 'active' : ''} onClick={() => setStep(3)}>3 Review & Đăng</button>
-      </div>
+      <div className="seeding-layout">
+        <div className="seeding-compose-card">
+          <div className="seeding-section-title">📣 Đăng bài hội nhóm</div>
 
-      <div className="pipeline-stats">
-        <div><b>{data.stats?.sources || 0}</b><span>Nguồn RSS</span></div>
-        <div><b>{data.stats?.articles || 0}</b><span>Tin đã lưu</span></div>
-        <div><b>{data.stats?.new_articles || 0}</b><span>Tin chờ viết</span></div>
-        <div><b>{data.stats?.draft_posts || 0}</b><span>Bản nháp</span></div>
-      </div>
+          <label className="seeding-field">
+            <span>Tiêu đề bài viết</span>
+            <input
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder="VD: Review đàn guitar acoustic tầm 3 triệu"
+            />
+          </label>
 
-      <div className="pipeline-toolbar">
-        <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
-          <option value="all">Tất cả nguồn</option>
-          <option value="rss">RSS / báo</option>
-          <option value="techcrunch">TechCrunch</option>
-          <option value="crunchbase">Crunchbase News</option>
-          <option value="techstartups">TechStartups</option>
-        </select>
-        <div className="pipeline-current-step">{stepLabel}</div>
-        {step === 2 ? (
-          <button type="button" className="btn-submit" disabled={writing || busy || !selectedIds.length} onClick={() => void writeSelected()}>
-            {writing ? 'AI đang viết...' : `AI viết (${selectedIds.length})`}
-          </button>
-        ) : null}
-      </div>
+          <label className="seeding-field">
+            <span>Nội dung</span>
+            <textarea
+              className="seeding-textarea"
+              value={content}
+              onChange={(event) => setContent(event.target.value)}
+              placeholder="Nội dung bài đăng..."
+            />
+          </label>
 
-      {step === 1 ? (
-        <div className="pipeline-research-card">
-          <h3>Research dữ liệu thật</h3>
-          <p>
-            Bấm Auto-scan để lấy tin mới từ TechCrunch, Crunchbase News và TechStartups. Dữ liệu sau khi quét sẽ nằm ở bước 2 để chọn format.
-          </p>
-          <button type="button" className="btn-submit" disabled={busy} onClick={() => void runResearch()}>
-            {busy ? 'Đang lấy dữ liệu...' : 'Bắt đầu Auto-scan'}
-          </button>
+          <label className="seeding-field">
+            <span>Link ảnh / video (URL)</span>
+            <input
+              value={mediaUrl}
+              onChange={(event) => setMediaUrl(event.target.value)}
+              placeholder="https://..."
+            />
+          </label>
+
+          <div className="seeding-form-grid">
+            <label className="seeding-field">
+              <span>Đặt lịch đăng</span>
+              <input
+                type="datetime-local"
+                value={scheduledAt}
+                onChange={(event) => setScheduledAt(event.target.value)}
+              />
+            </label>
+            <label className="seeding-field">
+              <span>Hashtags</span>
+              <input
+                value={hashtags}
+                onChange={(event) => setHashtags(event.target.value)}
+                placeholder="#guitar #guitarsaithanh"
+              />
+            </label>
+          </div>
+
+          <div className="seeding-toolbar">
+            <button type="button" className="btn-submit" disabled={publishing} onClick={() => void publishNow()}>
+              {publishing ? 'Đang đăng...' : '📣 Đăng ngay'}
+            </button>
+            <button type="button" className="btn-cancel" disabled={publishing} onClick={scheduleDraft}>
+              ⏰ Đặt lịch
+            </button>
+            <button type="button" className="btn-cancel" disabled={generating || !targetCount} onClick={() => void generatePostCaptions()}>
+              {generating ? 'AI đang viết...' : '🤖 AI viết bài'}
+            </button>
+            <button type="button" className="btn-cancel" onClick={checkLinks}>
+              🔗 Check links
+            </button>
+          </div>
+
+          {Object.keys(captionVariants).length ? (
+            <div className="seeding-caption-variants">
+              <div className="seeding-section-title">Biến thể nội dung theo từng nơi đăng</div>
+              {selectedTargets.map((target) => (
+                <label key={targetKey(target)} className="caption-variant-card">
+                  <span>{target.type === 'page' ? 'Page' : 'Nhóm'} · {target.name}</span>
+                  <textarea
+                    value={captionVariants[targetKey(target)] || ''}
+                    onChange={(event) => setCaptionVariants((prev) => ({
+                      ...prev,
+                      [targetKey(target)]: event.target.value,
+                    }))}
+                    placeholder="AI sẽ tạo caption riêng cho nơi đăng này"
+                  />
+                </label>
+              ))}
+            </div>
+          ) : null}
         </div>
-      ) : step === 2 ? (
+
+        <aside className="seeding-target-card">
+          <div className="seeding-target-head">
+            <div>
+              <b>Chọn nhóm/Page để đăng</b>
+              <span>{targetCount} nơi đang chọn</span>
+            </div>
+            <div className="seeding-target-actions">
+              <button type="button" onClick={() => setAllTargets(true)}>Tất cả</button>
+              <button type="button" onClick={() => setAllTargets(false)}>Bỏ chọn</button>
+            </div>
+          </div>
+
+          <div className="seeding-target-list">
+            {groups.map((group) => (
+              <label key={`group-${group.id}`} className="seeding-target-row">
+                <input
+                  type="checkbox"
+                  checked={!!selectedGroups[group.id]}
+                  onChange={(event) => setSelectedGroups((prev) => ({ ...prev, [group.id]: event.target.checked }))}
+                />
+                <span>
+                  <b>{group.name || group.id}</b>
+                  <small>Facebook Group</small>
+                </span>
+              </label>
+            ))}
+            {pages.map((page) => (
+              <label key={`page-${page.id}`} className="seeding-target-row">
+                <input
+                  type="checkbox"
+                  checked={!!selectedPages[page.id]}
+                  onChange={(event) => setSelectedPages((prev) => ({ ...prev, [page.id]: event.target.checked }))}
+                />
+                <span>
+                  <b>{page.name || page.id}</b>
+                  <small>Facebook Page</small>
+                </span>
+              </label>
+            ))}
+            {!groups.length && !pages.length ? (
+              <div className="seeding-empty-target">
+                Chưa có nhóm/Page. Vào Quản lý nhóm để thêm nhóm hoặc bấm Đồng bộ Page FB.
+              </div>
+            ) : null}
+          </div>
+
+          <div className="target-note">
+            Link video hiện được đăng dạng URL preview. Muốn upload video thật như n8n cần thêm driver upload/video riêng.
+          </div>
+        </aside>
+      </div>
+
+      <div className="seeding-history">
+        <div className="seeding-section-title">📋 Lịch sử đăng bài</div>
         <div className="data-table-wrap">
-          <table className="data-table pipeline-table">
+          <table className="data-table seeding-history-table">
             <thead>
               <tr>
-                <th></th>
-                <th>Tin / nguồn</th>
-                <th>Tóm tắt</th>
-                <th>Format</th>
-                <th>Link</th>
+                <th>Tiêu đề</th>
+                <th>Nội dung</th>
+                <th>Link ảnh/video</th>
+                <th>Lịch đăng</th>
+                <th>Nơi đăng</th>
+                <th>Trạng thái</th>
               </tr>
             </thead>
             <tbody>
-              {visibleArticles.length ? visibleArticles.map((item) => (
-                <tr key={item.id}>
+              {visibleHistory.length ? visibleHistory.map((row) => (
+                <tr key={row.id}>
                   <td>
-                    <input
-                      type="checkbox"
-                      checked={!!selected[item.id]}
-                      onChange={(e) => setSelected((prev) => ({ ...prev, [item.id]: e.target.checked }))}
-                    />
+                    <b>{row.title || 'Bài đăng'}</b>
+                    <small>{formatDateTime(row.createdAt)}</small>
                   </td>
+                  <td>{row.content || '-'}</td>
+                  <td>{row.mediaUrl ? <a href={row.mediaUrl} target="_blank" rel="noreferrer">Mở link</a> : '-'}</td>
+                  <td>{formatDateTime(row.scheduledAt)}</td>
+                  <td>{row.targets.length ? row.targets.map((target) => target.name).join(', ') : '-'}</td>
                   <td>
-                    <b>{item.title || '-'}</b>
-                    <small>{item.source_name || 'RSS'} · {item.published_at ? new Date(item.published_at).toLocaleString('vi-VN') : '-'}</small>
+                    <span className={row.status.includes('lỗi') || row.status.includes('failed') ? 'pill-danger' : 'pill-ok'}>
+                      {row.status}
+                    </span>
                   </td>
-                  <td>{item.summary || '-'}</td>
-                  <td>
-                    <select value={formats[item.id] || 'pov'} onChange={(e) => setFormats((prev) => ({ ...prev, [item.id]: e.target.value }))}>
-                      {FORMATS.map((fmt) => <option key={fmt.key} value={fmt.key}>{fmt.label}</option>)}
-                    </select>
-                  </td>
-                  <td>{item.url ? <a href={item.url} target="_blank" rel="noreferrer">Mở</a> : '-'}</td>
                 </tr>
               )) : (
-                <tr><td colSpan={5} className="table-empty">Chưa có tin nguồn. Quay lại bước Research và bấm Auto-scan để lấy dữ liệu thật từ RSS.</td></tr>
+                <tr>
+                  <td colSpan={6} className="table-empty">Chưa có bài đăng nào</td>
+                </tr>
               )}
             </tbody>
           </table>
         </div>
-      ) : (
-        <div className="pipeline-post-list">
-          {posts.length ? posts.map((post) => (
-            <article key={post.id} className="pipeline-post-card">
-              <div className="pipeline-post-head">
-                <div>
-                  <b>{post.article_title || 'Bản nháp content'}</b>
-                  <span>
-                    {post.source_name || 'Nguồn'} · {post.format || 'pov'} · {post.status || 'draft'}
-                    {post.scheduled_at ? ` · lịch ${new Date(post.scheduled_at).toLocaleString('vi-VN')}` : ''}
-                  </span>
-                </div>
-                <div className="pipeline-post-actions">
-                  {post.article_url ? <a href={post.article_url} target="_blank" rel="noreferrer">Nguồn</a> : null}
-                  <button type="button" onClick={() => openEdit(post)}>Sửa</button>
-                  <button type="button" onClick={() => openPublish(post)}>Đăng / Lên lịch</button>
-                  <button type="button" className="danger" onClick={() => void deletePost(post.id)}>Xoá</button>
-                </div>
-              </div>
-              <p>{post.content || '-'}</p>
-              <small>{post.hashtags || ''}</small>
-            </article>
-          )) : (
-            <div className="table-empty">Chưa có bản nháp content. Chọn tin nguồn rồi bấm AI viết.</div>
-          )}
-        </div>
-      )}
-
-      <div className="modal-result">{localStatus || status}</div>
-
-      <div className={`modal-overlay${editingPost ? ' open' : ''}`}>
-        <div className="modal modal-wide">
-          <div className="modal-hd">
-            Sửa bản nháp content
-            <span className="modal-close" onClick={() => setEditingPost(null)}>×</span>
-          </div>
-          <div className="field">
-            <label>Nội dung</label>
-            <textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Hashtag</label>
-            <input className="modal-input" value={editHashtags} onChange={(e) => setEditHashtags(e.target.value)} />
-          </div>
-          <div className="modal-actions">
-            <button type="button" className="btn-cancel" onClick={() => setEditingPost(null)}>Huỷ</button>
-            <button type="button" className="btn-submit" onClick={() => void savePost()}>Lưu</button>
-          </div>
-        </div>
       </div>
 
-      <div className={`modal-overlay${publishPost ? ' open' : ''}`}>
-        <div className="modal modal-wide">
-          <div className="modal-hd">
-            Đăng hoặc lên lịch bản nháp
-            <span className="modal-close" onClick={() => setPublishPost(null)}>×</span>
-          </div>
-          <div className="pipeline-publish-preview">
-            <b>{publishPost?.article_title || 'Bản nháp content'}</b>
-            <p>{publishPost?.content || ''}</p>
-            <small>{publishPost?.hashtags || ''}</small>
-          </div>
-          <div className="field">
-            <label>Nơi sẽ đăng</label>
-            <div className="pipeline-group-list">
-              {groups.length ? groups.map((group) => (
-                <label key={group.id}>
-                  <input
-                    type="checkbox"
-                    checked={!!selectedGroups[group.id]}
-                    onChange={(e) => setSelectedGroups((prev) => ({ ...prev, [group.id]: e.target.checked }))}
-                  />
-                  <span>{group.name || group.id}</span>
-                </label>
-              )) : null}
-              {pages.length ? pages.map((page) => (
-                <label key={page.id}>
-                  <input
-                    type="checkbox"
-                    checked={!!selectedPages[page.id]}
-                    onChange={(e) => setSelectedPages((prev) => ({ ...prev, [page.id]: e.target.checked }))}
-                  />
-                  <span>Page: {page.name || page.id}</span>
-                </label>
-              )) : null}
-              {!groups.length && !pages.length ? <div className="table-empty">Chưa có nhóm hoặc Page. Thêm nhóm hoặc kiểm tra quyền quản trị Page trước.</div> : null}
-            </div>
-          </div>
-          <div className="field">
-            <label>Lên lịch đăng nếu cần</label>
-            <input className="modal-input" type="datetime-local" value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} />
-          </div>
-          <div className="modal-actions modal-actions-between">
-            <span className="modal-result">{publishStatus}</span>
-            <div>
-              <button type="button" className="btn-cancel" disabled={publishing} onClick={() => setPublishPost(null)}>Huỷ</button>
-              <button type="button" className="btn-cancel" disabled={publishing || (!groups.length && !pages.length)} onClick={() => void schedulePost()}>
-                Lưu lịch
-              </button>
-              <button type="button" className="btn-submit" disabled={publishing || (!groups.length && !pages.length)} onClick={() => void publishNow()}>
-                {publishing ? 'Đang xử lý...' : 'Đăng ngay'}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
+      <div className="seeding-status-line">{localStatus || status}</div>
     </section>
   );
 }

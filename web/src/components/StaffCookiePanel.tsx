@@ -1,7 +1,6 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { CookieRefreshGuide } from '@/components/CookieRefreshGuide';
 import type { StaffAccount } from '@/lib/types';
 
 export type StaffPayload = {
@@ -252,7 +251,6 @@ export function StaffCookiePanel({
       </div>
 
       {status ? <div className="module-status">{status}</div> : null}
-      <CookieRefreshGuide compact />
       {!canManage ? (
         <div className="module-status">
           Bạn đang đăng nhập tài khoản nhân sự. Chỉ admin được thêm, sửa, xoá nhân sự và gắn cookie.
@@ -302,7 +300,6 @@ export function StaffCookiePanel({
               {cookieBridgeStatus ? <div className="modal-result">{cookieBridgeStatus}</div> : null}
             </div>
           </div>
-          <CookieRefreshGuide compact />
           <div className="modal-actions modal-actions-between">
             <div className="modal-result">{editingId ? 'Mật khẩu và cookie có thể để trống nếu không đổi.' : ''}</div>
             <div className="staff-modal-actions">

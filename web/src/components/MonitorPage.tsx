@@ -484,7 +484,7 @@ export function MonitorPage() {
     const gids = groupsRef.current;
     const pageIds = channelsRef.current
       .filter((item) => (item.platform || '').toLowerCase() === 'facebook')
-      .filter((item) => ['page', 'fanpage'].includes((item.channel_type || '').trim().toLowerCase()))
+      .filter((item) => ['page', 'fanpage', 'trang'].includes((item.channel_type || '').trim().toLowerCase()))
       .map((item) => item.target_id || '')
       .filter(Boolean);
     const lim = limitRef.current;
@@ -557,7 +557,7 @@ export function MonitorPage() {
       const n = groupNames[groups[0]!] || groups[0];
       setHeaderSub(n || '...');
     } else {
-      const pageCount = channels.filter((item) => (item.platform || '').toLowerCase() === 'facebook' && ['page', 'fanpage'].includes((item.channel_type || '').trim().toLowerCase())).length;
+      const pageCount = channels.filter((item) => (item.platform || '').toLowerCase() === 'facebook' && ['page', 'fanpage', 'trang'].includes((item.channel_type || '').trim().toLowerCase())).length;
       const parts = [groups.length ? `${groups.length} nhóm` : '', pageCount ? `${pageCount} page` : ''].filter(Boolean);
       setHeaderSub(parts.length ? `${parts.join(' · ')} đang theo dõi` : '...');
     }
@@ -1688,6 +1688,12 @@ export function MonitorPage() {
   const selectedTiktokStat = tiktokStats.find((item) => item.post_id === tiktokSelectedPostId) || tiktokStats[0];
   const selectedTiktokComments = (selectedTiktokStat?.comments || []).filter((row) => !tiktokOnlyPhone || !!row.phones?.length);
   const formatDateTime = (value?: string) => (value ? new Date(value).toLocaleString('vi-VN') : '-');
+  const facebookPageChannels = channels.filter((item) => {
+    const platform = (item.platform || '').trim().toLowerCase();
+    const type = (item.channel_type || '').trim().toLowerCase();
+    return platform === 'facebook' && ['page', 'fanpage', 'trang'].includes(type);
+  });
+  const tiktokManagedChannels = channels.filter((item) => (item.platform || '').trim().toLowerCase() === 'tiktok');
   const navItems: { key: ViewKey; icon: string; label: string }[] = [
     { key: 'home', icon: '⌂', label: 'Trang chủ' },
     { key: 'staff', icon: '👥', label: 'Nhân sự' },
@@ -1873,30 +1879,103 @@ export function MonitorPage() {
       {activeView === 'manage' ? (
       <div className="workspace">
         <aside className="workspace-sidebar">
-        <div className="panel">
-          <div className="panel-label">📋 Nhóm</div>
-          <div className="chips">
-            {groups.map((gid) => (
-              <div key={gid} className="chip chip-group" title={`${groupNames[gid] || gid}\nID: ${gid}`}>
-                <span className="chip-text">{groupNames[gid] || gid}</span>
-                <span className="chip-remove" onClick={() => void removeGroup(gid)} role="presentation">
-                  ✕
-                </span>
+        <div className="panel source-manager-panel">
+          <div className="panel-label">📋 Nguồn</div>
+          <div className="source-manager-content">
+            <div className="source-tabs">
+              <span className="source-tab-pill">
+                <b>{groups.length}</b> Nhóm FB
+              </span>
+              <span className="source-tab-pill page">
+                <b>{facebookPageChannels.length}</b> Page FB
+              </span>
+              <span className="source-tab-pill tiktok">
+                <b>{tiktokManagedChannels.length}</b> TikTok
+              </span>
+              <button type="button" className="source-manage-link" onClick={() => setActiveView('channels')}>
+                Quản lý Page/TikTok
+              </button>
+            </div>
+
+            <div className="source-chip-section">
+              <div className="source-chip-heading">Nhóm Facebook</div>
+              <div className="chips">
+                {groups.length ? (
+                  groups.map((gid) => (
+                    <div key={gid} className="chip chip-group" title={`${groupNames[gid] || gid}\nID: ${gid}`}>
+                      <span className="chip-text">{groupNames[gid] || gid}</span>
+                      <span className="chip-remove" onClick={() => void removeGroup(gid)} role="presentation">
+                        ✕
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <span className="source-empty">Chưa có nhóm Facebook</span>
+                )}
               </div>
-            ))}
-          </div>
-          <div className="input-row">
-            <input
-              type="text"
-              placeholder="ID / URL nhóm"
-              value={groupInp}
-              disabled={groupBusy}
-              onChange={(e) => setGroupInp(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && void addGroup()}
-            />
-            <button type="button" className="btn-add btn-add-blue" title="Thêm nhóm" onClick={() => void addGroup()}>
-              +
-            </button>
+            </div>
+
+            <div className="source-chip-section">
+              <div className="source-chip-heading">Page Facebook</div>
+              <div className="chips">
+                {facebookPageChannels.length ? (
+                  facebookPageChannels.map((item) => (
+                    <a
+                      key={item.id || item.target_id || item.link}
+                      className="chip chip-page chip-link"
+                      href={item.link || (item.target_id ? `https://www.facebook.com/${item.target_id}` : '#')}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={`${item.channel_name || item.target_id || 'Page Facebook'}\nID: ${item.target_id || '-'}`}
+                    >
+                      <span className="chip-text">{item.channel_name || item.target_id || 'Page Facebook'}</span>
+                    </a>
+                  ))
+                ) : (
+                  <span className="source-empty">Chưa có Page Facebook</span>
+                )}
+              </div>
+            </div>
+
+            <div className="source-chip-section">
+              <div className="source-chip-heading">TikTok</div>
+              <div className="chips">
+                {tiktokManagedChannels.length ? (
+                  tiktokManagedChannels.map((item) => {
+                    const handle = (item.target_id || item.channel_name || '').replace(/^@/, '');
+                    const href = item.link || (handle ? `https://www.tiktok.com/@${handle}` : '#');
+                    return (
+                      <a
+                        key={item.id || item.target_id || item.link}
+                        className="chip chip-tiktok-source chip-link"
+                        href={href}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={`${item.channel_name || item.target_id || 'TikTok'}\nID: ${item.target_id || '-'}`}
+                      >
+                        <span className="chip-text">{item.channel_name || item.target_id || 'TikTok'}</span>
+                      </a>
+                    );
+                  })
+                ) : (
+                  <span className="source-empty">Chưa có kênh TikTok</span>
+                )}
+              </div>
+            </div>
+
+            <div className="input-row source-group-input">
+              <input
+                type="text"
+                placeholder="ID / URL nhóm"
+                value={groupInp}
+                disabled={groupBusy}
+                onChange={(e) => setGroupInp(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && void addGroup()}
+              />
+              <button type="button" className="btn-add btn-add-blue" title="Thêm nhóm Facebook nhanh" onClick={() => void addGroup()}>
+                +
+              </button>
+            </div>
           </div>
         </div>
 
