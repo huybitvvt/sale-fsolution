@@ -235,6 +235,10 @@ async function handleSendComment(request) {
     return { ok: false, final: true, error: 'Nhap noi dung binh luan truoc khi gui' };
   }
 
+  // First try background cookie/API publish to avoid flaky DOM automation.
+  const apiResult = await publishCommentFromBackground({ ...payload, message: text }, url, '');
+  if (apiResult?.ok) return apiResult;
+
   const tab = await chrome.tabs.create({ url, active: true });
   await waitForTabLoaded(tab.id);
   await sleep(2500);
@@ -245,7 +249,13 @@ async function handleSendComment(request) {
     payload: { ...payload, url, message: text },
   });
   if (response?.ok) return response;
-  return publishCommentFromBackground({ ...payload, message: text }, url, response?.error || '');
+
+  return {
+    ok: false,
+    final: true,
+    error: [apiResult?.error, response?.error].filter(Boolean).join(' | ') || 'Khong gui duoc comment TikTok qua API nen cung khong thao tac duoc tren tab Chrome.',
+    url,
+  };
 }
 
 async function openTikTokCommentContext(request) {
