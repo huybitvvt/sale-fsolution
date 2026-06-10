@@ -3162,7 +3162,7 @@ def api_create_post():
 def api_publish_targets():
     body = request.get_json(silent=True) or {}
     raw_targets = body.get('targets') or []
-    message = str(body.get('message') or '').strip()
+    message = str(body.get('message') or body.get('content') or '').strip()
     media_url, native_video_url = _extract_post_media(body)
     if not message:
         return jsonify({'ok': False, 'error': 'Thiếu nội dung bài đăng'}), 400
@@ -5147,6 +5147,66 @@ def leads_from_comments():
 
 
 # ── Marketing Content Pipeline ─────────────────────────
+
+def _zalo_deep_links(phone: str) -> dict:
+    digits = re.sub(r'\D+', '', phone or '')
+    if digits.startswith('84'):
+        local = '0' + digits[2:]
+    else:
+        local = digits
+    return {
+        'ok': bool(local),
+        'phone': local,
+        'web_url': f'https://zalo.me/{local}' if local else '',
+        'app_url': f'zalo://conversation?phone={local}' if local else '',
+        'note': 'zalo.me/{phone} là universal link ổn định nhất; zalo:// phụ thuộc thiết bị đã cài Zalo.',
+    }
+
+@app.route('/api/zalo/deeplink', methods=['GET', 'POST'])
+def api_zalo_deeplink():
+    body = request.get_json(silent=True) or {}
+    phone = request.args.get('phone') or body.get('phone') or body.get('zalo') or ''
+    payload = _zalo_deep_links(str(phone))
+    if not payload.get('ok'):
+        return jsonify({'ok': False, 'error': 'Thiếu số điện thoại Zalo'}), 400
+    return jsonify(payload)
+
+@app.route('/api/tiktok/publish/capability', methods=['GET'])
+def api_tiktok_publish_capability():
+    return jsonify({
+        'ok': True,
+        'supported': False,
+        'current_flow': 'comment/read/reply via browser extension or Playwright worker',
+        'required_for_direct_publish': [
+            'TikTok Content Posting API app approval',
+            'OAuth user consent',
+            'Scopes such as video.upload/video.publish or current TikTok-approved equivalents',
+            'Public video file URL or inbox upload flow required by TikTok API',
+        ],
+        'recommendation': 'Không dùng cookie để publish video TikTok hàng loạt trên production. Cần làm OAuth Content Posting API hoặc dùng Zapier/Make nếu tài khoản được hỗ trợ.',
+    })
+
+@app.route('/api/integrations/capabilities', methods=['GET'])
+def api_integration_capabilities():
+    return jsonify({
+        'ok': True,
+        'facebook': {
+            'fanpage': {'publish_text': True, 'publish_link_preview': True, 'publish_native_video_file_url': True, 'tested': True},
+            'group': {'publish_text': True, 'publish_link_preview': True, 'publish_native_video_file_url': True, 'tested_link_preview': True},
+            'video_rule': 'Only direct .mp4/.mov/.webm URLs are native video. YouTube/TikTok/Facebook watch URLs are link previews.',
+        },
+        'tiktok': {
+            'direct_publish_ready': False,
+            'reason': 'Needs TikTok Content Posting API OAuth/app approval. Current system supports comment workflows, not direct video publishing.',
+            'zapier_note': 'Zapier has TikTok-related integrations, but direct organic video publishing depends on Zapier app availability, TikTok account permissions, and approved scopes.',
+        },
+        'zalo': {
+            'deep_link_ready': True,
+            'format': 'https://zalo.me/{phone}',
+            'app_scheme': 'zalo://conversation?phone={phone}',
+        },
+    })
+
 @app.route('/api/content-pipeline', methods=['GET'])
 def content_pipeline_get():
     articles = sorted(_content_pipeline.get('articles') or [], key=lambda item: str(item.get('published_at') or item.get('created_at') or ''), reverse=True)
