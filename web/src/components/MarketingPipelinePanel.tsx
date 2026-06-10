@@ -216,7 +216,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
     setContent(item.content);
     setMediaUrl(item.mediaUrl);
     setScheduledAt(item.scheduledAt);
-    setLocalStatus('?? n?p b?i m?u t? ??i t?c v?o form. C? th? ch?nh l?i r?i ??ng ngay ho?c ??t l?ch.');
+    setLocalStatus('Đã nạp bài mẫu từ đối tác vào form. Có thể chỉnh lại rồi Đăng ngay hoặc Đặt lịch.');
   }
 
   function setAllTargets(checked: boolean) {
@@ -344,19 +344,19 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
   async function scheduleDraft() {
     const message = buildMessage();
     if (!message || !title.trim() || !content.trim()) {
-      setLocalStatus('Nh?p ?? ti?u ?? v? n?i dung b?i vi?t tr??c khi ??t l?ch.');
+      setLocalStatus('Nhập đủ tiêu đề và nội dung bài viết trước khi đặt lịch.');
       return;
     }
     if (!scheduledAt) {
-      setLocalStatus('Ch?n ng?y gi? c?n ??ng.');
+      setLocalStatus('Chọn ngày giờ cần đăng.');
       return;
     }
     if (!selectedTargets.length) {
-      setLocalStatus('Ch?n ?t nh?t m?t nh?m ho?c Page ?? ??t l?ch.');
+      setLocalStatus('Chọn ít nhất một nhóm hoặc Page để đặt lịch.');
       return;
     }
     setPublishing(true);
-    setLocalStatus('?ang l?u l?ch ??ng l?n backend...');
+    setLocalStatus('Đang lưu lịch đăng lên backend...');
     try {
       const detectedMedia = detectVideoMedia(mediaUrl);
       const res = await api('/api/content-pipeline/posts', {
@@ -374,12 +374,12 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
         }),
       });
       const payload = await readPayload(res);
-      if (!res.ok || !payload.ok) throw new Error(payload.error || 'Kh?ng l?u ???c l?ch ??ng');
-      appendHistory({ title, content, mediaUrl, hashtags, scheduledAt, targets: selectedTargets, status: '?? l?u l?ch' });
-      setLocalStatus('?? l?u l?ch ??ng l?n backend. Cron/worker c? th? g?i /api/content-pipeline/scheduled/run ?? t? ??ng khi t?i gi?.');
+      if (!res.ok || !payload.ok) throw new Error(payload.error || 'Không lưu được lịch đăng');
+      appendHistory({ title, content, mediaUrl, hashtags, scheduledAt, targets: selectedTargets, status: 'Đã lưu lịch' });
+      setLocalStatus('Đã lưu lịch đăng lên backend. Cron/worker có thể gọi /api/content-pipeline/scheduled/run để tự đăng khi tới giờ.');
       void onReload();
     } catch (err: any) {
-      setLocalStatus(`L?i ??t l?ch: ${err?.message || 'Kh?ng g?i ???c backend'}.`);
+      setLocalStatus(`Lỗi đặt lịch: ${err?.message || 'Không gọi được backend'}.`);
     } finally {
       setPublishing(false);
     }

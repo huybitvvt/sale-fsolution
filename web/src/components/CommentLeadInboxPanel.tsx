@@ -725,10 +725,10 @@ export function CommentLeadInboxPanel() {
       url = author
         ? `https://www.tiktok.com/search/user?q=${encodeURIComponent(author)}`
         : (row.post_url || row.comment_url || 'https://www.tiktok.com/messages');
-      setReplyStatus('?? m? TikTok ?? t?m t?i kho?n kh?ch. N?u TikTok ch?a m? chat tr?c ti?p, v?o profile kh?ch v? b?m Message.');
+      setReplyStatus('Đã mở TikTok để tìm tài khoản khách. Nếu TikTok chưa mở chat trực tiếp, vào profile khách và bấm Message.');
     } else if (src === 'fb-page' || src === 'fb-group') {
       url = row.comment_url || row.post_url || 'https://www.facebook.com/messages';
-      setReplyStatus('?? m? Facebook theo comment/b?i vi?t ?? nh?n kh?ch th? c?ng n?u c?n.');
+      setReplyStatus('Đã mở Facebook theo comment/bài viết để nhắn khách thủ công nếu cần.');
     }
     if (url) window.open(url, '_blank', 'noopener,noreferrer');
   }
@@ -963,7 +963,7 @@ export function CommentLeadInboxPanel() {
                           onClick={(event) => { event.stopPropagation(); openDirectMessage(row); }}
                           onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); openDirectMessage(row); } }}
                         >
-                          Nh?n tin tr?c ti?p
+                          Nhắn tin trực tiếp
                         </span>
                       ) : null}
                     </div>
