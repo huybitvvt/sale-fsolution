@@ -432,7 +432,7 @@
     const message = String(payload.message || '').trim();
     if (!message) throw new Error('Thieu noi dung binh luan');
     if (tiktokPageError()) {
-      return publishCommentByApi(payload, 'Khung binh luan TikTok dang loi.');
+      throw new Error('Khung binh luan TikTok dang loi hoac TikTok chan phien gui tu Chrome.');
     }
 
     maybeOpenCommentPanel();
@@ -448,12 +448,12 @@
     });
     if (!input) {
       if (sawTikTokError || tiktokPageError()) {
-        return publishCommentByApi(payload, 'Khung binh luan TikTok dang loi.');
+        throw new Error('Khung binh luan TikTok dang loi hoac TikTok chan phien gui tu Chrome.');
       }
       if (loginHint()) {
         throw new Error('Chrome chua dang nhap TikTok hoac TikTok yeu cau dang nhap lai.');
       }
-      return publishCommentByApi(payload, 'Khong thay o binh luan TikTok.');
+      throw new Error('Khong thay o binh luan TikTok.');
     }
 
     setTextValue(input, message);
@@ -462,7 +462,7 @@
     const button = await waitFor(findPostButton, 12000);
     if (!button) {
       if (tiktokPageError()) {
-        return publishCommentByApi(payload, 'Khung binh luan TikTok dang loi.');
+        throw new Error('Khung binh luan TikTok dang loi hoac TikTok chan phien gui tu Chrome.');
       }
       submitCommentByKeyboard(input);
       await sleep(1800);
@@ -476,7 +476,7 @@
           method: 'dom-keyboard',
         };
       }
-      return publishCommentByApi(payload, 'Da dien noi dung nhung TikTok khong hien nut dang binh luan.');
+      throw new Error('Da dien noi dung nhung TikTok khong hien nut dang binh luan.');
     }
 
     button.click();

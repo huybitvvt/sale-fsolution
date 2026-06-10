@@ -37,6 +37,18 @@ function friendlyTikTokError(payload, fallback) {
   return text;
 }
 
+
+function conciseSendError(apiError, domError) {
+  const joined = [apiError, domError].filter(Boolean).join(' | ');
+  if (/403|status_code.*?214|khong nhan binh luan|kh?ng nh?n b?nh lu?n/i.test(joined)) {
+    return 'TikTok tu choi gui tu dong bang phien Chrome hien tai (403). Da mo video va copy noi dung, hay dan Ctrl+V de gui thu cong.';
+  }
+  if (/login|session|captcha|verify|dang nhap|xac minh/i.test(joined)) {
+    return 'TikTok yeu cau dang nhap/xac minh/captcha lai tren Chrome truoc khi gui binh luan.';
+  }
+  return joined || 'Khong gui duoc comment TikTok qua API/extension.';
+}
+
 function getTikTokCookies() {
   return new Promise((resolve) => {
     chrome.cookies.getAll({ domain: '.tiktok.com' }, (cookies) => {
@@ -253,7 +265,7 @@ async function handleSendComment(request) {
   return {
     ok: false,
     final: true,
-    error: [apiResult?.error, response?.error].filter(Boolean).join(' | ') || 'Khong gui duoc comment TikTok qua API nen cung khong thao tac duoc tren tab Chrome.',
+    error: conciseSendError(apiResult?.error, response?.error),
     url,
   };
 }
