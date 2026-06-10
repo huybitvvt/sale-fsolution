@@ -955,6 +955,17 @@ export function CommentLeadInboxPanel() {
                         <span className={`comment-state-pill ${isProcessed ? 'done' : 'open'}`}>{isProcessed ? 'Đã xử lý' : 'Chưa xử lý'}</span>
                         {tags.map((tag) => <span key={tag.key} className={`comment-tag ${tag.className}`}>{tag.icon} {tag.label}</span>)}
                       </div>
+                      {sourceKey(row) === 'tiktok' ? (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          className="comment-card-dm"
+                          onClick={(event) => { event.stopPropagation(); openDirectMessage(row); }}
+                          onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); openDirectMessage(row); } }}
+                        >
+                          Nh?n tin tr?c ti?p
+                        </span>
+                      ) : null}
                     </div>
                   </button>
                 );
