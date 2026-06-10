@@ -54,6 +54,34 @@ type TikTokCookieConfig = {
   updated_by?: string;
   can_manage?: boolean;
 };
+
+const PARTNER_SAMPLE_POSTS = [
+  {
+    id: 'partner-video-1',
+    title: 'Hướng dẫn điều chỉnh ty đàn guitar xử lý rè dây',
+    content: 'Video bài nói hướng dẫn người mới kiểm tra cần đàn, nhận biết tiếng rè và cách mang đàn tới shop để được cân chỉnh an toàn.',
+    media: 'https://www.tiktok.com/@guitarsaithanh/video/7350012345678901234',
+    schedule: '2026-06-11T09:00',
+    type: '🎥 Video bài nói',
+  },
+  {
+    id: 'partner-video-2',
+    title: 'Review đàn acoustic tầm 3 triệu – đáng mua không?',
+    content: 'Bài review có hook ngắn, demo âm thanh, điểm mạnh/yếu và CTA inbox để nhận bảng giá/clip test từng cây.',
+    media: 'https://example.com/video/review-acoustic-3tr.mp4',
+    schedule: '2026-06-11T19:30',
+    type: '🎥 Video review',
+  },
+  {
+    id: 'partner-post-3',
+    title: 'Chương trình Thanh Lý Đàn Tận Xưởng – Acoustic giảm đến 30%',
+    content: 'Bài khuyến mãi ngắn, nêu rõ số lượng còn lại, ưu đãi theo khung giờ và lời kêu gọi đặt lịch đến thử đàn.',
+    media: 'https://example.com/images/thanh-ly-dan-acoustic.jpg',
+    schedule: '2026-06-12T10:15',
+    type: '🖼️ Ảnh / Album',
+  },
+];
+
 type TikTokBridgeResult = {
   ok?: boolean;
   final?: boolean;
@@ -141,7 +169,10 @@ export function MonitorPage() {
   const [postModal, setPostModal] = useState(false);
   const [postSelected, setPostSelected] = useState<Record<string, boolean>>({});
   const [postPageId, setPostPageId] = useState('');
+  const [postTitle, setPostTitle] = useState('');
   const [postContent, setPostContent] = useState('');
+  const [postMedia, setPostMedia] = useState('');
+  const [postSchedule, setPostSchedule] = useState('');
   const [postCaptions, setPostCaptions] = useState<Record<string, string>>({});
   const [postResult, setPostResult] = useState('');
   const [postSubmitting, setPostSubmitting] = useState(false);
@@ -873,7 +904,10 @@ export function MonitorPage() {
     });
     setPostSelected(sel);
     setPostPageId('');
+    setPostTitle('');
     setPostContent('');
+    setPostMedia('');
+    setPostSchedule('');
     setPostCaptions({});
     setPostResult('');
     setPostModal(true);
@@ -881,7 +915,7 @@ export function MonitorPage() {
 
   async function generatePostCaptions() {
     const selectedGroups = groups.filter((g) => postSelected[g]);
-    const message = postContent.trim();
+    const message = [postTitle.trim() ? `Ti?u ??: ${postTitle.trim()}` : '', postContent.trim(), postMedia.trim() ? `Link ?nh/video: ${postMedia.trim()}` : '', postSchedule.trim() ? `L?ch ??ng: ${postSchedule.trim()}` : ''].filter(Boolean).join('\n\n');
     if (!message) {
       setPostResult('Nhập nội dung gốc trước khi tạo caption AI');
       return;
@@ -919,8 +953,8 @@ export function MonitorPage() {
 
   async function submitPost() {
     const selectedGroups = groups.filter((g) => postSelected[g]);
-    const message = postContent.trim();
-    if (!message) return;
+    const message = [postTitle.trim() ? `Ti?u ??: ${postTitle.trim()}` : '', postContent.trim(), postMedia.trim() ? `Link ?nh/video: ${postMedia.trim()}` : '', postSchedule.trim() ? `L?ch ??ng: ${postSchedule.trim()}` : ''].filter(Boolean).join('\n\n');
+    if (!postTitle.trim() || !postContent.trim()) { setPostResult('? Nh?p ?? Ti?u ?? v? N?i dung'); return; }
     if (!selectedGroups.length) {
       setPostResult('❌ Chọn ít nhất 1 nhóm');
       return;
@@ -946,7 +980,10 @@ export function MonitorPage() {
     }
     if (fail === 0) {
       setPostResult(`✅ Đăng thành công ${ok}/${selectedGroups.length} nhóm!`);
+      setPostTitle('');
       setPostContent('');
+      setPostMedia('');
+      setPostSchedule('');
       setTimeout(() => setPostModal(false), 2000);
     } else {
       setPostResult(`✅ ${ok} thành công, ❌ ${fail} thất bại`);
@@ -2186,6 +2223,32 @@ export function MonitorPage() {
             </div>
           </div>
         ) : null}
+
+        <section className="partner-post-board">
+          <div className="partner-post-board-head">
+            <div>
+              <b>B?i vi?t chu?n theo m?u ??i t?c</b>
+              <span>??ng b? ?? c?m d? li?u: video, b?i n?i, ti?u ??, n?i dung, link ?nh/video v? l?ch ??ng.</span>
+            </div>
+            <button type="button" className="btn btn-success" onClick={openPostModal}>+ Th?m b?i vi?t</button>
+          </div>
+          <div className="partner-post-grid">
+            {PARTNER_SAMPLE_POSTS.map((item) => (
+              <article key={item.id} className="partner-post-card">
+                <div className="partner-post-type">{item.type}</div>
+                <h3>{item.title}</h3>
+                <p>{item.content}</p>
+                <dl>
+                  <dt>Ti?u ??</dt><dd>{item.title}</dd>
+                  <dt>N?i dung</dt><dd>{item.content}</dd>
+                  <dt>Link ?nh/video</dt><dd><a href={item.media} target="_blank" rel="noreferrer">{item.media}</a></dd>
+                  <dt>L?ch ??ng</dt><dd>{new Date(item.schedule).toLocaleString('vi-VN')}</dd>
+                </dl>
+                <button type="button" className="btn-cancel" onClick={() => { setPostTitle(item.title); setPostContent(item.content); setPostMedia(item.media); setPostSchedule(item.schedule); setPostModal(true); }}>N?p v?o form ??ng</button>
+              </article>
+            ))}
+          </div>
+        </section>
 
         <div className="feed">
           {loading && !allPosts.length ? (
