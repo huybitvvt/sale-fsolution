@@ -77,9 +77,10 @@ function safeList<T>(payload: unknown): T[] {
 function detectVideoMedia(url: string) {
   const cleanUrl = url.trim();
   if (!cleanUrl) return { mediaUrl: '', nativeVideoUrl: '' };
-  const isVideoHost = /(youtube|youtu\.be|tiktok|facebook\.com|fb\.watch|fb\.gg|reel|short)/i.test(cleanUrl);
   const isDirectVideo = /\.(mp4|mov|m4v|webm|avi|mkv|flv|wmv|3gp|ogv)(\?|$)/i.test(cleanUrl);
-  return isDirectVideo || isVideoHost
+  // Only direct video files can be uploaded as native video. YouTube/TikTok URLs
+  // must be posted as normal link preview so Graph API does not reject file_url.
+  return isDirectVideo
     ? { mediaUrl: '', nativeVideoUrl: cleanUrl }
     : { mediaUrl: cleanUrl, nativeVideoUrl: '' };
 }
@@ -115,6 +116,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
   const [loadingTargets, setLoadingTargets] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
 
   useEffect(() => {
     try {
@@ -382,6 +384,29 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
       setLocalStatus(`Lỗi đặt lịch: ${err?.message || 'Không gọi được backend'}.`);
     } finally {
       setPublishing(false);
+    }
+  }
+
+  async function uploadImageFile(file?: File) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setLocalStatus('Ch? h? tr? ch?n file ?nh JPG/PNG/WebP/GIF.');
+      return;
+    }
+    setUploadingImage(true);
+    setLocalStatus('?ang upload ?nh...');
+    try {
+      const form = new FormData();
+      form.append('image', file);
+      const res = await api('/api/uploads/comment-image', { method: 'POST', body: form });
+      const payload = await readPayload(res);
+      if (!res.ok || !payload.ok || !payload.image_url) throw new Error(payload.error || 'Kh?ng upload ???c ?nh');
+      setMediaUrl(payload.image_url);
+      setLocalStatus('?? upload ?nh v? g?n v?o b?i vi?t. B?m ??ng ngay ?? ??ng link ?nh n?y.');
+    } catch (err: any) {
+      setLocalStatus(`L?i upload ?nh: ${err?.message || 'Kh?ng g?i ???c backend'}.`);
+    } finally {
+      setUploadingImage(false);
     }
   }
 

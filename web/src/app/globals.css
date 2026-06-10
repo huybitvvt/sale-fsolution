@@ -2265,3 +2265,17 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
   border: 1px solid #bfdbfe;
 }
 .comment-card-dm:hover { background: #dbeafe; }
+
+.seeding-media-hint {
+  display: block;
+  margin-top: 6px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+.seeding-media-hint a { color: #2563eb; text-decoration: none; }
+.seeding-field input[type="file"] {
+  padding: 10px;
+  background: #f8fafc;
+  cursor: pointer;
+}

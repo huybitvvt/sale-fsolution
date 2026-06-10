@@ -503,21 +503,13 @@ def _pipeline_post_message(post: dict) -> str:
 
 
 _VIDEO_EXT_RE = re.compile(r'\.(mp4|mov|m4v|webm|avi|mkv|flv|wmv|3gp|ogv)(\?|$)', re.I)
-_VIDEO_HOST_RE = re.compile(r'(youtube|youtu\.be|tiktok|facebook\.com|fb\.watch|fb\.gg|reel|short)', re.I)
 
-
-def _is_video_url(url: str) -> bool:
+# Only direct video files can be sent to Facebook Graph /videos as native uploads.
+# YouTube/TikTok/Facebook watch URLs must be posted as link previews; treating
+# them as native file_url makes Graph fail.
+def _is_direct_video_url(url: str) -> bool:
     url = (url or '').strip()
-    if not url:
-        return False
-    if _VIDEO_EXT_RE.search(url):
-        return True
-    try:
-        host = url.split('/')[2] if '://' in url else url.split('/')[0]
-    except Exception:
-        host = url
-    return bool(_VIDEO_HOST_RE.search(host))
-
+    return bool(url and _VIDEO_EXT_RE.search(url))
 
 def _page_token_from_cache(page_id: str) -> str:
     global _pages_cache
@@ -535,7 +527,7 @@ def _page_token_from_cache(page_id: str) -> str:
 def _extract_post_media(post: dict) -> tuple[str, str]:
     media_url = str(post.get('media_url') or post.get('image_url') or post.get('article_url') or '').strip()
     native_video_url = str(post.get('native_video_url') or '').strip()
-    if not native_video_url and media_url and _is_video_url(media_url):
+    if not native_video_url and media_url and _is_direct_video_url(media_url):
         native_video_url = media_url
         media_url = ''
     return media_url, native_video_url
