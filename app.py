@@ -533,7 +533,7 @@ def _extract_post_media(post: dict) -> tuple[str, str]:
     return media_url, native_video_url
 
 
-def _publish_content_pipeline_post(post: dict, targets: list[dict]) -> dict:
+def _publish_content_pipeline_post(post: dict, targets: list[dict], dry_run: bool = False) -> dict:
     message = _pipeline_post_message(post)
     if not message:
         return {'ok': False, 'error': 'Bản nháp chưa có nội dung', 'results': []}
@@ -544,7 +544,22 @@ def _publish_content_pipeline_post(post: dict, targets: list[dict]) -> dict:
         target_type = str((target or {}).get('type') or '').strip().lower()
         target_id = str((target or {}).get('id') or '').strip()
         target_name = str((target or {}).get('name') or '').strip()
+        delivery = 'native_video' if native_video_url else ('link_preview' if media_url else 'text')
         try:
+            if dry_run:
+                ok_count += 1
+                results.append({
+                    'ok': True,
+                    'dry_run': True,
+                    'type': target_type or 'group',
+                    'id': target_id,
+                    'name': target_name,
+                    'delivery': delivery,
+                    'message_preview': message[:240],
+                    'media_url': media_url,
+                    'native_video_url': native_video_url,
+                })
+                continue
             if target_type == 'page':
                 page_token = _page_token_from_cache(target_id)
                 if not page_token:
@@ -556,7 +571,7 @@ def _publish_content_pipeline_post(post: dict, targets: list[dict]) -> dict:
                 page_id = str((target or {}).get('page_id') or '').strip()
                 page_token = _page_token_from_cache(page_id) if page_id else None
                 result = get_api(target_id).create_post(message, page_token, media_url, native_video_url)
-            delivery = (result or {}).get('_delivery') or ('native_video' if native_video_url else ('link_preview' if media_url else 'text'))
+            delivery = (result or {}).get('_delivery') or delivery
             if result and result.get('id'):
                 ok_count += 1
                 results.append({
@@ -580,7 +595,8 @@ def _publish_content_pipeline_post(post: dict, targets: list[dict]) -> dict:
                     'native_video_error': (result or {}).get('_native_video_error'),
                 })
         except Exception as e:
-            results.append({'ok': False, 'type': target_type or 'group', 'id': target_id, 'name': target_name, 'error': str(e), 'delivery': 'native_video' if native_video_url else ('link_preview' if media_url else 'text')})
+            results.append({'ok': False, 'type': target_type or 'group', 'id': target_id, 'name': target_name, 'error': str(e), 'delivery': delivery})
+    return {'ok': ok_count > 0, 'success_count': ok_count, 'failed_count': len(results) - ok_count, 'results': results}
     return {'ok': ok_count > 0, 'success_count': ok_count, 'failed_count': len(results) - ok_count, 'results': results}
 
 
@@ -3171,12 +3187,13 @@ def api_publish_targets():
     if not targets:
         return jsonify({'ok': False, 'error': 'Danh sách target không hợp lệ'}), 400
 
+    dry_run = bool(body.get('dry_run') or body.get('dryRun'))
     result = _publish_content_pipeline_post({
         'content': message,
         'hashtags': '',
         'media_url': media_url,
         'native_video_url': native_video_url,
-    }, targets)
+    }, targets, dry_run=dry_run)
     return jsonify(result), (200 if result.get('ok') else 502)
 
 
@@ -5240,11 +5257,11 @@ def content_pipeline_post_create():
     targets = body.get('targets') or []
     status = str(body.get('status') or ('scheduled' if scheduled_at else 'draft')).strip() or 'draft'
     if not title or not content:
-        return jsonify({'ok': False, 'error': 'Nh?p ?? ti?u ?? v? n?i dung'}), 400
+        return jsonify({'ok': False, 'error': 'Nhập đủ tiêu đề và nội dung'}), 400
     if scheduled_at and not _parse_iso_datetime(scheduled_at):
-        return jsonify({'ok': False, 'error': 'Th?i gian l?n l?ch kh?ng h?p l?'}), 400
+        return jsonify({'ok': False, 'error': 'Thời gian lên lịch không hợp lệ'}), 400
     if targets and not isinstance(targets, list):
-        return jsonify({'ok': False, 'error': 'Danh s?ch n?i ??ng kh?ng h?p l?'}), 400
+        return jsonify({'ok': False, 'error': 'Danh sách nơi đăng không hợp lệ'}), 400
     staff = _current_staff()
     now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
     post = {
