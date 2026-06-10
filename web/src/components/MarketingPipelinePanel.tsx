@@ -475,12 +475,19 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
           </label>
 
           <label className="seeding-field">
-            <span>Link ảnh / video (URL)</span>
+            <span>Ảnh từ máy hoặc link video/link ảnh</span>
+            <input
+              type="file"
+              accept="image/*"
+              disabled={uploadingImage}
+              onChange={(event) => void uploadImageFile(event.target.files?.[0])}
+            />
             <input
               value={mediaUrl}
               onChange={(event) => setMediaUrl(event.target.value)}
-              placeholder="https://..."
+              placeholder="Dán YouTube/TikTok/link ảnh nếu không chọn ảnh từ máy"
             />
+            {mediaUrl ? <small className="seeding-media-hint">Media hiện tại: <a href={mediaUrl} target="_blank" rel="noreferrer">Mở link</a></small> : null}
           </label>
 
           <div className="seeding-form-grid">
