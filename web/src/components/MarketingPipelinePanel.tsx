@@ -30,11 +30,14 @@ type PublishResult = {
   delivery?: string;
 };
 
+type PostMediaItem = { url: string; type?: 'image' | 'video'; name?: string };
+
 type HistoryRow = {
   id: string;
   title: string;
   content: string;
   mediaUrl: string;
+  mediaUrls?: string[];
   hashtags: string;
   scheduledAt: string;
   targets: PublishTarget[];
@@ -104,6 +107,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [mediaUrl, setMediaUrl] = useState('');
+  const [postMedia, setPostMedia] = useState<PostMediaItem[]>([]);
   const [scheduledAt, setScheduledAt] = useState('');
   const [hashtags, setHashtags] = useState('#guitar #guitarsaithanh');
   const [groups, setGroups] = useState<GroupRow[]>([]);
@@ -155,6 +159,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
       title: post.article_title || 'Bản nháp content',
       content: post.content || '',
       mediaUrl: post.article_url || '',
+      mediaUrls: post.media_urls || [],
       hashtags: post.hashtags || '',
       scheduledAt: post.scheduled_at || '',
       targets: (post.scheduled_targets || []).map((target) => ({
@@ -217,6 +222,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
     setTitle(item.title);
     setContent(item.content);
     setMediaUrl(item.mediaUrl);
+    setPostMedia([]);
     setScheduledAt(item.scheduledAt);
     setLocalStatus('Đã nạp bài mẫu từ đối tác vào form. Có thể chỉnh lại rồi Đăng ngay hoặc Đặt lịch.');
   }
@@ -232,7 +238,6 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
     return [
       title.trim(),
       body,
-      mediaUrl.trim(),
       hashtags.trim(),
     ].filter(Boolean).join('\n\n');
   }
@@ -296,11 +301,13 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
     setLocalStatus(`Đang đăng tới ${selectedTargets.length} nơi...`);
     try {
       // Tự động phát hiện video URL để gửi native_video_url thay vì link preview
+      const mediaUrls = postMedia.map((item) => item.url).filter(Boolean);
       const detectedMedia = detectVideoMedia(mediaUrl);
       const body = {
         message: baseMessage,
-        media_url: detectedMedia.mediaUrl,
-        native_video_url: detectedMedia.nativeVideoUrl,
+        media_url: mediaUrls.length ? '' : detectedMedia.mediaUrl,
+        native_video_url: mediaUrls.length ? '' : detectedMedia.nativeVideoUrl,
+        media_urls: mediaUrls,
         targets: selectedTargets.map((t) => ({ type: t.type, id: t.id, name: t.name })),
       };
       const res = await api('/api/publish', {
@@ -323,6 +330,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
           title,
           content,
           mediaUrl,
+          mediaUrls,
           hashtags,
           scheduledAt: '',
           targets: selectedTargets,
@@ -360,6 +368,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
     setPublishing(true);
     setLocalStatus('Đang lưu lịch đăng lên backend...');
     try {
+      const mediaUrls = postMedia.map((item) => item.url).filter(Boolean);
       const detectedMedia = detectVideoMedia(mediaUrl);
       const res = await api('/api/content-pipeline/posts', {
         method: 'POST',
@@ -367,8 +376,9 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
         body: JSON.stringify({
           title,
           content,
-          media_url: detectedMedia.mediaUrl,
-          native_video_url: detectedMedia.nativeVideoUrl,
+          media_url: mediaUrls.length ? '' : detectedMedia.mediaUrl,
+          native_video_url: mediaUrls.length ? '' : detectedMedia.nativeVideoUrl,
+          media_urls: mediaUrls,
           hashtags,
           scheduled_at: scheduledAt,
           targets: selectedTargets.map((t) => ({ type: t.type, id: t.id, name: t.name })),
@@ -377,7 +387,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
       });
       const payload = await readPayload(res);
       if (!res.ok || !payload.ok) throw new Error(payload.error || 'Không lưu được lịch đăng');
-      appendHistory({ title, content, mediaUrl, hashtags, scheduledAt, targets: selectedTargets, status: 'Đã lưu lịch' });
+      appendHistory({ title, content, mediaUrl, mediaUrls, hashtags, scheduledAt, targets: selectedTargets, status: 'Đã lưu lịch' });
       setLocalStatus('Đã lưu lịch đăng lên backend. Cron/worker có thể gọi /api/content-pipeline/scheduled/run để tự đăng khi tới giờ.');
       void onReload();
     } catch (err: any) {
@@ -387,30 +397,40 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
     }
   }
 
-  async function uploadImageFile(file?: File) {
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      setLocalStatus('Chỉ hỗ trợ chọn file ảnh JPG/PNG/WebP/GIF.');
+  async function uploadImageFile(files?: FileList | null) {
+    const selected = Array.from(files || []);
+    if (!selected.length) return;
+    if (postMedia.length + selected.length > 10) {
+      setLocalStatus('Tối đa 10 file cho một bài đăng.');
       return;
     }
     setUploadingImage(true);
-    setLocalStatus('Đang upload ảnh...');
+    setLocalStatus(`Đang upload ${selected.length} file ảnh/video...`);
     try {
       const form = new FormData();
-      form.append('image', file);
-      const res = await api('/api/uploads/comment-image', { method: 'POST', body: form });
+      selected.forEach((file) => form.append('media', file));
+      const res = await api('/api/uploads/post-media', { method: 'POST', body: form });
       const payload = await readPayload(res);
-      if (!res.ok || !payload.ok || !payload.image_url) throw new Error(payload.error || 'Không upload được ảnh');
-      setMediaUrl(payload.image_url);
-      setLocalStatus('Đã upload ảnh và gắn vào bài viết. Bấm Đăng ngay để đăng link ảnh này.');
+      if (!res.ok || !payload.ok || !Array.isArray(payload.media)) throw new Error(payload.error || 'Không upload được ảnh/video');
+      const uploaded: PostMediaItem[] = payload.media.map((item: PostMediaItem) => ({
+        url: item.url,
+        type: item.type === 'video' ? 'video' : 'image',
+        name: item.name || '',
+      }));
+      setPostMedia((prev) => [...prev, ...uploaded].slice(0, 10));
+      setLocalStatus('Đã upload media. Bấm Đăng ngay để đăng ảnh/video thật lên Facebook.');
     } catch (err: any) {
-      setLocalStatus(`Lỗi upload ảnh: ${err?.message || 'Không gọi được backend'}.`);
+      setLocalStatus(`Lỗi upload ảnh/video: ${err?.message || 'Không gọi được backend'}.`);
     } finally {
       setUploadingImage(false);
     }
   }
 
   function checkLinks() {
+    if (postMedia.length) {
+      setLocalStatus(`Đã có ${postMedia.length} media upload từ máy. Khi đăng, Facebook sẽ nhận dạng ảnh/video thật, không phải link preview.`);
+      return;
+    }
     const url = mediaUrl.trim();
     if (!url) {
       setLocalStatus('Chưa nhập link ảnh/video để kiểm tra.');
@@ -422,7 +442,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
       setLocalStatus(
         isVideo
           ? 'Link video hợp lệ. Hệ thống sẽ tự động đăng native video nếu backend có quyền upload; nếu không sẽ fallback link preview.'
-          : 'Link hợp lệ. Khi đăng, link sẽ được chèn vào nội dung bài viết dạng link preview.'
+          : 'Link hợp lệ. Khi đăng link dán tay, Facebook sẽ hiển thị dạng link preview.'
       );
     } catch {
       setLocalStatus('Link ảnh/video chưa đúng định dạng URL.');
@@ -438,7 +458,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
           <div className="module-kicker">Bài viết</div>
           <h2>Bài viết chuẩn</h2>
           <p className="module-subline">
-            Đồng bộ theo khung đối tác: tiêu đề, nội dung, link ảnh/video, lịch đăng và chọn nơi đăng trong một màn hình.
+            Đồng bộ theo khung đối tác: tiêu đề, nội dung, ảnh/video thật, lịch đăng và chọn nơi đăng trong một màn hình.
           </p>
         </div>
         <div className="module-actions">
@@ -475,19 +495,40 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
           </label>
 
           <label className="seeding-field">
-            <span>Ảnh từ máy hoặc link video/link ảnh</span>
+            <span>Ảnh/video từ máy hoặc link preview</span>
             <input
               type="file"
-              accept="image/*"
+              accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime"
+              multiple
               disabled={uploadingImage}
-              onChange={(event) => void uploadImageFile(event.target.files?.[0])}
+              onChange={(event) => {
+                void uploadImageFile(event.currentTarget.files);
+                event.currentTarget.value = '';
+              }}
             />
             <input
               value={mediaUrl}
               onChange={(event) => setMediaUrl(event.target.value)}
-              placeholder="Dán YouTube/TikTok/link ảnh nếu không chọn ảnh từ máy"
+              placeholder="Dán YouTube/TikTok/link nếu muốn đăng dạng link preview"
             />
-            {mediaUrl ? <small className="seeding-media-hint">Media hiện tại: <a href={mediaUrl} target="_blank" rel="noreferrer">Mở link</a></small> : null}
+            {postMedia.length ? (
+              <div className="post-media-grid">
+                {postMedia.map((item, idx) => (
+                  <div className="post-media-item" key={`${item.url}-${idx}`}>
+                    {item.type === 'video' ? <video src={item.url} muted controls /> : <img src={item.url} alt="" />}
+                    <button
+                      type="button"
+                      aria-label="Xoá media"
+                      disabled={publishing}
+                      onClick={() => setPostMedia((prev) => prev.filter((_, i) => i !== idx))}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {mediaUrl ? <small className="seeding-media-hint">Link preview hiện tại: <a href={mediaUrl} target="_blank" rel="noreferrer">Mở link</a></small> : null}
           </label>
 
           <div className="seeding-form-grid">
@@ -591,7 +632,7 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
           </div>
 
           <div className="target-note">
-            Backend tự phát hiện link video: file .mp4/.mov sẽ đăng native video nếu có quyền; link YouTube/TikTok sẽ đăng link preview.
+            File ảnh/video upload từ máy sẽ đăng dạng media thật; link YouTube/TikTok hoặc link dán tay sẽ đăng dạng link preview.
           </div>
         </aside>
       </div>
@@ -618,7 +659,11 @@ export function MarketingPipelinePanel({ data, busy, status, onReload }: Props) 
                     <small>{formatDateTime(row.createdAt)}</small>
                   </td>
                   <td>{row.content || '-'}</td>
-                  <td>{row.mediaUrl ? <a href={row.mediaUrl} target="_blank" rel="noreferrer">Mở link</a> : '-'}</td>
+                  <td>
+                    {row.mediaUrls?.length
+                      ? `${row.mediaUrls.length} media`
+                      : row.mediaUrl ? <a href={row.mediaUrl} target="_blank" rel="noreferrer">Mở link</a> : '-'}
+                  </td>
                   <td>{formatDateTime(row.scheduledAt)}</td>
                   <td>{row.targets.length ? row.targets.map((target) => target.name).join(', ') : '-'}</td>
                   <td>

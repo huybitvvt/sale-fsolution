@@ -576,13 +576,14 @@ def _publish_content_pipeline_post(post: dict, targets: list[dict], dry_run: boo
     if not message:
         return {'ok': False, 'error': 'Bản nháp chưa có nội dung', 'results': []}
     media_url, native_video_url = _extract_post_media(post)
+    media_urls = _extract_media_urls(post)
     results = []
     ok_count = 0
     for target in targets:
         target_type = str((target or {}).get('type') or '').strip().lower()
         target_id = str((target or {}).get('id') or '').strip()
         target_name = str((target or {}).get('name') or '').strip()
-        delivery = 'native_video' if native_video_url else ('link_preview' if media_url else 'text')
+        delivery = 'native_media' if media_urls else ('native_video' if native_video_url else ('link_preview' if media_url else 'text'))
         try:
             if dry_run:
                 ok_count += 1
@@ -595,6 +596,7 @@ def _publish_content_pipeline_post(post: dict, targets: list[dict], dry_run: boo
                     'delivery': delivery,
                     'message_preview': message[:240],
                     'media_url': media_url,
+                    'media_urls': media_urls,
                     'native_video_url': native_video_url,
                 })
                 continue
@@ -602,13 +604,26 @@ def _publish_content_pipeline_post(post: dict, targets: list[dict], dry_run: boo
                 page_token = _page_token_from_cache(target_id)
                 if not page_token:
                     raise RuntimeError('Không lấy được Page token')
-                result = get_api(DEFAULT_GROUP).create_page_post(target_id, message, page_token, media_url, native_video_url)
+                result = get_api(DEFAULT_GROUP).create_page_post(
+                    target_id,
+                    message,
+                    page_token,
+                    '' if media_urls else media_url,
+                    '' if media_urls else native_video_url,
+                    media_urls=media_urls,
+                )
             else:
                 if not target_id:
                     raise RuntimeError('Thiếu group_id')
                 page_id = str((target or {}).get('page_id') or '').strip()
                 page_token = _page_token_from_cache(page_id) if page_id else None
-                result = get_api(target_id).create_post(message, page_token, media_url, native_video_url)
+                result = get_api(target_id).create_post(
+                    message,
+                    page_token,
+                    '' if media_urls else media_url,
+                    '' if media_urls else native_video_url,
+                    media_urls=media_urls,
+                )
             delivery = (result or {}).get('_delivery') or delivery
             if result and result.get('id'):
                 ok_count += 1
@@ -3269,6 +3284,7 @@ def api_publish_targets():
     raw_targets = body.get('targets') or []
     message = str(body.get('message') or body.get('content') or '').strip()
     media_url, native_video_url = _extract_post_media(body)
+    media_urls = _extract_media_urls(body)
     if not message:
         return jsonify({'ok': False, 'error': 'Thiếu nội dung bài đăng'}), 400
     if not isinstance(raw_targets, list) or not raw_targets:
@@ -3296,8 +3312,9 @@ def api_publish_targets():
     result = _publish_content_pipeline_post({
         'content': message,
         'hashtags': '',
-        'media_url': media_url,
-        'native_video_url': native_video_url,
+        'media_url': '' if media_urls else media_url,
+        'native_video_url': '' if media_urls else native_video_url,
+        'media_urls': media_urls,
     }, targets, dry_run=dry_run)
     return jsonify(result), (200 if result.get('ok') else 502)
 
@@ -5459,6 +5476,7 @@ def content_pipeline_post_create():
     content = str(body.get('content') or '').strip()
     media_url = str(body.get('media_url') or body.get('mediaUrl') or '').strip()
     native_video_url = str(body.get('native_video_url') or body.get('nativeVideoUrl') or '').strip()
+    media_urls = _extract_media_urls(body)
     hashtags = str(body.get('hashtags') or '').strip()
     scheduled_at = str(body.get('scheduled_at') or body.get('scheduledAt') or '').strip()
     targets = body.get('targets') or []
@@ -5474,12 +5492,13 @@ def content_pipeline_post_create():
     post = {
         'id': f"manual_{uuid.uuid4().hex[:12]}",
         'article_title': title,
-        'article_url': media_url or native_video_url,
+        'article_url': media_url or native_video_url or (media_urls[0] if media_urls else ''),
         'source_name': 'Manual composer',
         'format': 'manual',
         'content': content,
-        'media_url': media_url,
-        'native_video_url': native_video_url,
+        'media_url': '' if media_urls else media_url,
+        'native_video_url': '' if media_urls else native_video_url,
+        'media_urls': media_urls,
         'hashtags': hashtags,
         'status': status,
         'scheduled_at': scheduled_at,
