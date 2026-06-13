@@ -39,6 +39,7 @@ type AiConfig = {
 };
 
 type JoinPrompt = { id: string; name: string };
+type PostMediaItem = { url: string; type?: 'image' | 'video'; name?: string };
 type ViewKey = 'home' | 'staff' | 'channels' | 'comments' | 'manage' | 'cookies' | 'history' | 'leads' | 'marketing';
 type ContentPipelineData = {
   articles?: ContentPipelineArticle[];
@@ -144,7 +145,8 @@ export function MonitorPage() {
   const [postPageId, setPostPageId] = useState('');
   const [postTitle, setPostTitle] = useState('');
   const [postContent, setPostContent] = useState('');
-  const [postMedia, setPostMedia] = useState('');
+  const [postMedia, setPostMedia] = useState<PostMediaItem[]>([]);
+  const [postUploadingMedia, setPostUploadingMedia] = useState(false);
   const [postSchedule, setPostSchedule] = useState('');
   const [postCaptions, setPostCaptions] = useState<Record<string, string>>({});
   const [postResult, setPostResult] = useState('');
@@ -879,7 +881,7 @@ export function MonitorPage() {
     setPostPageId('');
     setPostTitle('');
     setPostContent('');
-    setPostMedia('');
+    setPostMedia([]);
     setPostSchedule('');
     setPostCaptions({});
     setPostResult('');
@@ -888,7 +890,7 @@ export function MonitorPage() {
 
   async function generatePostCaptions() {
     const selectedGroups = groups.filter((g) => postSelected[g]);
-    const message = [postTitle.trim() ? `Tiêu đề: ${postTitle.trim()}` : '', postContent.trim(), postMedia.trim() ? `Link ảnh/video: ${postMedia.trim()}` : '', postSchedule.trim() ? `Lịch đăng: ${postSchedule.trim()}` : ''].filter(Boolean).join('\n\n');
+    const message = [postTitle.trim() ? `Tiêu đề: ${postTitle.trim()}` : '', postContent.trim(), postSchedule.trim() ? `Lịch đăng: ${postSchedule.trim()}` : ''].filter(Boolean).join('\n\n');
     if (!message) {
       setPostResult('Nhập nội dung gốc trước khi tạo caption AI');
       return;
@@ -926,7 +928,8 @@ export function MonitorPage() {
 
   async function submitPost() {
     const selectedGroups = groups.filter((g) => postSelected[g]);
-    const message = [postTitle.trim() ? `Tiêu đề: ${postTitle.trim()}` : '', postContent.trim(), postMedia.trim() ? `Link ảnh/video: ${postMedia.trim()}` : '', postSchedule.trim() ? `Lịch đăng: ${postSchedule.trim()}` : ''].filter(Boolean).join('\n\n');
+    const message = [postTitle.trim() ? `Tiêu đề: ${postTitle.trim()}` : '', postContent.trim(), postSchedule.trim() ? `Lịch đăng: ${postSchedule.trim()}` : ''].filter(Boolean).join('\n\n');
+    const mediaUrls = postMedia.map((item) => item.url).filter(Boolean);
     if (!postTitle.trim() || !postContent.trim()) { setPostResult('? Nhập đủ Tiêu đề và Nội dung'); return; }
     if (!selectedGroups.length) {
       setPostResult('❌ Chọn ít nhất 1 nhóm');
@@ -941,7 +944,7 @@ export function MonitorPage() {
         const r = await api('/api/post', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ group_id, page_id: postPageId, message: postCaptions[group_id]?.trim() || message }),
+          body: JSON.stringify({ group_id, page_id: postPageId, message: postCaptions[group_id]?.trim() || message, media_urls: mediaUrls }),
         });
         const d = await r.json();
         if (d.ok) ok++;
@@ -955,13 +958,46 @@ export function MonitorPage() {
       setPostResult(`✅ Đăng thành công ${ok}/${selectedGroups.length} nhóm!`);
       setPostTitle('');
       setPostContent('');
-      setPostMedia('');
+      setPostMedia([]);
       setPostSchedule('');
       setTimeout(() => setPostModal(false), 2000);
     } else {
       setPostResult(`✅ ${ok} thành công, ❌ ${fail} thất bại`);
     }
     setPostSubmitting(false);
+  }
+
+  async function uploadPostMedia(files?: FileList | null) {
+    const selected = Array.from(files || []);
+    if (!selected.length) return;
+    if (postMedia.length + selected.length > 10) {
+      setPostResult('❌ Tối đa 10 file cho một bài đăng');
+      return;
+    }
+    setPostUploadingMedia(true);
+    setPostResult(`⏳ Đang upload ${selected.length} file...`);
+    try {
+      const fd = new FormData();
+      selected.forEach((file) => fd.append('media', file));
+      const r = await api('/api/uploads/post-media', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (d.ok) {
+        const uploaded: PostMediaItem[] = Array.isArray(d.media)
+          ? d.media.map((item: PostMediaItem) => ({
+              url: item.url,
+              type: item.type === 'video' ? 'video' : 'image',
+              name: item.name || '',
+            }))
+          : (d.media_urls || []).map((url: string) => ({ url, type: 'image' }));
+        setPostMedia((prev) => [...prev, ...uploaded].slice(0, 10));
+        setPostResult(`✅ Đã upload ${uploaded.length} file`);
+      } else {
+        setPostResult('❌ ' + (d.error || 'Upload lỗi'));
+      }
+    } catch {
+      setPostResult('❌ Lỗi upload ảnh/video');
+    }
+    setPostUploadingMedia(false);
   }
 
   function parseKeywordInput(value: string): string[] {
@@ -2294,6 +2330,42 @@ export function MonitorPage() {
             <label>Nội dung</label>
             <textarea value={postContent} onChange={(e) => setPostContent(e.target.value)} placeholder="Bạn đang nghĩ gì?" />
           </div>
+          <div className="field">
+            <label>Ảnh/video</label>
+            <div className="post-media-upload">
+              <label className={`btn-image-upload${postUploadingMedia ? ' disabled' : ''}`}>
+                📎 Chọn file
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime"
+                  multiple
+                  disabled={postUploadingMedia || postSubmitting}
+                  onChange={(e) => {
+                    void uploadPostMedia(e.currentTarget.files);
+                    e.currentTarget.value = '';
+                  }}
+                />
+              </label>
+              <span className="comment-file-hint">JPG, PNG, GIF, MP4/MOV · tối đa 50MB/file · tối đa 10 file</span>
+            </div>
+            {postMedia.length ? (
+              <div className="post-media-grid">
+                {postMedia.map((item, idx) => (
+                  <div className="post-media-item" key={`${item.url}-${idx}`}>
+                    {item.type === 'video' ? <video src={item.url} muted controls /> : <img src={item.url} alt="" />}
+                    <button
+                      type="button"
+                      aria-label="Xoá media"
+                      disabled={postSubmitting}
+                      onClick={() => setPostMedia((prev) => prev.filter((_, i) => i !== idx))}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <div className="post-ai-row">
             <button type="button" className="btn-cancel" disabled={postCaptionBusy || postSubmitting} onClick={() => void generatePostCaptions()}>
               {postCaptionBusy ? 'AI đang viết...' : '✨ AI tạo caption từng nhóm'}
@@ -2318,7 +2390,7 @@ export function MonitorPage() {
             <button type="button" className="btn-cancel" onClick={() => setPostModal(false)}>
               Huỷ
             </button>
-            <button type="button" className="btn-submit" disabled={postSubmitting} onClick={() => void submitPost()}>
+            <button type="button" className="btn-submit" disabled={postSubmitting || postUploadingMedia} onClick={() => void submitPost()}>
               Đăng bài
             </button>
           </div>

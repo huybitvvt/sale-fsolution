@@ -1,6 +1,8 @@
-import requests
 import os
+import json
+import requests
 from typing import Optional, List, Dict
+from urllib.parse import urlparse
 from core.token_gen import FacebookTokenGenerator
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -8,6 +10,27 @@ TOKEN_FILE = os.path.join(BASE_DIR, 'data', 'token_success.txt')
 COOKIE_FILE = os.path.join(BASE_DIR, 'data', 'cookie.txt')
 FB_CLIENT_ID = '350685531728'
 GRAPH_URL = 'https://graph.facebook.com/v21.0'
+VIDEO_EXTS = ('.mp4', '.mov', '.m4v')
+
+
+def _is_video_url(url: str) -> bool:
+    path = urlparse(str(url or '')).path.lower()
+    return path.endswith(VIDEO_EXTS)
+
+
+def _clean_media_urls(media_urls) -> List[str]:
+    if not media_urls:
+        return []
+    if isinstance(media_urls, str):
+        raw = media_urls.replace(',', '\n').splitlines()
+    else:
+        raw = media_urls
+    out: List[str] = []
+    for item in raw:
+        url = str(item or '').strip()
+        if url and url not in out:
+            out.append(url)
+    return out
 
 
 def _post_object_id(post_id: str) -> str:
@@ -112,15 +135,86 @@ class FacebookGroupAPI:
         if data.get('shares'):
             post['shares'] = data['shares']
 
-    def create_post(self, message: str, page_token: str = None, link_url: str = '', native_video_url: str = '') -> Optional[dict]:
+    def _post_photo(self, target_id: str, photo_url: str, caption: str, token: str) -> dict:
+        data = {'url': photo_url}
+        if caption:
+            data['caption'] = caption
+        resp = requests.post(
+            f'{GRAPH_URL}/{target_id}/photos',
+            params={'access_token': token},
+            data=data,
+            timeout=60,
+        )
+        return resp.json()
+
+    def _create_unpublished_photo(self, target_id: str, photo_url: str, token: str) -> dict:
+        resp = requests.post(
+            f'{GRAPH_URL}/{target_id}/photos',
+            params={'access_token': token},
+            data={'url': photo_url, 'published': 'false'},
+            timeout=60,
+        )
+        return resp.json()
+
+    def _post_feed_with_media(self, target_id: str, message: str, media_ids: List[str], token: str) -> dict:
+        data = {}
+        if message:
+            data['message'] = message
+        for idx, media_id in enumerate(media_ids):
+            data[f'attached_media[{idx}]'] = json.dumps({'media_fbid': media_id})
+        resp = requests.post(
+            f'{GRAPH_URL}/{target_id}/feed',
+            params={'access_token': token},
+            data=data,
+            timeout=60,
+        )
+        return resp.json()
+
+    def _post_video(self, target_id: str, video_url: str, description: str, token: str) -> dict:
+        resp = requests.post(
+            f'{GRAPH_URL}/{target_id}/videos',
+            params={'access_token': token, 'description': description, 'file_url': video_url},
+            timeout=120,
+        )
+        return resp.json()
+
+    def _post_media(self, target_id: str, message: str, token: str, media_urls) -> Optional[dict]:
+        media_urls = _clean_media_urls(media_urls)
+        if not media_urls:
+            return None
+        video_urls = [url for url in media_urls if _is_video_url(url)]
+        photo_urls = [url for url in media_urls if url not in video_urls]
+        if video_urls and len(media_urls) > 1:
+            return {'error': {'message': 'Facebook không hỗ trợ đăng lẫn nhiều ảnh/video trong cùng một bài qua API này'}}
+        if video_urls:
+            result = self._post_video(target_id, video_urls[0], message, token)
+            if result is not None:
+                result['_delivery'] = 'native_video'
+            return result
+        if len(photo_urls) == 1:
+            result = self._post_photo(target_id, photo_urls[0], message, token)
+            if result is not None:
+                result['_delivery'] = 'native_photo'
+            return result
+
+        media_ids: List[str] = []
+        for photo_url in photo_urls:
+            photo = self._create_unpublished_photo(target_id, photo_url, token)
+            if not photo or 'id' not in photo:
+                return photo
+            media_ids.append(photo['id'])
+        result = self._post_feed_with_media(target_id, message, media_ids, token)
+        if result is not None:
+            result['_delivery'] = 'native_photos'
+        return result
+
+    def create_post(self, message: str, page_token: str = None, link_url: str = '', native_video_url: str = '', media_urls=None) -> Optional[dict]:
         token = page_token or self.access_token
+        media_result = self._post_media(self.group_id, message, token, media_urls)
+        if media_result is not None:
+            return media_result
         if native_video_url:
-            resp = requests.post(
-                f'{GRAPH_URL}/{self.group_id}/videos',
-                params={'access_token': token, 'description': message, 'file_url': native_video_url},
-                timeout=120,
-            )
-            return resp.json()
+            return self._post_video(self.group_id, native_video_url, message, token)
         params = {'access_token': token, 'message': message}
         if link_url:
             params['link'] = link_url
@@ -131,14 +225,12 @@ class FacebookGroupAPI:
         )
         return resp.json()
 
-    def create_page_post(self, page_id: str, message: str, page_token: str, link_url: str = '', native_video_url: str = '') -> Optional[dict]:
+    def create_page_post(self, page_id: str, message: str, page_token: str, link_url: str = '', native_video_url: str = '', media_urls=None) -> Optional[dict]:
+        media_result = self._post_media(page_id, message, page_token, media_urls)
+        if media_result is not None:
+            return media_result
         if native_video_url:
-            resp = requests.post(
-                f'{GRAPH_URL}/{page_id}/videos',
-                params={'access_token': page_token, 'description': message, 'file_url': native_video_url},
-                timeout=120,
-            )
-            return resp.json()
+            return self._post_video(page_id, native_video_url, message, page_token)
         params = {'access_token': page_token, 'message': message}
         if link_url:
             params['link'] = link_url
