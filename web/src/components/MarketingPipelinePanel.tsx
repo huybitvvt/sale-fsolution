@@ -32,11 +32,14 @@ type PublishResult = {
   delivery?: string;
 };
 
+type PostMediaItem = { url: string; type?: 'image' | 'video'; name?: string };
+
 type HistoryRow = {
   id: string;
   title: string;
   content: string;
   mediaUrl: string;
+  mediaUrls?: string[];
   hashtags: string;
   scheduledAt: string;
   targets: PublishTarget[];
@@ -83,64 +86,6 @@ function detectVideoMedia(url: string) {
   return isDirectVideo
     ? { mediaUrl: '', nativeVideoUrl: cleanUrl }
     : { mediaUrl: cleanUrl, nativeVideoUrl: '' };
-}
-
-function youtubeVideoId(url: string) {
-  try {
-    const parsed = new URL(url.trim());
-    if (parsed.hostname.includes('youtu.be')) return parsed.pathname.replace(/^\//, '').split('/')[0] || '';
-    if (parsed.hostname.includes('youtube.com')) return parsed.searchParams.get('v') || '';
-  } catch {
-    return '';
-  }
-  return '';
-}
-
-function isImageMediaUrl(url: string) {
-  const clean = url.trim();
-  if (!clean) return false;
-  return /\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?|$)/i.test(clean)
-    || /comment-images|uploads|supabase\.co\/storage/i.test(clean);
-}
-
-type MediaPreviewKind = 'image' | 'video' | 'youtube' | 'link' | 'none';
-
-type MediaPreviewState = {
-  kind: MediaPreviewKind;
-  src: string;
-  embedUrl?: string;
-  label?: string;
-};
-
-function resolveMediaPreview(url: string, localBlob = ''): MediaPreviewState {
-  const candidate = (localBlob || url || '').trim();
-  if (!candidate) return { kind: 'none', src: '' };
-  if (localBlob) return { kind: 'image', src: localBlob, label: 'Ảnh vừa chọn từ máy' };
-
-  const ytId = youtubeVideoId(candidate);
-  if (ytId) {
-    return {
-      kind: 'youtube',
-      src: `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`,
-      embedUrl: `https://www.youtube.com/embed/${ytId}`,
-      label: 'Preview YouTube',
-    };
-  }
-
-  if (/\.(mp4|mov|m4v|webm|avi|mkv)(\?|$)/i.test(candidate)) {
-    return { kind: 'video', src: candidate, label: 'Preview video file' };
-  }
-
-  if (isImageMediaUrl(candidate)) {
-    return { kind: 'image', src: candidate, label: 'Preview ảnh' };
-  }
-
-  try {
-    const parsed = new URL(candidate);
-    return { kind: 'link', src: candidate, label: parsed.hostname };
-  } catch {
-    return { kind: 'none', src: '' };
-  }
 }
 
 function formatDateTime(value?: string) {
@@ -202,6 +147,7 @@ export function MarketingPipelinePanel({
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [mediaUrl, setMediaUrl] = useState('');
+  const [postMedia, setPostMedia] = useState<PostMediaItem[]>([]);
   const [scheduledAt, setScheduledAt] = useState('');
   const [hashtags, setHashtags] = useState('#guitar #guitarsaithanh');
   const [groups, setGroups] = useState<GroupRow[]>([]);
@@ -215,8 +161,6 @@ export function MarketingPipelinePanel({
   const [publishing, setPublishing] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
-  const [localPreviewUrl, setLocalPreviewUrl] = useState('');
-  const [dragActive, setDragActive] = useState(false);
 
   useEffect(() => {
     try {
@@ -267,6 +211,7 @@ export function MarketingPipelinePanel({
       title: post.article_title || 'Bản nháp content',
       content: post.content || '',
       mediaUrl: post.article_url || '',
+      mediaUrls: post.media_urls || [],
       hashtags: post.hashtags || '',
       scheduledAt: post.scheduled_at || '',
       targets: (post.scheduled_targets || []).map((target) => ({
@@ -368,6 +313,7 @@ export function MarketingPipelinePanel({
     setTitle(item.title);
     setContent(item.content);
     setMediaUrl(item.mediaUrl);
+    setPostMedia([]);
     setScheduledAt(item.scheduledAt);
     setLocalStatus('Đã nạp bài mẫu từ đối tác vào form. Có thể chỉnh lại rồi Đăng ngay hoặc Đặt lịch.');
   }
@@ -383,7 +329,6 @@ export function MarketingPipelinePanel({
     return [
       title.trim(),
       body,
-      mediaUrl.trim(),
       hashtags.trim(),
     ].filter(Boolean).join('\n\n');
   }
@@ -447,11 +392,13 @@ export function MarketingPipelinePanel({
     setLocalStatus(`Đang đăng tới ${selectedTargets.length} nơi...`);
     try {
       // Tự động phát hiện video URL để gửi native_video_url thay vì link preview
+      const mediaUrls = postMedia.map((item) => item.url).filter(Boolean);
       const detectedMedia = detectVideoMedia(mediaUrl);
       const body = {
         message: baseMessage,
-        media_url: detectedMedia.mediaUrl,
-        native_video_url: detectedMedia.nativeVideoUrl,
+        media_url: mediaUrls.length ? '' : detectedMedia.mediaUrl,
+        native_video_url: mediaUrls.length ? '' : detectedMedia.nativeVideoUrl,
+        media_urls: mediaUrls,
         targets: selectedTargets.map((t) => ({ type: t.type, id: t.id, name: t.name })),
       };
       const res = await api('/api/publish', {
@@ -477,6 +424,7 @@ export function MarketingPipelinePanel({
           title,
           content,
           mediaUrl,
+          mediaUrls,
           hashtags,
           scheduledAt: '',
           targets: selectedTargets,
@@ -516,6 +464,7 @@ export function MarketingPipelinePanel({
     setPublishing(true);
     setLocalStatus('Đang lưu lịch đăng lên backend...');
     try {
+      const mediaUrls = postMedia.map((item) => item.url).filter(Boolean);
       const detectedMedia = detectVideoMedia(mediaUrl);
       const res = await api('/api/content-pipeline/posts', {
         method: 'POST',
@@ -523,8 +472,9 @@ export function MarketingPipelinePanel({
         body: JSON.stringify({
           title,
           content,
-          media_url: detectedMedia.mediaUrl,
-          native_video_url: detectedMedia.nativeVideoUrl,
+          media_url: mediaUrls.length ? '' : detectedMedia.mediaUrl,
+          native_video_url: mediaUrls.length ? '' : detectedMedia.nativeVideoUrl,
+          media_urls: mediaUrls,
           hashtags,
           scheduled_at: scheduledAt,
           targets: selectedTargets.map((t) => ({ type: t.type, id: t.id, name: t.name })),
@@ -533,7 +483,7 @@ export function MarketingPipelinePanel({
       });
       const payload = await readPayload(res);
       if (!res.ok || !payload.ok) throw new Error(payload.error || 'Không lưu được lịch đăng');
-      appendHistory({ title, content, mediaUrl, hashtags, scheduledAt, targets: selectedTargets, status: 'Đã lưu lịch' });
+      appendHistory({ title, content, mediaUrl, mediaUrls, hashtags, scheduledAt, targets: selectedTargets, status: 'Đã lưu lịch' });
       setLocalStatus('Đã lưu lịch đăng lên backend. Cron/worker có thể gọi /api/content-pipeline/scheduled/run để tự đăng khi tới giờ.');
       void onReload();
     } catch (err: any) {
@@ -543,32 +493,40 @@ export function MarketingPipelinePanel({
     }
   }
 
-  async function uploadImageFile(file?: File) {
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      setLocalStatus('Chỉ hỗ trợ chọn file ảnh JPG/PNG/WebP/GIF.');
+  async function uploadImageFile(files?: FileList | null) {
+    const selected = Array.from(files || []);
+    if (!selected.length) return;
+    if (postMedia.length + selected.length > 10) {
+      setLocalStatus('Tối đa 10 file cho một bài đăng.');
       return;
     }
     setUploadingImage(true);
-    setLocalStatus('Đang upload ảnh...');
+    setLocalStatus(`Đang upload ${selected.length} file ảnh/video...`);
     try {
       const form = new FormData();
-      form.append('image', file);
-      const res = await api('/api/uploads/comment-image', { method: 'POST', body: form });
+      selected.forEach((file) => form.append('media', file));
+      const res = await api('/api/uploads/post-media', { method: 'POST', body: form });
       const payload = await readPayload(res);
-      if (!res.ok || !payload.ok || !payload.image_url) throw new Error(payload.error || 'Không upload được ảnh');
-      setMediaUrl(payload.image_url);
-      if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
-      setLocalPreviewUrl('');
-      setLocalStatus('Đã upload ảnh và gắn vào bài viết. Bấm Đăng ngay để đăng link ảnh này.');
+      if (!res.ok || !payload.ok || !Array.isArray(payload.media)) throw new Error(payload.error || 'Không upload được ảnh/video');
+      const uploaded: PostMediaItem[] = payload.media.map((item: PostMediaItem) => ({
+        url: item.url,
+        type: item.type === 'video' ? 'video' : 'image',
+        name: item.name || '',
+      }));
+      setPostMedia((prev) => [...prev, ...uploaded].slice(0, 10));
+      setLocalStatus('Đã upload media. Bấm Đăng ngay để đăng ảnh/video thật lên Facebook.');
     } catch (err: any) {
-      setLocalStatus(`Lỗi upload ảnh: ${err?.message || 'Không gọi được backend'}.`);
+      setLocalStatus(`Lỗi upload ảnh/video: ${err?.message || 'Không gọi được backend'}.`);
     } finally {
       setUploadingImage(false);
     }
   }
 
   function checkLinks() {
+    if (postMedia.length) {
+      setLocalStatus(`Đã có ${postMedia.length} media upload từ máy. Khi đăng, Facebook sẽ nhận dạng ảnh/video thật, không phải link preview.`);
+      return;
+    }
     const url = mediaUrl.trim();
     if (!url) {
       setLocalStatus('Chưa nhập link ảnh/video để kiểm tra.');
@@ -580,7 +538,7 @@ export function MarketingPipelinePanel({
       setLocalStatus(
         isVideo
           ? 'Link video hợp lệ. Hệ thống sẽ tự động đăng native video nếu backend có quyền upload; nếu không sẽ fallback link preview.'
-          : 'Link hợp lệ. Khi đăng, link sẽ được chèn vào nội dung bài viết dạng link preview.'
+          : 'Link hợp lệ. Khi đăng link dán tay, Facebook sẽ hiển thị dạng link preview.'
       );
     } catch {
       setLocalStatus('Link ảnh/video chưa đúng định dạng URL.');
@@ -588,35 +546,6 @@ export function MarketingPipelinePanel({
   }
 
   const targetCount = selectedTargets.length;
-  const mediaPreview = useMemo(
-    () => resolveMediaPreview(mediaUrl, localPreviewUrl),
-    [mediaUrl, localPreviewUrl],
-  );
-
-  useEffect(() => () => {
-    if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
-  }, [localPreviewUrl]);
-
-  function setLocalPreviewFromFile(file: File) {
-    if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
-    setLocalPreviewUrl(URL.createObjectURL(file));
-  }
-
-  async function handleMediaFile(file?: File) {
-    if (!file) return;
-    if (file.type.startsWith('image/')) {
-      setLocalPreviewFromFile(file);
-      await uploadImageFile(file);
-      return;
-    }
-    if (file.type.startsWith('video/') || /\.(mp4|mov|m4v|webm)$/i.test(file.name)) {
-      setLocalPreviewFromFile(file);
-      setLocalStatus('Video từ máy cần upload lên host có link .mp4 trước khi đăng native. Hiện chỉ preview file local.');
-      return;
-    }
-    setLocalStatus('Chỉ hỗ trợ ảnh JPG/PNG/WebP/GIF hoặc video MP4/MOV/WebM.');
-  }
-
   return (
     <section className="module-panel marketing-panel seeding-studio">
       <div className="module-head">
@@ -624,7 +553,7 @@ export function MarketingPipelinePanel({
           <div className="module-kicker">Bài viết</div>
           <h2>Bài viết chuẩn</h2>
           <p className="module-subline">
-            Đồng bộ theo khung đối tác: tiêu đề, nội dung, link ảnh/video, lịch đăng và chọn nơi đăng trong một màn hình.
+            Đồng bộ theo khung đối tác: tiêu đề, nội dung, ảnh/video thật, lịch đăng và chọn nơi đăng trong một màn hình.
           </p>
         </div>
         <div className="module-actions">
@@ -660,92 +589,42 @@ export function MarketingPipelinePanel({
             />
           </label>
 
-          <div className="seeding-field">
-            <span>Ảnh từ máy hoặc link video / link ảnh</span>
-            <div className="seeding-media-grid">
-              <label
-                className={`seeding-dropzone${dragActive ? ' active' : ''}`}
-                onDragOver={(event) => { event.preventDefault(); setDragActive(true); }}
-                onDragLeave={() => setDragActive(false)}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  setDragActive(false);
-                  void handleMediaFile(event.dataTransfer.files?.[0]);
-                }}
-              >
-                <input
-                  type="file"
-                  accept="image/*,video/mp4,video/webm,video/quicktime"
-                  disabled={uploadingImage}
-                  onChange={(event) => void handleMediaFile(event.target.files?.[0])}
-                />
-                <div className="seeding-dropzone-inner">
-                  <span className="seeding-dropzone-icon" aria-hidden>📤</span>
-                  <b>{uploadingImage ? 'Đang upload...' : 'Kéo thả / chọn ảnh'}</b>
-                  <small>JPG, PNG, MP4 · tối đa 50MB</small>
-                </div>
-              </label>
-              <div className="seeding-media-link-col">
-                <input
-                  value={mediaUrl}
-                  onChange={(event) => {
-                    const next = event.target.value;
-                    setMediaUrl(next);
-                    if (next.trim() && localPreviewUrl.startsWith('blob:')) {
-                      URL.revokeObjectURL(localPreviewUrl);
-                      setLocalPreviewUrl('');
-                    }
-                  }}
-                  placeholder="Dán YouTube/TikTok/link ảnh..."
-                />
-                <small>Link .mp4/.mov sẽ đăng native video; YouTube/TikTok đăng dạng link preview.</small>
-              </div>
-            </div>
-
-            {mediaPreview.kind !== 'none' ? (
-              <div className="seeding-media-preview">
-                <div className="seeding-media-preview-head">
-                  <b>{mediaPreview.label || 'Preview media'}</b>
-                  <button
-                    type="button"
-                    className="seeding-media-preview-clear"
-                    onClick={() => {
-                      setMediaUrl('');
-                      if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
-                      setLocalPreviewUrl('');
-                    }}
-                  >
-                    Xóa preview
-                  </button>
-                </div>
-                <div className="seeding-media-preview-body">
-                  {mediaPreview.kind === 'image' ? (
-                    <img src={mediaPreview.src} alt="Preview ảnh bài viết" />
-                  ) : null}
-                  {mediaPreview.kind === 'video' ? (
-                    <video src={mediaPreview.src} controls playsInline />
-                  ) : null}
-                  {mediaPreview.kind === 'youtube' && mediaPreview.embedUrl ? (
-                    <iframe
-                      src={mediaPreview.embedUrl}
-                      title="YouTube preview"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                    />
-                  ) : null}
-                  {mediaPreview.kind === 'link' ? (
-                    <div className="seeding-media-link-card">
-                      <span>🔗</span>
-                      <div>
-                        <b>{mediaPreview.label}</b>
-                        <a href={mediaPreview.src} target="_blank" rel="noreferrer">{mediaPreview.src}</a>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
+          <label className="seeding-field">
+            <span>Ảnh/video từ máy hoặc link preview</span>
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime"
+              multiple
+              disabled={uploadingImage}
+              onChange={(event) => {
+                void uploadImageFile(event.currentTarget.files);
+                event.currentTarget.value = '';
+              }}
+            />
+            <input
+              value={mediaUrl}
+              onChange={(event) => setMediaUrl(event.target.value)}
+              placeholder="Dán YouTube/TikTok/link nếu muốn đăng dạng link preview"
+            />
+            {postMedia.length ? (
+              <div className="post-media-grid">
+                {postMedia.map((item, idx) => (
+                  <div className="post-media-item" key={`${item.url}-${idx}`}>
+                    {item.type === 'video' ? <video src={item.url} muted controls /> : <img src={item.url} alt="" />}
+                    <button
+                      type="button"
+                      aria-label="Xoá media"
+                      disabled={publishing}
+                      onClick={() => setPostMedia((prev) => prev.filter((_, i) => i !== idx))}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
               </div>
             ) : null}
-          </div>
+            {mediaUrl ? <small className="seeding-media-hint">Link preview hiện tại: <a href={mediaUrl} target="_blank" rel="noreferrer">Mở link</a></small> : null}
+          </label>
 
           <div className="seeding-form-grid">
             <label className="seeding-field">
@@ -851,7 +730,7 @@ export function MarketingPipelinePanel({
           </div>
 
           <div className="target-note">
-            Backend tự phát hiện link video: file .mp4/.mov sẽ đăng native video nếu có quyền; link YouTube/TikTok sẽ đăng link preview.
+            File ảnh/video upload từ máy sẽ đăng dạng media thật; link YouTube/TikTok hoặc link dán tay sẽ đăng dạng link preview.
           </div>
         </aside>
       </div>
@@ -878,7 +757,11 @@ export function MarketingPipelinePanel({
                     <small>{formatDateTime(row.createdAt)}</small>
                   </td>
                   <td>{row.content || '-'}</td>
-                  <td>{row.mediaUrl ? <a href={row.mediaUrl} target="_blank" rel="noreferrer">Mở link</a> : '-'}</td>
+                  <td>
+                    {row.mediaUrls?.length
+                      ? `${row.mediaUrls.length} media`
+                      : row.mediaUrl ? <a href={row.mediaUrl} target="_blank" rel="noreferrer">Mở link</a> : '-'}
+                  </td>
                   <td>{formatDateTime(row.scheduledAt)}</td>
                   <td>{row.targets.length ? row.targets.map((target) => target.name).join(', ') : '-'}</td>
                   <td>

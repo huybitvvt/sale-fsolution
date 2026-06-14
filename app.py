@@ -83,6 +83,7 @@ SUPABASE_LEAD_TABLE = os.environ.get('SUPABASE_LEAD_TABLE', 'leads')
 SUPABASE_STAFF_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 SUPABASE_CHANNEL_TABLE = os.environ.get('SUPABASE_CHANNEL_TABLE', 'managed_channels')
 SUPABASE_COMMENT_IMAGE_BUCKET = os.environ.get('SUPABASE_COMMENT_IMAGE_BUCKET', 'comment-images')
+SUPABASE_POST_MEDIA_BUCKET = os.environ.get('SUPABASE_POST_MEDIA_BUCKET', SUPABASE_COMMENT_IMAGE_BUCKET)
 APP_TIMEZONE = os.environ.get('APP_TIMEZONE', 'Asia/Ho_Chi_Minh')
 
 
@@ -94,7 +95,6 @@ def _app_timezone():
             return ZoneInfo('Asia/Ho_Chi_Minh')
         except Exception:
             return timezone(timedelta(hours=7))
-
 TIKTOK_COOKIE = os.environ.get('TIKTOK_COOKIE', '')
 TIKTOK_PLAYWRIGHT_ENABLED = os.environ.get('TIKTOK_PLAYWRIGHT_ENABLED', '').lower() in ('1', 'true', 'yes', 'on')
 TIKTOK_PLAYWRIGHT_HEADLESS = os.environ.get('TIKTOK_PLAYWRIGHT_HEADLESS', 'false').lower() in ('1', 'true', 'yes', 'on')
@@ -107,11 +107,17 @@ TIKTOK_PLAYWRIGHT_WORKER_URL = (os.environ.get('TIKTOK_PLAYWRIGHT_WORKER_URL') o
 TIKTOK_PLAYWRIGHT_WORKER_KEY = os.environ.get('TIKTOK_PLAYWRIGHT_WORKER_KEY', '')
 SIMPLE_LOGIN_ONLY = os.environ.get('SIMPLE_LOGIN_ONLY', 'true').lower() not in ('0', 'false', 'no')
 MAX_COMMENT_IMAGE_BYTES = int(os.environ.get('MAX_COMMENT_IMAGE_BYTES', 8 * 1024 * 1024))
+MAX_POST_MEDIA_BYTES = int(os.environ.get('MAX_POST_MEDIA_BYTES', 50 * 1024 * 1024))
 ALLOWED_COMMENT_IMAGE_TYPES = {
     'image/jpeg': '.jpg',
     'image/png': '.png',
     'image/webp': '.webp',
     'image/gif': '.gif',
+}
+ALLOWED_POST_MEDIA_TYPES = {
+    **ALLOWED_COMMENT_IMAGE_TYPES,
+    'video/mp4': '.mp4',
+    'video/quicktime': '.mov',
 }
 
 app = Flask(__name__, template_folder='views')
@@ -592,18 +598,50 @@ def _extract_post_media(post: dict) -> tuple[str, str]:
     return media_url, native_video_url
 
 
+def _extract_media_urls(body: dict) -> list[str]:
+    candidates = [
+        body.get('media_urls'),
+        body.get('image_urls'),
+        body.get('photo_urls'),
+        body.get('attachments'),
+        body.get('media_url_native'),
+        body.get('image_url_native'),
+    ]
+    urls: list[str] = []
+    for value in candidates:
+        if not value:
+            continue
+        if isinstance(value, str):
+            items = value.replace(',', '\n').splitlines()
+        elif isinstance(value, list):
+            items = []
+            for item in value:
+                if isinstance(item, dict):
+                    items.append(item.get('url') or item.get('image_url') or item.get('media_url') or '')
+                else:
+                    items.append(item)
+        else:
+            continue
+        for item in items:
+            url = str(item or '').strip()
+            if url and url not in urls:
+                urls.append(url)
+    return urls
+
+
 def _publish_content_pipeline_post(post: dict, targets: list[dict], dry_run: bool = False) -> dict:
     message = _pipeline_post_message(post)
     if not message:
         return {'ok': False, 'error': 'Bản nháp chưa có nội dung', 'results': []}
     media_url, native_video_url = _extract_post_media(post)
+    media_urls = _extract_media_urls(post)
     results = []
     ok_count = 0
     for target in targets:
         target_type = str((target or {}).get('type') or '').strip().lower()
         target_id = str((target or {}).get('id') or '').strip()
         target_name = str((target or {}).get('name') or '').strip()
-        delivery = 'native_video' if native_video_url else ('link_preview' if media_url else 'text')
+        delivery = 'native_media' if media_urls else ('native_video' if native_video_url else ('link_preview' if media_url else 'text'))
         try:
             if dry_run:
                 ok_count += 1
@@ -616,6 +654,7 @@ def _publish_content_pipeline_post(post: dict, targets: list[dict], dry_run: boo
                     'delivery': delivery,
                     'message_preview': message[:240],
                     'media_url': media_url,
+                    'media_urls': media_urls,
                     'native_video_url': native_video_url,
                 })
                 continue
@@ -623,13 +662,26 @@ def _publish_content_pipeline_post(post: dict, targets: list[dict], dry_run: boo
                 page_token = _page_token_from_cache(target_id)
                 if not page_token:
                     raise RuntimeError('Không lấy được Page token')
-                result = get_api(DEFAULT_GROUP).create_page_post(target_id, message, page_token, media_url, native_video_url)
+                result = get_api(DEFAULT_GROUP).create_page_post(
+                    target_id,
+                    message,
+                    page_token,
+                    '' if media_urls else media_url,
+                    '' if media_urls else native_video_url,
+                    media_urls=media_urls,
+                )
             else:
                 if not target_id:
                     raise RuntimeError('Thiếu group_id')
                 page_id = str((target or {}).get('page_id') or '').strip()
                 page_token = _page_token_from_cache(page_id) if page_id else None
-                result = get_api(target_id).create_post(message, page_token, media_url, native_video_url)
+                result = get_api(target_id).create_post(
+                    message,
+                    page_token,
+                    '' if media_urls else media_url,
+                    '' if media_urls else native_video_url,
+                    media_urls=media_urls,
+                )
             delivery = (result or {}).get('_delivery') or delivery
             if result and result.get('id'):
                 ok_count += 1
@@ -2798,6 +2850,65 @@ def _upload_comment_image_to_supabase(file_storage) -> tuple[str, str]:
         return '', str(e)[:300]
 
 
+def _upload_post_media_to_supabase(file_storage) -> tuple[str, str, str]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return '', '', 'Chưa cấu hình Supabase'
+    if not file_storage or not file_storage.filename:
+        return '', '', 'Chưa chọn file ảnh/video'
+
+    content_type = (file_storage.mimetype or '').lower()
+    if content_type not in ALLOWED_POST_MEDIA_TYPES:
+        return '', '', 'Chỉ hỗ trợ JPG, PNG, WEBP, GIF, MP4 hoặc MOV'
+
+    content = file_storage.read()
+    if not content:
+        return '', '', 'File rỗng'
+    if len(content) > MAX_POST_MEDIA_BYTES:
+        return '', '', f'File quá lớn, tối đa {MAX_POST_MEDIA_BYTES // (1024 * 1024)}MB'
+
+    original = secure_filename(file_storage.filename or 'post-media')
+    _, original_ext = os.path.splitext(original)
+    valid_exts = set(ALLOWED_POST_MEDIA_TYPES.values()) | {'.jpeg'}
+    ext = original_ext.lower() if original_ext.lower() in valid_exts else ALLOWED_POST_MEDIA_TYPES[content_type]
+    if ext == '.jpeg':
+        ext = '.jpg'
+
+    staff_id = _current_staff_id() or 'anonymous'
+    try:
+        tz = ZoneInfo(APP_TIMEZONE)
+    except Exception:
+        tz = ZoneInfo('Asia/Ho_Chi_Minh')
+    today = datetime.now(tz).strftime('%Y/%m/%d')
+    object_path = f'posts/{today}/{staff_id}/{uuid.uuid4().hex}{ext}'
+    upload_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{SUPABASE_POST_MEDIA_BUCKET}/{object_path}"
+
+    try:
+        resp = _req.post(
+            upload_url,
+            headers={
+                'apikey': SUPABASE_KEY,
+                'Authorization': f'Bearer {SUPABASE_KEY}',
+                'Content-Type': content_type,
+                'x-upsert': 'false',
+            },
+            data=content,
+            timeout=60,
+        )
+        if resp.status_code not in (200, 201):
+            message = resp.text[:300]
+            if resp.headers.get('content-type', '').startswith('application/json'):
+                try:
+                    message = resp.json().get('message') or message
+                except Exception:
+                    pass
+            return '', '', message
+        public_path = quote(object_path, safe='/')
+        public_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{SUPABASE_POST_MEDIA_BUCKET}/{public_path}"
+        return public_url, content_type, ''
+    except Exception as e:
+        return '', '', str(e)[:300]
+
+
 def _record_comment_log(post_id: str, group_id: str, post_url: str, message: str, page_id: str,
                         status: str, comment_id: str = '', error_message: str = '', image_url: str = '') -> dict:
     global _comment_logs
@@ -3224,17 +3335,25 @@ def api_create_post():
     message = body.get('message', '').strip()
     page_id = body.get('page_id', '').strip()
     media_url, native_video_url = _extract_post_media(body)
-    if not group_id or not message:
-        return jsonify({'ok': False, 'error': 'Thiếu group_id hoặc message'}), 400
+    media_urls = _extract_media_urls(body)
+    if not group_id or (not message and not media_urls):
+        return jsonify({'ok': False, 'error': 'Thiếu group_id hoặc nội dung/ảnh/video'}), 400
     try:
         page_token = _pages_cache.get(page_id, {}).get('access_token') if page_id else None
-        result = get_api(group_id).create_post(message, page_token, media_url, native_video_url)
-        delivery = (result or {}).get('_delivery') or ('native_video' if native_video_url else ('link_preview' if media_url else 'text'))
+        result = get_api(group_id).create_post(
+            message,
+            page_token,
+            '' if media_urls else media_url,
+            '' if media_urls else native_video_url,
+            media_urls=media_urls,
+        )
+        delivery = (result or {}).get('_delivery') or ('native_video' if native_video_url else ('link_preview' if media_url else ('native_media' if media_urls else 'text')))
         if result and 'id' in result:
             return jsonify({
                 'ok': True,
                 'post_id': result['id'],
                 'delivery': delivery,
+                'media_count': len(media_urls),
                 'native_video_error': (result or {}).get('_native_video_error'),
                 'target': {'type': 'group', 'id': group_id},
             })
@@ -3250,6 +3369,7 @@ def api_publish_targets():
     raw_targets = body.get('targets') or []
     message = str(body.get('message') or body.get('content') or '').strip()
     media_url, native_video_url = _extract_post_media(body)
+    media_urls = _extract_media_urls(body)
     if not message:
         return jsonify({'ok': False, 'error': 'Thiếu nội dung bài đăng'}), 400
     if not isinstance(raw_targets, list) or not raw_targets:
@@ -3277,8 +3397,9 @@ def api_publish_targets():
     result = _publish_content_pipeline_post({
         'content': message,
         'hashtags': '',
-        'media_url': media_url,
-        'native_video_url': native_video_url,
+        'media_url': '' if media_urls else media_url,
+        'native_video_url': '' if media_urls else native_video_url,
+        'media_urls': media_urls,
     }, targets, dry_run=dry_run)
     return jsonify(result), (200 if result.get('ok') else 502)
 
@@ -3289,19 +3410,28 @@ def api_create_page_post():
     page_id = str(body.get('page_id') or '').strip()
     message = str(body.get('message') or '').strip()
     media_url, native_video_url = _extract_post_media(body)
-    if not page_id or not message:
-        return jsonify({'ok': False, 'error': 'Thiếu page_id hoặc message'}), 400
+    media_urls = _extract_media_urls(body)
+    if not page_id or (not message and not media_urls):
+        return jsonify({'ok': False, 'error': 'Thiếu page_id hoặc nội dung/ảnh/video'}), 400
     try:
         page_token = _page_token_from_cache(page_id)
         if not page_token:
             return jsonify({'ok': False, 'error': 'Không lấy được Page token. Kiểm tra quyền quản trị Page/cookie.'}), 400
-        result = get_api(DEFAULT_GROUP).create_page_post(page_id, message, page_token, media_url, native_video_url)
-        delivery = (result or {}).get('_delivery') or ('native_video' if native_video_url else ('link_preview' if media_url else 'text'))
+        result = get_api(DEFAULT_GROUP).create_page_post(
+            page_id,
+            message,
+            page_token,
+            '' if media_urls else media_url,
+            '' if media_urls else native_video_url,
+            media_urls=media_urls,
+        )
+        delivery = (result or {}).get('_delivery') or ('native_video' if native_video_url else ('link_preview' if media_url else ('native_media' if media_urls else 'text')))
         if result and result.get('id'):
             return jsonify({
                 'ok': True,
                 'post_id': result['id'],
                 'delivery': delivery,
+                'media_count': len(media_urls),
                 'native_video_error': (result or {}).get('_native_video_error'),
                 'target': {'type': 'page', 'id': page_id},
             })
@@ -3329,6 +3459,39 @@ def upload_comment_image():
     if not image_url:
         return jsonify({'ok': False, 'error': error or 'Upload ảnh thất bại'}), 400
     return jsonify({'ok': True, 'image_url': image_url})
+
+
+@app.route('/api/uploads/post-media', methods=['POST'])
+def upload_post_media():
+    files = (
+        request.files.getlist('media')
+        or request.files.getlist('files')
+        or request.files.getlist('image')
+        or request.files.getlist('file')
+    )
+    files = [f for f in files if f and f.filename]
+    if not files:
+        return jsonify({'ok': False, 'error': 'Chưa chọn file ảnh/video'}), 400
+
+    uploaded = []
+    for file_storage in files:
+        media_url, content_type, error = _upload_post_media_to_supabase(file_storage)
+        if not media_url:
+            return jsonify({'ok': False, 'error': error or 'Upload ảnh/video thất bại'}), 400
+        uploaded.append({
+            'url': media_url,
+            'type': 'video' if content_type.startswith('video/') else 'image',
+            'content_type': content_type,
+            'name': secure_filename(file_storage.filename or 'post-media'),
+        })
+    media_urls = [item['url'] for item in uploaded]
+    return jsonify({
+        'ok': True,
+        'media': uploaded,
+        'media_urls': media_urls,
+        'image_urls': [item['url'] for item in uploaded if item['type'] == 'image'],
+        'image_url': media_urls[0] if len(media_urls) == 1 else '',
+    })
 
 
 @app.route('/api/comment', methods=['POST'])
@@ -5460,6 +5623,7 @@ def content_pipeline_post_create():
     content = str(body.get('content') or '').strip()
     media_url = str(body.get('media_url') or body.get('mediaUrl') or '').strip()
     native_video_url = str(body.get('native_video_url') or body.get('nativeVideoUrl') or '').strip()
+    media_urls = _extract_media_urls(body)
     hashtags = str(body.get('hashtags') or '').strip()
     scheduled_at = str(body.get('scheduled_at') or body.get('scheduledAt') or '').strip()
     targets = body.get('targets') or []
@@ -5475,12 +5639,13 @@ def content_pipeline_post_create():
     post = {
         'id': f"manual_{uuid.uuid4().hex[:12]}",
         'article_title': title,
-        'article_url': media_url or native_video_url,
+        'article_url': media_url or native_video_url or (media_urls[0] if media_urls else ''),
         'source_name': 'Manual composer',
         'format': 'manual',
         'content': content,
-        'media_url': media_url,
-        'native_video_url': native_video_url,
+        'media_url': '' if media_urls else media_url,
+        'native_video_url': '' if media_urls else native_video_url,
+        'media_urls': media_urls,
         'hashtags': hashtags,
         'status': status,
         'scheduled_at': scheduled_at,

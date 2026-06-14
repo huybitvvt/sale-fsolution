@@ -117,6 +117,7 @@ export type ContentPipelinePost = {
   article_id?: string;
   article_title?: string;
   article_url?: string;
+  media_urls?: string[];
   source_name?: string;
   format?: string;
   content?: string;
