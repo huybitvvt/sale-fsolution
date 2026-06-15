@@ -1132,6 +1132,44 @@ export function CommentLeadInboxPanel() {
     }
   }
 
+  async function openCommentLink(row: StoredPostComment) {
+    const targetUrl = row.comment_url || row.post_url || '';
+    if (!targetUrl) return;
+    if (sourceKey(row) !== 'tiktok') {
+      window.open(targetUrl, '_blank', 'noopener,noreferrer');
+      setReplyStatus('Đã mở link bình luận/bài viết.');
+      return;
+    }
+
+    if (!tiktokBridgeReady) {
+      window.open(targetUrl, '_blank', 'noopener,noreferrer');
+      setReplyStatus('Chưa thấy extension, đã mở link TikTok thường.');
+      return;
+    }
+
+    setReplyStatus('Đang mở TikTok và định vị comment...');
+    const openResult = await requestTiktokOpenComment({
+      post_url: row.post_url || targetUrl,
+      comment_url: row.comment_url || '',
+      post_id: row.post_id || '',
+      comment_id: row.comment_id || '',
+      comment_text: row.message || '',
+      author_name: row.author_name || '',
+      channel_name: row.channel_name || '',
+      video_title: row.video_title || '',
+    });
+    if (openResult.ok && openResult.target_found) {
+      setReplyStatus('✅ Đã mở TikTok và tô xanh comment đang hiển thị.');
+      return;
+    }
+    if (openResult.ok) {
+      setReplyStatus('✅ Đã mở TikTok kèm bảng comment cần xử lý. Nếu chưa thấy comment, dùng nội dung trên bảng để dò.');
+      return;
+    }
+    window.open(targetUrl, '_blank', 'noopener,noreferrer');
+    setReplyStatus(`${openResult.error || 'Extension chưa định vị được comment'}, đã mở link TikTok thường.`);
+  }
+
   function openDirectMessage(row: StoredPostComment) {
     const src = sourceKey(row);
     const author = (row.author_name || row.author_id || '').trim();
@@ -1575,7 +1613,7 @@ export function CommentLeadInboxPanel() {
 
                       <div className="omni-action-row">
                         {(selected.comment_url || selected.post_url) ? (
-                          <a className="omni-btn-ghost" href={selected.comment_url || selected.post_url} target="_blank" rel="noreferrer" style={{ textAlign: 'center', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>Mở link</a>
+                          <button type="button" className="omni-btn-ghost" onClick={() => void openCommentLink(selected)}>Mở link</button>
                         ) : (
                           <button type="button" className="omni-btn-ghost" disabled>Mở link</button>
                         )}
@@ -1676,7 +1714,7 @@ export function CommentLeadInboxPanel() {
                     <td>{phones.join(', ') || '-'}</td>
                     <td>{tags.map((tag) => tag.label).join(', ') || '-'}</td>
                     <td>{row.message || '-'}</td>
-                    <td>{(row.comment_url || row.post_url) ? <a href={row.comment_url || row.post_url} target="_blank" rel="noreferrer">Mở</a> : '-'}</td>
+                    <td>{(row.comment_url || row.post_url) ? <button type="button" className="omni-dm-link" onClick={() => void openCommentLink(row)}>Mở</button> : '-'}</td>
                   </tr>
                 )) : (
                   <tr><td colSpan={8} className="omni-empty">Chưa có khách hàng/lead từ comment.</td></tr>
