@@ -194,7 +194,7 @@
     if (old) old.remove();
 
     const commentText = compact(payload.comment_text, '(Comment không có nội dung chữ)');
-    const replyText = compact(payload.reply_text, '');
+    const replyText = String(payload.reply_text || '').replace(/\s+/g, ' ').trim();
     const authorName = compact(payload.author_name, 'Ẩn danh');
     const card = document.createElement('section');
     card.setAttribute('data-streal-comment-context-card', 'true');
@@ -214,8 +214,8 @@
     card.style.padding = '16px';
 
     const safeFoundText = found
-      ? 'Đã thấy comment đang hiển thị và tô xanh. Không tự cuộn thêm.'
-      : 'Không tự cuộn để tránh TikTok nhảy video. Dùng nội dung bên dưới để dò comment trong panel.';
+      ? 'Đã tìm thấy comment gần khớp, cuộn tới vị trí đó và tô xanh.'
+      : 'Chưa thấy comment trong vùng TikTok đang tải. Dùng nội dung bên dưới để dò hoặc cuộn thêm trong panel bình luận.';
 
     card.innerHTML = `
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px">
@@ -261,10 +261,32 @@
     });
 
     document.body.appendChild(card);
-    void copyText(replyText);
+    if (replyText) void copyText(replyText);
+  }
+
+  function nearestScrollableParent(el) {
+    let node = el?.parentElement || null;
+    while (node && node !== document.body) {
+      const style = window.getComputedStyle(node);
+      const canScroll = /(auto|scroll)/i.test(`${style.overflowY} ${style.overflow}`) && node.scrollHeight > node.clientHeight + 20;
+      if (canScroll) return node;
+      node = node.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function scrollToCommentElement(target) {
+    const scroller = nearestScrollableParent(target);
+    const targetRect = target.getBoundingClientRect();
+    const scrollerRect = scroller === document.scrollingElement || scroller === document.documentElement
+      ? { top: 0, height: window.innerHeight }
+      : scroller.getBoundingClientRect();
+    const nextTop = scroller.scrollTop + targetRect.top - scrollerRect.top - Math.max(48, scrollerRect.height * 0.25);
+    scroller.scrollTo({ top: Math.max(0, nextTop), behavior: 'smooth' });
   }
 
   function highlightCommentElement(target, payload) {
+    scrollToCommentElement(target);
     target.style.outline = '4px solid #2563eb';
     target.style.boxShadow = '0 0 0 8px rgba(37, 99, 235, 0.22)';
     target.style.borderRadius = '12px';
