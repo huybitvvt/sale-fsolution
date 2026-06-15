@@ -13,7 +13,7 @@ import { MarketingPipelinePanel } from '@/components/MarketingPipelinePanel';
 import { ScriptWriterPanel } from '@/components/ScriptWriterPanel';
 import '@/components/standard-post-panel.css';
 import { StaffCookiePanel, type StaffPayload } from '@/components/StaffCookiePanel';
-import { api } from '@/lib/api';
+import { api, formatFetchError, PUBLISH_TIMEOUT_MS } from '@/lib/api';
 import { LEGACY_PATH_REDIRECTS, pathToView, viewToPath, type ViewKey } from '@/lib/app-routes';
 import { CONSOLE_NAV_ITEMS } from '@/lib/console-nav';
 import { ConsoleRail } from '@/components/ConsoleRail';
@@ -1146,6 +1146,23 @@ export function MonitorPage() {
     setFbCommentBusy(false);
   }
 
+  async function readTikTokJson(response: Response, label: string): Promise<any> {
+    const rawText = await response.text();
+    let data: Record<string, unknown> = {};
+    if (rawText) {
+      try {
+        data = JSON.parse(rawText) as Record<string, unknown>;
+      } catch {
+        throw new Error(`${label} trả HTTP ${response.status} nhưng không phải JSON: ${rawText.slice(0, 180)}`);
+      }
+    }
+    if (!response.ok) {
+      const message = String(data.error || data.message || rawText || response.statusText || 'không rõ lỗi');
+      throw new Error(`${label} lỗi HTTP ${response.status}: ${message.slice(0, 220)}`);
+    }
+    return data;
+  }
+
   async function fetchTiktokCommentsForFilter() {
     const url = tiktokUrl.trim();
     const selectedChannel = channels.find((item) => item.id === tiktokManagedChannelId);
@@ -1191,8 +1208,9 @@ export function MonitorPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        timeoutMs: PUBLISH_TIMEOUT_MS,
       });
-      const d = await r.json();
+      const d = await readTikTokJson(r, endpoint);
       if (d.ok) {
         setTiktokRows(d.comments || []);
         const warn = d.warning ? ` · ${d.warning}` : '';
@@ -1241,8 +1259,9 @@ export function MonitorPage() {
                 videos: domResult.videos,
                 keywords: parseKeywordInput(tiktokKeywords),
               }),
+              timeoutMs: PUBLISH_TIMEOUT_MS,
             });
-            const imported = await importResponse.json();
+            const imported = await readTikTokJson(importResponse, '/api/tiktok/dom-comments/import');
             if (imported.ok) {
               setTiktokRows(imported.comments || []);
               const importWarn = imported.warning ? ` · ${imported.warning}` : '';
@@ -1261,9 +1280,9 @@ export function MonitorPage() {
         setTiktokRows([]);
         setTiktokStatus(`Lỗi: ${d.error || 'Không lấy được comment TikTok'}`);
       }
-    } catch {
+    } catch (error) {
       setTiktokRows([]);
-      setTiktokStatus('Lỗi kết nối backend');
+      setTiktokStatus(`Lỗi kết nối backend: ${formatFetchError(error)}`);
     }
     setTiktokBusy(false);
   }
