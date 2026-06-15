@@ -488,9 +488,6 @@ class FacebookGroupAPI:
             return False
         if re.search(r'action="(/groups/[^"]*join[^"]*)"', html, re.I):
             return False
-        if re.search(r'Tham gia nhóm|Tham Gia Nhóm', html, re.I):
-            if not re.search(r'leave_group|rời nhóm|Đã tham gia', html, re.I):
-                return False
         return None
 
     def _fetch_membership_via_cookie(self, group_id: str) -> Optional[bool]:
@@ -513,6 +510,7 @@ class FacebookGroupAPI:
             f'https://mbasic.facebook.com/groups/{group_id}',
         ]
         saw_login = False
+        saw_group_page = False
         for url in urls:
             try:
                 resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
@@ -523,15 +521,19 @@ class FacebookGroupAPI:
                     return False
                 if '/login' in resp.url:
                     saw_login = True
+                elif resp.status_code < 400 and re.search(rf'/groups/{re.escape(str(group_id))}\b|groupID["\']?\s*:\s*["\']?{re.escape(str(group_id))}', resp.text, re.I):
+                    saw_group_page = True
             except Exception:
                 continue
+        if saw_group_page and not saw_login:
+            return True
         return None if saw_login else None
 
     def _can_read_group_feed(self, group_id: str) -> bool:
         feed = self._call('get', f'{GRAPH_URL}/{group_id}/feed', params={'fields': 'id', 'limit': 1})
         if feed is None or feed.get('error'):
             return False
-        return bool((feed.get('data') or []))
+        return True
 
     def check_membership(self, group_id: str) -> bool:
         """Check if current user is a member of the group."""
@@ -654,7 +656,7 @@ class FacebookGroupAPI:
             'ok': False,
             'error': (
                 'Facebook không cho tự tham gia nhóm này qua hệ thống. '
-                'Bấm Mở FB → Tham gia/ Gửi yêu cầu thủ công. Nhóm kín cần admin duyệt.'
+                'Nếu Facebook đã hiện Đã tham gia, bấm Kiểm tra lại. Nếu vẫn không có bài, Graph có thể không cho đọc feed nhóm này.'
             ),
             'manual_required': True,
             'group_url': f'https://www.facebook.com/groups/{group_id}',

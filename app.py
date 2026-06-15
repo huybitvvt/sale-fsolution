@@ -18,7 +18,7 @@ from flask import Flask, jsonify, render_template, request, session, copy_curren
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
-from core.group_api import FacebookGroupAPI, load_token, load_cookie, refresh_token, friendly_graph_error
+from core.group_api import FacebookGroupAPI, load_token, load_cookie, refresh_token, friendly_graph_error, GRAPH_URL
 from core.ai_classifier import AIClassifier, DEFAULT_MODEL, DEFAULT_API_KEY, DEFAULT_CATEGORIES, PROVIDERS, extract_phones, normalize_phone
 from core import supabase_store as sb
 
@@ -4796,6 +4796,51 @@ def api_groups_membership():
         return jsonify({'ok': True, 'membership': membership})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/groups/debug', methods=['GET'])
+def api_groups_debug():
+    ids_raw = str(request.args.get('ids') or '').strip()
+    ids = [item.strip() for item in ids_raw.split(',') if item.strip()]
+    staff = _active_staff()
+    cookie = staff.get('cookie', '')
+    rows = []
+    for gid in ids[:20]:
+        api = get_api(gid)
+        cookie_membership = None
+        graph_ok = False
+        graph_error = ''
+        try:
+            cookie_membership = api._fetch_membership_via_cookie(gid)
+        except Exception as e:
+            graph_error = str(e)[:220]
+        try:
+            feed = api._call('get', f'{GRAPH_URL}/{gid}/feed', params={'fields': 'id', 'limit': 1})
+            graph_ok = bool(feed is not None and not feed.get('error'))
+            if feed and feed.get('error'):
+                graph_error = (feed.get('error') or {}).get('message') or graph_error
+            else:
+                graph_error = api.last_graph_error or graph_error
+        except Exception as e:
+            graph_error = str(e)[:220]
+        rows.append({
+            'group_id': gid,
+            'cookie_membership': cookie_membership,
+            'graph_feed_ok': graph_ok,
+            'graph_error': graph_error,
+        })
+    return jsonify({
+        'ok': True,
+        'staff': {
+            'id': staff.get('id', ''),
+            'name': staff.get('name', ''),
+            'username': staff.get('username', ''),
+            'facebook_user_id': _extract_cookie_user(cookie),
+            'has_cookie': bool(cookie),
+            'cookie_masked': _mask_cookie(cookie),
+        },
+        'groups': rows,
+    })
 
 
 @app.route('/api/groups/<gid>/join', methods=['POST'])
