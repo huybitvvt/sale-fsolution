@@ -150,6 +150,17 @@
       .trim();
   }
 
+  function looseText(value) {
+    return String(value || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   function stripTiktokPrefix(value) {
     return String(value || '').replace(/^tiktok_/, '').trim();
   }
@@ -189,7 +200,7 @@
       .replace(/'/g, '&#39;');
   }
 
-  function renderCommentContextCard(payload, found) {
+  function renderCommentContextCard(payload, found, scanInfo = {}) {
     const old = document.querySelector('[data-streal-comment-context-card="true"]');
     if (old) old.remove();
 
@@ -214,8 +225,10 @@
     card.style.padding = '16px';
 
     const safeFoundText = found
-      ? 'Đã tìm thấy comment gần khớp, cuộn tới vị trí đó và tô xanh.'
-      : 'Chưa thấy comment trong vùng TikTok đang tải. Dùng nội dung bên dưới để dò hoặc cuộn thêm trong panel bình luận.';
+      ? `Đã tìm thấy comment gần khớp${scanInfo.scrolled ? ` sau ${scanInfo.scrolled} lượt cuộn` : ''}, cuộn tới vị trí đó và tô xanh.`
+      : scanInfo.searching
+        ? 'Đang tự cuộn panel bình luận TikTok để tìm comment. Có thể mất vài chục giây nếu comment nằm sâu.'
+        : `Chưa thấy comment sau ${scanInfo.scanned || 0} lượt quét. Bấm "Tìm tự động" để tiếp tục cuộn panel bình luận và dò comment.`;
 
     card.innerHTML = `
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px">
@@ -237,7 +250,8 @@
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button type="button" data-streal-copy-reply="true" style="border:0;background:#2563eb;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Copy câu trả lời</button>
         <button type="button" data-streal-copy-comment="true" style="border:1px solid rgba(148,163,184,.5);background:transparent;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Copy comment gốc</button>
-        <button type="button" data-streal-open-search="true" style="border:1px solid rgba(148,163,184,.5);background:transparent;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Gợi ý tìm</button>
+        <button type="button" data-streal-auto-search="true" style="border:1px solid rgba(148,163,184,.5);background:transparent;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Tìm tự động</button>
+        <button type="button" data-streal-open-search="true" style="border:1px solid rgba(148,163,184,.5);background:transparent;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Copy để tìm</button>
       </div>
       <div data-streal-card-status="true" style="margin-top:10px;color:#86efac;font-size:13px"></div>
     `;
@@ -254,6 +268,19 @@
     card.querySelector('[data-streal-copy-comment="true"]')?.addEventListener('click', async () => {
       await copyText(commentText);
       setStatus('Đã copy comment gốc. Có thể dùng Ctrl+F để tìm nếu TikTok hỗ trợ.');
+    });
+    card.querySelector('[data-streal-auto-search="true"]')?.addEventListener('click', async () => {
+      setStatus('Đang tự cuộn panel bình luận TikTok để tìm comment...');
+      const result = await searchAndFocusComment(payload, {
+        maxScrolls: 48,
+        delayMs: 850,
+        status: setStatus,
+      });
+      if (result.target) {
+        setStatus(`Đã tìm thấy và tô xanh comment sau ${result.scrolled} lượt cuộn.`);
+      } else {
+        setStatus(`Chưa thấy comment sau ${result.scanned} lượt quét. Có thể TikTok chưa tải comment này, comment đã bị xoá/ẩn hoặc đang nằm trong reply chưa mở.`);
+      }
     });
     card.querySelector('[data-streal-open-search="true"]')?.addEventListener('click', async () => {
       await copyText(commentText);
@@ -273,6 +300,91 @@
       node = node.parentElement;
     }
     return document.scrollingElement || document.documentElement;
+  }
+
+  function findCommentScroller() {
+    const selectorCandidates = [
+      '[data-e2e*="comment-list"]',
+      '[data-e2e*="CommentList"]',
+      '[class*="DivCommentListContainer"]',
+      '[class*="CommentList"]',
+      '[class*="comment-list"]',
+      '[role="tabpanel"]',
+      'aside',
+      'section',
+      'div',
+    ];
+    const seen = new Set();
+    const candidates = [];
+    for (const selector of selectorCandidates) {
+      document.querySelectorAll(selector).forEach((node) => {
+        if (seen.has(node) || !isVisible(node)) return;
+        if (node.closest('[data-streal-comment-context-card="true"], [data-streal-comment-badge="true"]')) return;
+        seen.add(node);
+        const rect = node.getBoundingClientRect();
+        const extraScroll = node.scrollHeight - node.clientHeight;
+        if (extraScroll < 80 || rect.height < 220 || rect.width < 240) return;
+        const attr = `${node.className || ''} ${node.id || ''} ${node.getAttribute('data-e2e') || ''}`.toLowerCase();
+        const text = normalizeText(node.innerText || node.textContent || '').slice(0, 500);
+        let score = 0;
+        if (rect.left > window.innerWidth * 0.48) score += 200;
+        if (attr.includes('comment')) score += 180;
+        if (text.includes('bình luận') || text.includes('comment')) score += 120;
+        if (text.includes('trả lời') || text.includes('reply')) score += 40;
+        score += Math.min(extraScroll / 20, 120);
+        score -= Math.abs(rect.right - window.innerWidth) / 20;
+        candidates.push({ node, score });
+      });
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0]?.node || document.scrollingElement || document.documentElement;
+  }
+
+  function scrollCommentPanel(scroller) {
+    const before = scroller.scrollTop || window.scrollY || 0;
+    const delta = Math.max(420, Math.floor((scroller.clientHeight || window.innerHeight || 760) * 0.72));
+    try {
+      scroller.scrollBy({ top: delta, behavior: 'smooth' });
+    } catch (error) {
+      scroller.scrollTop = before + delta;
+    }
+    const eventTarget = scroller === document.scrollingElement || scroller === document.documentElement
+      ? document.elementFromPoint(window.innerWidth - 180, Math.max(180, window.innerHeight * 0.45)) || document.body
+      : scroller;
+    eventTarget.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaY: delta,
+      clientX: window.innerWidth - 180,
+      clientY: Math.max(180, window.innerHeight * 0.45),
+    }));
+    return before;
+  }
+
+  function expandVisibleReplies(limit = 4) {
+    let clicked = 0;
+    const buttons = Array.from(document.querySelectorAll('button, [role="button"], div, span')).filter((node) => {
+      if (!isVisible(node)) return false;
+      if (node.closest('[data-streal-comment-context-card="true"], [data-streal-comment-badge="true"]')) return false;
+      const rect = node.getBoundingClientRect();
+      if (rect.left < window.innerWidth * 0.48) return false;
+      const text = normalizeText(node.innerText || node.textContent || '');
+      return (
+        /xem\s+\d*\s*(câu\s+)?trả\s+lời/.test(text) ||
+        /xem\s+thêm\s+(câu\s+)?trả\s+lời/.test(text) ||
+        /view\s+\d*\s*repl/.test(text) ||
+        /show\s+\d*\s*repl/.test(text)
+      );
+    });
+    for (const button of buttons.slice(0, limit)) {
+      try {
+        button.click();
+        clicked += 1;
+      } catch (error) {
+        // Continue best effort.
+      }
+    }
+    return clicked;
   }
 
   function scrollToCommentElement(target) {
@@ -325,7 +437,10 @@
 
   function findCommentCandidate(payload) {
     const targetText = normalizeText(payload.comment_text).slice(0, 180);
+    const targetLoose = looseText(payload.comment_text).slice(0, 180);
+    const targetLooseShort = targetLoose.slice(0, Math.min(70, Math.max(24, targetLoose.length)));
     const author = normalizeText(payload.author_name).slice(0, 80);
+    const authorLoose = looseText(payload.author_name).slice(0, 80);
     const rawCommentId = stripTiktokPrefix(payload.comment_id);
     const nodes = Array.from(document.querySelectorAll(
       '[data-e2e*="comment"], [class*="Comment"], [class*="comment"], div, p, span',
@@ -333,11 +448,16 @@
     const scored = [];
     for (const node of nodes) {
       if (!isVisible(node)) continue;
+      if (node.closest('[data-streal-comment-context-card="true"], [data-streal-comment-badge="true"]')) continue;
       const text = normalizeText(node.innerText || node.textContent || '');
       if (!text || text.length > 1600) continue;
+      const loose = looseText(text);
       let score = 0;
       if (targetText && text.includes(targetText)) score += 1000 - Math.min(text.length, 900);
+      if (targetLoose && loose.includes(targetLoose)) score += 900 - Math.min(text.length, 700);
+      if (targetLooseShort && targetLooseShort.length >= 12 && loose.includes(targetLooseShort)) score += 520 - Math.min(text.length, 420);
       if (author && text.includes(author)) score += 120;
+      if (authorLoose && loose.includes(authorLoose)) score += 90;
       const html = `${node.id || ''} ${node.getAttribute('href') || ''} ${node.getAttribute('data-e2e') || ''}`;
       if (rawCommentId && html.includes(rawCommentId)) score += 300;
       if (score <= 0) continue;
@@ -348,25 +468,72 @@
     return scored[0]?.node || null;
   }
 
+  async function searchAndFocusComment(payload, options = {}) {
+    const maxScrolls = Number(options.maxScrolls || 32);
+    const delayMs = Number(options.delayMs || 900);
+    const status = typeof options.status === 'function' ? options.status : null;
+    maybeOpenCommentPanel();
+    await sleep(900);
+
+    let scroller = findCommentScroller();
+    let stagnant = 0;
+    let lastTop = -1;
+    for (let i = 0; i <= maxScrolls; i += 1) {
+      expandVisibleReplies(3);
+      await sleep(i === 0 ? 250 : 150);
+      const target = findCommentCandidate(payload);
+      if (target) {
+        highlightCommentElement(target, payload);
+        return { target, scanned: i + 1, scrolled: i };
+      }
+
+      if (i === maxScrolls) break;
+      if (status) status(`Đang tìm comment... lượt ${i + 1}/${maxScrolls + 1}`);
+      scroller = findCommentScroller() || scroller;
+      const before = scrollCommentPanel(scroller);
+      await sleep(delayMs);
+      const after = scroller.scrollTop || window.scrollY || 0;
+      if (Math.abs(after - lastTop) < 8 || Math.abs(after - before) < 8) stagnant += 1;
+      else stagnant = 0;
+      lastTop = after;
+      if (stagnant >= 6) {
+        const fallbackTarget = document.elementFromPoint(window.innerWidth - 160, Math.max(220, window.innerHeight * 0.52)) || scroller;
+        fallbackTarget.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          cancelable: true,
+          deltaY: 720,
+          clientX: window.innerWidth - 160,
+          clientY: Math.max(220, window.innerHeight * 0.52),
+        }));
+        await sleep(900);
+        stagnant = 0;
+      }
+    }
+    return { target: null, scanned: maxScrolls + 1, scrolled: maxScrolls };
+  }
+
   async function focusComment(payload) {
     if (tiktokPageError()) {
       return { ok: false, final: FINAL, error: 'Trang TikTok đang báo lỗi, chưa thể định vị comment.' };
     }
 
-    maybeOpenCommentPanel();
-    await sleep(1200);
-    const target = findCommentCandidate(payload);
-    if (target) highlightCommentElement(target, payload);
-    renderCommentContextCard(payload, Boolean(target));
+    renderCommentContextCard(payload, false, { searching: true });
+    const setCardStatus = (text) => {
+      const status = document.querySelector('[data-streal-card-status="true"]');
+      if (status) status.textContent = text;
+    };
+    const result = await searchAndFocusComment(payload, { maxScrolls: 28, delayMs: 850, status: setCardStatus });
+    const target = result.target;
+    renderCommentContextCard(payload, Boolean(target), result);
     return {
       ok: true,
       final: FINAL,
       target_found: Boolean(target),
       message: target
-        ? 'Đã mở video, tô xanh comment đang hiển thị và ghim bảng xử lý.'
-        : 'Đã mở video và ghim bảng comment cần xử lý. Không tự cuộn để tránh TikTok nhảy video.',
+        ? `Đã mở video, tự cuộn và tô xanh comment sau ${result.scrolled} lượt.`
+        : `Đã mở video nhưng chưa thấy comment sau ${result.scanned} lượt quét. Có thể TikTok chưa tải/đã ẩn comment này.`,
       url: window.location.href,
-      method: target ? 'focus-visible-comment' : 'open-context-card',
+      method: target ? 'auto-scroll-focus-comment' : 'open-context-card',
     };
   }
 
