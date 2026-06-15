@@ -285,7 +285,7 @@ export function MarketingPipelinePanel({
         setGroups([]);
         setPages([]);
       }
-      setLocalStatus(formatFetchError(error, 'Lỗi kết nối khi tải nhóm/Page từ DB.'));
+      setLocalStatus(`Lỗi kết nối khi tải nhóm/Page từ DB: ${formatFetchError(error)}`);
     } finally {
       setLoadingTargets(false);
     }
