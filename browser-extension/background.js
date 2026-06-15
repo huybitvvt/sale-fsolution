@@ -395,6 +395,226 @@ async function collectTikTokChannelVideos(request) {
   };
 }
 
+async function collectTikTokDomComments(request) {
+  const payload = request.payload || {};
+  const maxVideos = Math.max(1, Math.min(Number(payload.max_videos || 8) || 8, 30));
+  const limitPerVideo = Math.max(1, Math.min(Number(payload.limit_per_video || 80) || 80, 250));
+  let videos = Array.isArray(payload.videos) ? payload.videos : [];
+  if (!videos.length) {
+    const collected = await collectTikTokChannelVideos({
+      requestId: request.requestId,
+      payload: {
+        channel: payload.channel || payload.channel_url || payload.url || '',
+        max_videos: maxVideos,
+      },
+    });
+    if (!collected?.ok || !collected.videos?.length) {
+      return {
+        ok: false,
+        final: true,
+        error: collected?.error || 'Khong gom duoc video TikTok bang Chrome.',
+        videos: [],
+      };
+    }
+    videos = collected.videos;
+  }
+
+  const results = [];
+  for (const video of videos.slice(0, maxVideos)) {
+    const url = normalizeTikTokUrl(video) || String(video.post_url || video.url || '').trim();
+    if (!url) continue;
+    const tab = await chrome.tabs.create({ url, active: true });
+    await waitForTabLoaded(tab.id, 35000);
+    await sleep(3500);
+
+    let result = { ok: false, comments: [], error: 'Khong scrape duoc comment TikTok.' };
+    try {
+      const injected = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        args: [limitPerVideo],
+        func: async (limit) => {
+          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          const isVisible = (el) => {
+            if (!el) return false;
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+          };
+          const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+          const simpleHash = (value) => {
+            let hash = 0;
+            const text = String(value || '');
+            for (let i = 0; i < text.length; i += 1) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+            return Math.abs(hash).toString(36);
+          };
+          const clickCommentPanel = () => {
+            const selectors = [
+              '[data-e2e="comment-icon"]',
+              'button[aria-label*="comment" i]',
+              'button[aria-label*="bình luận" i]',
+              'div[role="button"][aria-label*="comment" i]',
+            ];
+            for (const selector of selectors) {
+              const node = Array.from(document.querySelectorAll(selector)).find(isVisible);
+              if (node) {
+                try { node.click(); } catch {}
+                return true;
+              }
+            }
+            return false;
+          };
+          const findCommentScroller = () => {
+            const candidates = [];
+            document.querySelectorAll('[data-e2e*="comment"], [class*="Comment"], [class*="comment"], [role="tabpanel"], aside, section, div').forEach((node) => {
+              if (!isVisible(node)) return;
+              const rect = node.getBoundingClientRect();
+              const extra = node.scrollHeight - node.clientHeight;
+              if (rect.left < window.innerWidth * 0.45 || rect.height < 220 || rect.width < 240 || extra < 60) return;
+              const attr = `${node.className || ''} ${node.getAttribute('data-e2e') || ''}`.toLowerCase();
+              const text = normalize(node.innerText || node.textContent || '').slice(0, 400).toLowerCase();
+              let score = extra / 20;
+              if (attr.includes('comment')) score += 220;
+              if (text.includes('bình luận') || text.includes('comment')) score += 120;
+              candidates.push({ node, score });
+            });
+            candidates.sort((a, b) => b.score - a.score);
+            return candidates[0]?.node || document.scrollingElement || document.documentElement;
+          };
+          const expandReplies = () => {
+            Array.from(document.querySelectorAll('button, [role="button"], div, span')).slice(0, 1500).forEach((node) => {
+              if (!isVisible(node)) return;
+              const rect = node.getBoundingClientRect();
+              if (rect.left < window.innerWidth * 0.45) return;
+              const text = normalize(node.innerText || node.textContent || '').toLowerCase();
+              if (/xem\s+\d*\s*(câu\s+)?trả\s+lời/.test(text) || /view\s+\d*\s*repl/.test(text)) {
+                try { node.click(); } catch {}
+              }
+            });
+          };
+          const parseComment = (node, index) => {
+            const rect = node.getBoundingClientRect();
+            if (rect.left < window.innerWidth * 0.45) return null;
+            const rawLines = String(node.innerText || node.textContent || '')
+              .split(/\n+/)
+              .map((line) => normalize(line))
+              .filter(Boolean);
+            const lines = rawLines.filter((line) => {
+              const lower = line.toLowerCase();
+              if (!lower || lower === 'bình luận' || lower === 'comments' || lower === 'bạn có thể thích') return false;
+              if (lower.includes('sponsored') || lower.includes('learn more')) return false;
+              if (/^\d+\s*bình luận$/.test(lower)) return false;
+              return true;
+            });
+            if (!lines.length) return null;
+            const joined = lines.join(' ');
+            if (joined.length < 2 || joined.length > 900) return null;
+            if (!/(trả lời|reply|giờ trước|phút trước|ngày trước|tuần trước|-\d|^\w)/i.test(joined)) return null;
+            const author = lines[0]?.slice(0, 80) || 'Ẩn danh';
+            const messageParts = lines.slice(1).filter((line) => {
+              const lower = line.toLowerCase();
+              if (/^(trả lời|reply|like|thích|xem.*trả lời|view.*repl)/.test(lower)) return false;
+              if (/^\d+(\.\d+)?[kmb]?$/.test(lower)) return false;
+              if (/^\d+\s*(giây|phút|giờ|ngày|tuần|tháng|năm)\s+trước$/.test(lower)) return false;
+              if (/^\d{1,2}-\d{1,2}$/.test(lower)) return false;
+              return true;
+            });
+            const text = normalize(messageParts.join(' ') || lines.slice(1).join(' ') || joined);
+            if (!text || text === author || text.length < 2) return null;
+            return {
+              id: `dom_${simpleHash(`${author}|${text}|${index}`)}`,
+              author_name: author,
+              author_id: author,
+              text,
+              depth: 0,
+            };
+          };
+          const collect = () => {
+            const byKey = new Map();
+            const selectors = [
+              '[data-e2e*="comment-level"]',
+              '[data-e2e*="comment-item"]',
+              '[class*="CommentItem"]',
+              '[class*="DivCommentContent"]',
+              '[class*="comment-item"]',
+              'div',
+            ];
+            let index = 0;
+            for (const selector of selectors) {
+              document.querySelectorAll(selector).forEach((node) => {
+                if (byKey.size >= limit) return;
+                if (!isVisible(node)) return;
+                const item = parseComment(node, index);
+                index += 1;
+                if (!item) return;
+                const key = `${item.author_name}|${item.text}`.toLowerCase();
+                if (!byKey.has(key)) byKey.set(key, item);
+              });
+              if (byKey.size >= limit) break;
+            }
+            return Array.from(byKey.values()).slice(0, limit);
+          };
+
+          clickCommentPanel();
+          await sleep(1200);
+          let scroller = findCommentScroller();
+          let rows = collect();
+          for (let i = 0; i < 22 && rows.length < limit; i += 1) {
+            expandReplies();
+            const delta = Math.max(420, Math.floor((scroller.clientHeight || window.innerHeight || 800) * 0.75));
+            try { scroller.scrollBy({ top: delta, behavior: 'smooth' }); } catch { scroller.scrollTop += delta; }
+            const wheelTarget = document.elementFromPoint(window.innerWidth - 180, Math.max(220, window.innerHeight * 0.55)) || scroller;
+            wheelTarget.dispatchEvent(new WheelEvent('wheel', {
+              bubbles: true,
+              cancelable: true,
+              deltaY: delta,
+              clientX: window.innerWidth - 180,
+              clientY: Math.max(220, window.innerHeight * 0.55),
+            }));
+            await sleep(950);
+            scroller = findCommentScroller() || scroller;
+            rows = collect();
+          }
+          return {
+            ok: rows.length > 0,
+            comments: rows,
+            comment_count: rows.length,
+            page_title: document.title,
+            url: window.location.href,
+          };
+        },
+      });
+      result = injected?.[0]?.result || result;
+    } catch (error) {
+      result = { ok: false, comments: [], error: error?.message || String(error) };
+    }
+
+    results.push({
+      ...video,
+      video_id: video.video_id || getVideoId(video, url),
+      post_url: url,
+      video_title: video.video_title || result.page_title || `Video ${getVideoId(video, url)}`,
+      comments: result.comments || [],
+      error: result.error || '',
+    });
+
+    try {
+      const closeResult = chrome.tabs.remove(tab.id);
+      if (closeResult?.catch) closeResult.catch(() => {});
+    } catch {}
+  }
+
+  const totalComments = results.reduce((sum, item) => sum + (item.comments?.length || 0), 0);
+  return {
+    ok: totalComments > 0,
+    final: true,
+    videos: results,
+    comment_count: totalComments,
+    video_count: results.length,
+    message: `Chrome da scrape ${totalComments} comment tu ${results.length} video TikTok`,
+    error: totalComments ? '' : 'Chrome da mo video TikTok nhung chua scrape duoc comment nao tu DOM.',
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'STREAL_EXTENSION_GET_FACEBOOK_COOKIE') {
     getFacebookCookies()
@@ -404,6 +624,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'STREAL_EXTENSION_COLLECT_TIKTOK_VIDEOS') {
     collectTikTokChannelVideos(message)
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, final: true, error: error?.message || String(error), videos: [] }));
+    return true;
+  }
+  if (message?.type === 'STREAL_EXTENSION_COLLECT_TIKTOK_DOM_COMMENTS') {
+    collectTikTokDomComments(message)
       .then((response) => sendResponse(response))
       .catch((error) => sendResponse({ ok: false, final: true, error: error?.message || String(error), videos: [] }));
     return true;

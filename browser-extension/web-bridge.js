@@ -101,6 +101,34 @@
       return;
     }
 
+    if (data.type === 'STREAL_TIKTOK_COLLECT_DOM_COMMENTS_REQUEST') {
+      chrome.runtime.sendMessage(
+        {
+          type: 'STREAL_EXTENSION_COLLECT_TIKTOK_DOM_COMMENTS',
+          requestId: data.requestId,
+          payload: data.payload || {},
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            postToPage({
+              type: 'STREAL_TIKTOK_COLLECT_DOM_COMMENTS_RESPONSE',
+              requestId: data.requestId,
+              ok: false,
+              videos: [],
+              error: chrome.runtime.lastError.message || 'Extension khong phan hoi',
+            });
+            return;
+          }
+          postToPage({
+            type: 'STREAL_TIKTOK_COLLECT_DOM_COMMENTS_RESPONSE',
+            requestId: data.requestId,
+            ...(response || { ok: false, videos: [], error: 'Extension khong tra comment TikTok' }),
+          });
+        },
+      );
+      return;
+    }
+
     if (data.type !== 'STREAL_TIKTOK_COMMENT_REQUEST') return;
 
     chrome.runtime.sendMessage(

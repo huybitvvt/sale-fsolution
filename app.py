@@ -4126,6 +4126,104 @@ def fetch_tiktok_videos_comments():
     return jsonify(payload)
 
 
+@app.route('/api/tiktok/dom-comments/import', methods=['POST'])
+def import_tiktok_dom_comments():
+    body = request.get_json() or {}
+    keywords = _normalize_keywords(body.get('keywords') or [])
+    videos = body.get('videos') or []
+    if not isinstance(videos, list):
+        videos = []
+    if not videos:
+        return jsonify({'ok': False, 'error': 'Chưa có dữ liệu comment TikTok từ extension.'}), 400
+
+    fetched_at = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    staff = _current_staff()
+    all_rows: list[dict] = []
+    reports: list[dict] = []
+    for video in videos[:60]:
+        if not isinstance(video, dict):
+            continue
+        raw_video_id = str(video.get('video_id') or video.get('post_id') or video.get('post_url') or '').replace('tiktok_', '').strip()
+        video_id_match = re.search(r'\d{8,}', raw_video_id)
+        video_id = video_id_match.group(0) if video_id_match else ''
+        post_url = str(video.get('post_url') or video.get('url') or '').strip()
+        if not video_id and post_url:
+            video_id, post_url = _extract_tiktok_video_id(post_url)
+        if not video_id:
+            continue
+        comments = video.get('comments') or []
+        if not isinstance(comments, list):
+            comments = []
+        api_like_comments = []
+        for index, item in enumerate(comments[:1000]):
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get('text') or item.get('message') or '').strip()
+            if not text:
+                continue
+            raw_cid = str(item.get('id') or item.get('cid') or item.get('comment_id') or '').replace('tiktok_', '').strip()
+            if not raw_cid:
+                seed = f"{video_id}|{item.get('author_name') or item.get('author_id') or ''}|{text}|{index}"
+                raw_cid = 'dom_' + hashlib.sha1(seed.encode('utf-8', errors='ignore')).hexdigest()[:24]
+            author_name = str(item.get('author_name') or item.get('author') or item.get('nickname') or 'Ẩn danh').strip()
+            author_id = str(item.get('author_id') or item.get('author_unique_id') or author_name or '').strip()
+            api_like_comments.append({
+                'cid': raw_cid,
+                'text': text,
+                'create_time': item.get('create_time') or item.get('created_time') or None,
+                '_depth': int(item.get('depth') or 0),
+                '_parent_cid': str(item.get('parent_comment_id') or '').replace('tiktok_', '').strip(),
+                'user': {
+                    'uid': author_id,
+                    'unique_id': author_id,
+                    'nickname': author_name,
+                },
+                '_source': 'chrome_dom',
+            })
+        rows = _flatten_tiktok_comment_rows(
+            video_id,
+            post_url or f'https://www.tiktok.com/@/video/{video_id}',
+            api_like_comments,
+            keywords,
+            fetched_at,
+            staff,
+            str(video.get('channel_name') or ''),
+            str(video.get('video_title') or ''),
+        )
+        all_rows.extend(rows)
+        reports.append({
+            'video_id': video_id,
+            'post_url': post_url,
+            'video_title': video.get('video_title') or '',
+            'ok': bool(rows),
+            'comment_count': len(rows),
+            'source': 'chrome_dom',
+        })
+
+    storage, warning = _store_post_comment_rows(all_rows)
+    payload = {
+        'ok': True,
+        'source': 'tiktok',
+        'import_source': 'chrome_dom',
+        'video_count': len(reports),
+        'comment_count': len(all_rows),
+        'fetched_comment_count': len(all_rows),
+        'matched_count': sum(1 for row in all_rows if row.get('is_matched')),
+        'phone_count': sum(1 for row in all_rows if extract_phones(row.get('message') or '')),
+        'reports': reports,
+        'comments': all_rows,
+        'storage': storage,
+    }
+    warnings = []
+    if not all_rows:
+        warnings.append('Extension đã mở TikTok nhưng chưa scrape được comment nào từ giao diện.')
+    if warning:
+        warnings.append(warning if storage == 'supabase' else f'Đã lưu local, Supabase chưa ghi được: {warning}')
+    if warnings:
+        payload['warning'] = ' | '.join(warnings)
+    return jsonify(payload)
+
+
 @app.route('/api/tiktok/channels/fetch-comments', methods=['POST'])
 def fetch_configured_tiktok_channels_comments():
     body = request.get_json() or {}
