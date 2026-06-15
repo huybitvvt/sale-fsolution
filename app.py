@@ -141,6 +141,11 @@ ALLOWED_POST_MEDIA_TYPES = {
 
 app = Flask(__name__, template_folder='views')
 app.secret_key = os.environ.get('APP_SECRET_KEY', 'fb-moni-local-dev-secret-change-me')
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=os.environ.get('FLASK_ENV') == 'production' or bool(os.environ.get('RENDER')),
+)
 
 _cors_origins = [
     o.strip()

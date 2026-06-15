@@ -1,15 +1,9 @@
-function isLocalBrowserHost(hostname: string): boolean {  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
-}
-
 export function getApiBase(): string {
-  const configured = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
+  // Trình duyệt luôn gọi /api cùng origin → Vercel rewrite sang Flask (tránh CORS & URL /api/api lỗi 404).
   if (typeof window !== 'undefined') {
-    const host = window.location.hostname;
-    if (isLocalBrowserHost(host)) {
-      // Gọi cùng origin (Next rewrite → Flask) — tránh treo/CORS khi gọi thẳng :5000.
-      return '';
-    }
+    return '';
   }
+  const configured = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
   if (configured) return configured.replace(/\/$/, '');
   return '';
 }
