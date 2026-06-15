@@ -19,7 +19,7 @@ export const AI_TIMEOUT_MS = 120000;
 export const UPLOAD_TIMEOUT_MS = 120000;
 export const PUBLISH_TIMEOUT_MS = 180000;
 
-export function formatFetchError(err: unknown): string {
+export function formatFetchError(err: unknown, fallback = 'Không gọi được backend'): string {
   if (err instanceof DOMException && err.name === 'AbortError') {
     return 'Backend không phản hồi kịp (timeout). Kiểm tra Flask trên cổng 5000 và thử lại.';
   }
@@ -27,7 +27,7 @@ export function formatFetchError(err: unknown): string {
   if (/aborted|abort/i.test(message)) {
     return 'Backend không phản hồi kịp (timeout). Kiểm tra Flask trên cổng 5000 và thử lại.';
   }
-  return message || 'Không gọi được backend';
+  return message || fallback;
 }
 
 export type ApiInit = RequestInit & { timeoutMs?: number };
