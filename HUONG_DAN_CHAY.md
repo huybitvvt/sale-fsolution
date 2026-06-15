@@ -163,4 +163,19 @@ Sau do nut `Gui CMT TikTok` tren web se thu theo thu tu: Browser Worker -> Playw
 
 ## 8. Deploy
 
-Frontend Next.js co the deploy len Vercel. Backend Flask (`app.py`) van can mot noi chay rieng nhu VPS/Render/Railway, sau do dat `WEB_UI_URL` va CORS dung domain frontend.
+Frontend Next.js deploy len Vercel tu thu muc `web/` (file `vercel.json` o repo goc da chi build Next.js).
+
+Tren Vercel Project Settings:
+
+1. **Root Directory**: de trong hoac `web` (neu Vercel van build nham Flask, chon `web`).
+2. **Environment Variables**:
+   - `API_PROXY_BASE_URL` = URL backend Flask (VD: `https://seeding-fb.onrender.com`)
+
+Backend Flask (`app.py`) chay rieng tren Render/VPS/Railway:
+
+```env
+WEB_UI_URL=https://seeding-beta.vercel.app
+CORS_ORIGINS=https://seeding-beta.vercel.app,https://.*\.vercel\.app,http://localhost:3000
+```
+
+Neu mo `https://seeding-beta.vercel.app` ma bi nhay ve `http://localhost:3000`, Vercel dang build nham backend Python — dat Root Directory = `web` roi Redeploy.

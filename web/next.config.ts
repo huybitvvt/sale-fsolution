@@ -23,6 +23,7 @@ function resolveApiProxyBase(): string {
       process.env.VERCEL_PROJECT_PRODUCTION_URL,
       process.env.VERCEL_URL,
       'fb-moni.vercel.app',
+      'seeding-beta.vercel.app',
     ]
       .map((host) => (host || '').replace(/^https?:\/\//, '').split('/')[0].toLowerCase())
       .filter(Boolean),
