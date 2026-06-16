@@ -1,6 +1,5 @@
 (() => {
   const FINAL = true;
-  let activeDeepScan = null;
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -261,249 +260,6 @@
     return String(value || '').replace(/^tiktok_/, '').trim();
   }
 
-  function simpleHash(value) {
-    let hash = 0;
-    const text = String(value || '');
-    for (let i = 0; i < text.length; i += 1) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
-    return Math.abs(hash).toString(36);
-  }
-
-  function createScanToken() {
-    if (activeDeepScan) activeDeepScan.cancelled = true;
-    activeDeepScan = { cancelled: false, startedAt: Date.now() };
-    return activeDeepScan;
-  }
-
-  function cancelActiveDeepScan() {
-    if (activeDeepScan) activeDeepScan.cancelled = true;
-  }
-
-  function isScanCancelled(token) {
-    if (!token) return false;
-    return token.cancelled || activeDeepScan !== token;
-  }
-
-  function scanEta(token, done, total) {
-    if (!token?.startedAt || !done || !total || total >= 15000) return '';
-    const elapsed = Math.max(1, Date.now() - token.startedAt);
-    const remaining = Math.max(0, total - done);
-    const ms = Math.round((elapsed / done) * remaining);
-    if (!Number.isFinite(ms) || ms <= 0) return '';
-    const seconds = Math.ceil(ms / 1000);
-    if (seconds < 60) return ` ETA ~${seconds}s`;
-    return ` ETA ~${Math.ceil(seconds / 60)} phút`;
-  }
-
-  function commentRecordKey(row) {
-    if (row?.source === 'dom') return `${row?.author_name || ''}|${row?.text || ''}`.toLowerCase();
-    return String(row?.id || row?.cid || `${row?.author_name || ''}|${row?.text || ''}`).toLowerCase();
-  }
-
-  function scoreCommentRecord(row, payload) {
-    const rawCommentId = stripTiktokPrefix(payload.comment_id);
-    const targetText = normalizeText(payload.comment_text).slice(0, 180);
-    const targetLoose = looseText(payload.comment_text).slice(0, 180);
-    const targetLooseShort = targetLoose.slice(0, Math.min(70, Math.max(24, targetLoose.length)));
-    const author = normalizeText(payload.author_name).slice(0, 80);
-    const authorLoose = looseText(payload.author_name).slice(0, 80);
-    const rowId = stripTiktokPrefix(row?.id || row?.cid || row?.comment_id || '');
-    const text = normalizeText(row?.text || row?.message || '');
-    const loose = looseText(row?.text || row?.message || '');
-    const rowAuthor = normalizeText(row?.author_name || '');
-    const rowAuthorLoose = looseText(row?.author_name || '');
-    let score = 0;
-    if (rawCommentId && rowId && rawCommentId === rowId) score += 3000;
-    if (rawCommentId && rowId && rowId.includes(rawCommentId)) score += 1800;
-    if (targetText && text.includes(targetText)) score += 1200;
-    if (targetLoose && loose.includes(targetLoose)) score += 1050;
-    if (targetLooseShort && targetLooseShort.length >= 12 && loose.includes(targetLooseShort)) score += 620;
-    if (author && rowAuthor.includes(author)) score += 160;
-    if (authorLoose && rowAuthorLoose.includes(authorLoose)) score += 120;
-    if (score > 0 && text.length > 450) score -= 80;
-    return score;
-  }
-
-  function findBestCommentRecord(rows, payload) {
-    let best = null;
-    for (const row of rows || []) {
-      const score = scoreCommentRecord(row, payload);
-      if (score > 0 && (!best || score > best.score)) best = { row, score };
-    }
-    return best?.score >= 520 ? best : null;
-  }
-
-  function normalizeTikTokApiComment(item, videoId, depth = 0, parentId = '') {
-    const user = item?.user || {};
-    const cid = String(item?.cid || item?.id || item?.comment_id || '').trim();
-    const text = String(item?.text || item?.share_info?.desc || '').trim();
-    if (!cid || !text) return null;
-    const authorName = String(user.nickname || user.unique_id || user.uid || 'Ẩn danh').trim();
-    return {
-      id: cid,
-      cid,
-      text,
-      author_name: authorName,
-      author_id: String(user.uid || user.sec_uid || user.unique_id || authorName || '').trim(),
-      create_time: item.create_time || null,
-      depth,
-      parent_comment_id: parentId,
-      video_id: videoId,
-      source: 'tiktok_api',
-    };
-  }
-
-  async function fetchTikTokCommentJson(path, params) {
-    const csrf = readCookie('tt_csrf_token') || readCookie('csrf_session_id');
-    const headers = {
-      Accept: 'application/json, text/plain, */*',
-      Referer: window.location.href,
-    };
-    if (csrf) {
-      headers['X-Secsdk-Csrf-Token'] = csrf;
-      headers['x-secsdk-csrf-token'] = csrf;
-    }
-    const response = await fetch(`${path}?${params.toString()}`, {
-      method: 'GET',
-      credentials: 'include',
-      headers,
-    });
-    let data = {};
-    try {
-      data = await response.json();
-    } catch (error) {
-      data = {};
-    }
-    if (!response.ok) throw new Error(`TikTok API lỗi ${response.status}: ${data.status_msg || data.message || response.statusText}`);
-    const statusCode = data.status_code;
-    if (statusCode !== 0 && statusCode !== '0' && statusCode !== undefined) {
-      throw new Error(data.status_msg || data.message || 'TikTok API không trả comment.');
-    }
-    return data;
-  }
-
-  async function scanTikTokCommentsByApi(payload, options = {}) {
-    const token = options.token;
-    const status = typeof options.status === 'function' ? options.status : null;
-    const limit = Math.max(1, Math.min(Number(options.limit || 500) || 500, 15000));
-    const videoId = getVideoId(payload);
-    if (!videoId) return { ok: false, comments: [], collected: 0, error: 'Không xác định được ID video TikTok.' };
-
-    const comments = [];
-    const seen = new Map();
-    let found = null;
-    let cursor = 0;
-    let page = 0;
-
-    async function fetchReplies(parentId, remain) {
-      const rows = [];
-      let replyCursor = 0;
-      for (let replyPage = 0; replyPage < 3 && rows.length < remain; replyPage += 1) {
-        if (isScanCancelled(token)) break;
-        const count = Math.min(30, remain - rows.length);
-        const params = new URLSearchParams({
-          item_id: videoId,
-          comment_id: parentId,
-          cursor: String(replyCursor),
-          count: String(count),
-          aid: '1988',
-          app_language: 'vi-VN',
-          browser_language: navigator.language || 'vi-VN',
-          device_platform: 'webapp',
-          region: 'VN',
-          os: 'windows',
-        });
-        const data = await fetchTikTokCommentJson('/api/comment/list/reply/', params);
-        const batch = Array.isArray(data.comments) ? data.comments : [];
-        if (!batch.length) break;
-        for (const item of batch) {
-          const row = normalizeTikTokApiComment(item, videoId, 1, parentId);
-          if (row) rows.push(row);
-          if (rows.length >= remain) break;
-        }
-        const nextCursor = Number(data.cursor ?? replyCursor);
-        if (!data.has_more || nextCursor === replyCursor) break;
-        replyCursor = nextCursor;
-      }
-      return rows;
-    }
-
-    try {
-      while (comments.length < limit && !isScanCancelled(token)) {
-        const count = Math.min(50, limit - comments.length);
-        const params = new URLSearchParams({
-          aweme_id: videoId,
-          cursor: String(cursor),
-          count: String(count),
-          aid: '1988',
-          app_language: 'vi-VN',
-          browser_language: navigator.language || 'vi-VN',
-          device_platform: 'webapp',
-          region: 'VN',
-          os: 'windows',
-        });
-        const data = await fetchTikTokCommentJson('/api/comment/list/', params);
-        const batch = Array.isArray(data.comments) ? data.comments : [];
-        if (!batch.length) break;
-
-        for (const item of batch) {
-          const row = normalizeTikTokApiComment(item, videoId, 0, '');
-          if (row) {
-            const key = commentRecordKey(row);
-            if (!seen.has(key)) {
-              seen.set(key, row);
-              comments.push(row);
-              const match = findBestCommentRecord([row], payload);
-              if (match) found = match;
-            }
-          }
-          const replyTotal = Number(item.reply_comment_total || item.reply_comment_count || 0);
-          if (!found && row?.id && replyTotal > 0 && comments.length < limit) {
-            try {
-              const replies = await fetchReplies(row.id, Math.min(20, limit - comments.length));
-              for (const reply of replies) {
-                const key = commentRecordKey(reply);
-                if (seen.has(key)) continue;
-                seen.set(key, reply);
-                comments.push(reply);
-                const match = findBestCommentRecord([reply], payload);
-                if (match) found = match;
-                if (found || comments.length >= limit) break;
-              }
-            } catch {
-              // Reply API is best effort.
-            }
-          }
-          if (found || comments.length >= limit || isScanCancelled(token)) break;
-        }
-
-        page += 1;
-        if (status) status(`Đang gọi API TikTok: đã gom ${comments.length} comment...${scanEta(token, comments.length, limit)}`);
-        if (found) break;
-        const nextCursor = Number(data.cursor ?? cursor);
-        if (!data.has_more || nextCursor === cursor) break;
-        cursor = nextCursor;
-        if (page % 8 === 0) await sleep(350);
-      }
-      return {
-        ok: comments.length > 0,
-        comments,
-        found,
-        collected: comments.length,
-        cancelled: isScanCancelled(token),
-        method: 'api',
-      };
-    } catch (error) {
-      return {
-        ok: comments.length > 0,
-        comments,
-        found,
-        collected: comments.length,
-        error: error?.message || String(error),
-        method: 'api',
-      };
-    }
-  }
-
   async function copyText(value) {
     const text = String(value || '');
     if (!text) return false;
@@ -590,17 +346,7 @@
         <button type="button" data-streal-copy-reply="true" style="border:0;background:#2563eb;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Copy câu trả lời</button>
         <button type="button" data-streal-copy-comment="true" style="border:1px solid rgba(148,163,184,.5);background:transparent;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Copy comment gốc</button>
         <button type="button" data-streal-auto-search="true" style="border:1px solid rgba(148,163,184,.5);background:transparent;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Tìm tự động</button>
-        <button type="button" data-streal-deep-search="true" style="border:1px solid rgba(96,165,250,.75);background:#1d4ed8;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Quét sâu</button>
-        <button type="button" data-streal-stop-search="true" style="display:none;border:1px solid rgba(248,113,113,.7);background:rgba(127,29,29,.5);color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Dừng</button>
         <button type="button" data-streal-open-search="true" style="border:1px solid rgba(148,163,184,.5);background:transparent;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer">Copy để tìm</button>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap;color:#cbd5e1;font-size:12px">
-        <span>Giới hạn quét sâu</span>
-        <select data-streal-deep-limit="true" style="background:#111827;color:#fff;border:1px solid rgba(148,163,184,.45);border-radius:10px;padding:8px 10px;font-weight:700">
-          <option value="200">200 comment</option>
-          <option value="500" selected>500 comment</option>
-          <option value="15000">Tới khi tìm thấy</option>
-        </select>
       </div>
       <div data-streal-card-status="true" style="margin-top:10px;color:#86efac;font-size:13px"></div>
     `;
@@ -628,38 +374,8 @@
       if (result.target) {
         setStatus(`Đã tìm thấy và tô xanh comment sau ${result.scrolled} lượt cuộn.`);
       } else {
-        setStatus(`Chưa thấy trong ${result.scanned} lượt quét nhanh. Nếu video nhiều comment, dùng "Quét sâu" để gọi API TikTok trước rồi fallback DOM.`);
+        setStatus(`Chưa thấy comment sau ${result.scanned} lượt quét. Có thể TikTok chưa tải comment này, comment đã bị xoá/ẩn hoặc đang nằm trong reply chưa mở.`);
       }
-    });
-    card.querySelector('[data-streal-deep-search="true"]')?.addEventListener('click', async () => {
-      const limitSelect = card.querySelector('[data-streal-deep-limit="true"]');
-      const stopButton = card.querySelector('[data-streal-stop-search="true"]');
-      const deepButton = card.querySelector('[data-streal-deep-search="true"]');
-      const limit = Number(limitSelect?.value || 500) || 500;
-      const token = createScanToken();
-      if (stopButton) stopButton.style.display = '';
-      if (deepButton) deepButton.disabled = true;
-      setStatus(`Đang quét sâu: ưu tiên API TikTok, giới hạn ${limit >= 15000 ? 'tới khi tìm thấy' : `${limit} comment`}...`);
-      const result = await deepSearchComment(payload, { limit, token, status: setStatus });
-      if (activeDeepScan === token) activeDeepScan = null;
-      if (stopButton) stopButton.style.display = 'none';
-      if (deepButton) deepButton.disabled = false;
-      if (result.cancelled) {
-        setStatus(`Đã dừng. Đã gom khoảng ${result.collected || result.apiCollected || 0} comment.`);
-      } else if (result.target) {
-        setStatus(`Đã tìm thấy và tô xanh comment. Đã gom ${result.collected || result.apiCollected || 0} comment.`);
-      } else if (result.apiFound || result.found) {
-        const foundRow = result.apiFound?.row || result.found?.row || {};
-        setStatus(`API đã tìm thấy comment (${foundRow.author_name || 'ẩn danh'}): "${String(foundRow.text || '').slice(0, 90)}"${result.warning ? `. ${result.warning}` : ''}`);
-      } else {
-        const collected = result.collected || result.apiCollected || 0;
-        const reason = result.apiError ? ` API lỗi: ${result.apiError}.` : '';
-        setStatus(`Đã quét/gom ${collected} comment nhưng chưa thấy. Có thể tăng giới hạn, comment nằm trong reply chưa tải hoặc đã bị ẩn.${reason}`);
-      }
-    });
-    card.querySelector('[data-streal-stop-search="true"]')?.addEventListener('click', () => {
-      cancelActiveDeepScan();
-      setStatus('Đang dừng quét sâu...');
     });
     card.querySelector('[data-streal-open-search="true"]')?.addEventListener('click', async () => {
       await copyText(commentText);
@@ -766,185 +482,6 @@
     return clicked;
   }
 
-  function parseVisibleCommentNode(node, index) {
-    if (!isVisible(node)) return null;
-    const rect = node.getBoundingClientRect();
-    if (rect.left < window.innerWidth * 0.45) return null;
-    const rawLines = String(node.innerText || node.textContent || '')
-      .split(/\n+/)
-      .map((line) => line.replace(/\s+/g, ' ').trim())
-      .filter(Boolean);
-    const lines = rawLines.filter((line) => {
-      const lower = normalizeText(line);
-      if (!lower || lower === 'bình luận' || lower === 'comments' || lower === 'bạn có thể thích' || lower === 'you may like') return false;
-      if (lower.includes('sponsored') || lower.includes('learn more')) return false;
-      if (/^\d+\s*bình luận$/.test(lower)) return false;
-      return true;
-    });
-    if (!lines.length) return null;
-    const author = lines[0]?.slice(0, 80) || 'Ẩn danh';
-    const messageParts = lines.slice(1).filter((line) => {
-      const lower = normalizeText(line);
-      if (/^(trả lời|reply|like|thích|xem.*trả lời|view.*repl)/.test(lower)) return false;
-      if (/^\d+(\.\d+)?[kmb]?$/.test(lower)) return false;
-      if (/^\d+\s*(giây|phút|giờ|ngày|tuần|tháng|năm)\s+trước$/.test(lower)) return false;
-      if (/^\d{1,2}-\d{1,2}$/.test(lower)) return false;
-      return true;
-    });
-    const text = messageParts.join(' ').replace(/\s+/g, ' ').trim();
-    if (!text || text === author || text.length < 2 || text.length > 900) return null;
-    return {
-      id: `dom_${simpleHash(`${author}|${text}|${index}`)}`,
-      text,
-      author_name: author,
-      source: 'dom',
-      node,
-    };
-  }
-
-  function collectVisibleCommentRecords(root, seen) {
-    const records = [];
-    const scope = root || findCommentScroller();
-    if (!scope) return records;
-    const selectors = [
-      '[data-e2e*="comment-level"]',
-      '[data-e2e*="comment-item"]',
-      '[class*="CommentItem"]',
-      '[class*="DivCommentContent"]',
-      '[class*="comment-item"]',
-      'div',
-    ];
-    let index = 0;
-    for (const selector of selectors) {
-      scope.querySelectorAll(selector).forEach((node) => {
-        const record = parseVisibleCommentNode(node, index);
-        index += 1;
-        if (!record) return;
-        const key = commentRecordKey(record);
-        if (seen.has(key)) return;
-        seen.set(key, record);
-        records.push(record);
-      });
-    }
-    return records;
-  }
-
-  async function deepScanDomForComment(payload, options = {}) {
-    const token = options.token;
-    const status = typeof options.status === 'function' ? options.status : null;
-    const limit = Math.max(1, Math.min(Number(options.limit || 500) || 500, 15000));
-    const maxScrolls = Math.max(20, Math.min(Number(options.maxScrolls || Math.ceil(limit / 8)) || 80, 1400));
-    const delayMs = Math.max(250, Math.min(Number(options.delayMs || 620) || 620, 1600));
-    const seen = new Map();
-
-    maybeOpenCommentPanel();
-    await sleep(550);
-    let scroller = await ensureCommentsTab(status);
-    if (!scroller) {
-      if (status) status('Không xác định được panel Bình luận, đã dừng để tránh cuộn nhầm video.');
-      return { target: null, collected: 0, scanned: 0, scrolled: 0, error: 'comment-scroller-not-found', method: 'dom' };
-    }
-
-    let stagnant = 0;
-    let lastCollected = 0;
-    let lastTop = -1;
-    for (let i = 0; i <= maxScrolls && seen.size < limit && !isScanCancelled(token); i += 1) {
-      expandVisibleReplies(4, scroller);
-      await sleep(i === 0 ? 220 : 120);
-      collectVisibleCommentRecords(scroller, seen);
-      const rows = Array.from(seen.values());
-      const match = findBestCommentRecord(rows, payload);
-      const target = findCommentCandidate(payload, scroller);
-      if (target) {
-        highlightCommentElement(target, payload);
-        return { target, found: match, collected: seen.size, scanned: i + 1, scrolled: i, method: 'dom' };
-      }
-      if (match && i >= 4) {
-        return { target: null, found: match, collected: seen.size, scanned: i + 1, scrolled: i, method: 'dom-memory' };
-      }
-      if (i === maxScrolls) break;
-      if (status) status(`Đang quét sâu DOM: đã gom ${seen.size} comment / ${i + 1} lượt cuộn...${scanEta(token, seen.size, limit)}`);
-
-      const latestScroller = findCommentScroller();
-      if (latestScroller) scroller = latestScroller;
-      const before = scrollCommentPanel(scroller);
-      if (before === null) break;
-      await sleep(delayMs);
-      const after = scroller.scrollTop || 0;
-      if (seen.size === lastCollected || Math.abs(after - lastTop) < 8 || Math.abs(after - before) < 8) stagnant += 1;
-      else stagnant = 0;
-      lastCollected = seen.size;
-      lastTop = after;
-      if (stagnant >= 8) break;
-    }
-    return {
-      target: null,
-      found: findBestCommentRecord(Array.from(seen.values()), payload),
-      collected: seen.size,
-      scanned: Math.min(maxScrolls + 1, Math.max(1, lastTop >= 0 ? maxScrolls : 1)),
-      scrolled: maxScrolls,
-      cancelled: isScanCancelled(token),
-      method: 'dom',
-    };
-  }
-
-  async function deepSearchComment(payload, options = {}) {
-    const token = options.token || createScanToken();
-    const status = typeof options.status === 'function' ? options.status : null;
-    const limit = Math.max(1, Math.min(Number(options.limit || 500) || 500, 15000));
-    const apiLimit = limit;
-    if (status) status(`Đang gọi API TikTok: gom tối đa ${apiLimit} comment...`);
-    const apiResult = await scanTikTokCommentsByApi(payload, { token, status, limit: apiLimit });
-    if (isScanCancelled(token)) return { cancelled: true, method: 'api', collected: apiResult.collected || 0 };
-
-    if (apiResult.found) {
-      if (status) status(`API đã tìm thấy comment sau khi gom ${apiResult.collected} comment. Đang thử tô xanh trên trang...`);
-      const domResult = await searchAndFocusComment(payload, {
-        maxScrolls: 96,
-        delayMs: 650,
-        status,
-        token,
-      });
-      if (domResult.target) {
-        return {
-          ...domResult,
-          apiFound: apiResult.found,
-          collected: apiResult.collected,
-          method: 'api+dom',
-        };
-      }
-      return {
-        target: null,
-        apiFound: apiResult.found,
-        found: apiResult.found,
-        collected: apiResult.collected,
-        scanned: domResult.scanned || 0,
-        method: 'api',
-        warning: 'API đã thấy comment nhưng TikTok chưa render comment đó trong panel để tô xanh.',
-      };
-    }
-
-    if (status) {
-      const prefix = apiResult.ok
-        ? `API đã gom ${apiResult.collected} comment nhưng chưa thấy.`
-        : `API lỗi${apiResult.error ? `: ${apiResult.error}` : ''}.`;
-      status(`${prefix} Chuyển sang quét sâu DOM...`);
-    }
-    const domResult = await deepScanDomForComment(payload, {
-      token,
-      status,
-      limit,
-      maxScrolls: Math.ceil(limit / 5),
-      delayMs: 620,
-    });
-    return {
-      ...domResult,
-      apiCollected: apiResult.collected || 0,
-      apiError: apiResult.error || '',
-      method: apiResult.ok ? 'api+dom-fallback' : 'dom-fallback',
-    };
-  }
-
   function scrollToCommentElement(target) {
     const scroller = nearestScrollableParent(target);
     if (!scroller) return false;
@@ -1034,7 +571,6 @@
     const maxScrolls = Number(options.maxScrolls || 32);
     const delayMs = Number(options.delayMs || 900);
     const status = typeof options.status === 'function' ? options.status : null;
-    const token = options.token || null;
     maybeOpenCommentPanel();
     await sleep(500);
 
@@ -1051,7 +587,7 @@
 
     let stagnant = 0;
     let lastTop = -1;
-    for (let i = 0; i <= maxScrolls && !isScanCancelled(token); i += 1) {
+    for (let i = 0; i <= maxScrolls; i += 1) {
       expandVisibleReplies(3, scroller);
       await sleep(i === 0 ? 250 : 150);
       const target = findCommentCandidate(payload, scroller);
