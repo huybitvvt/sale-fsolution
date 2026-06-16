@@ -29,27 +29,91 @@
   function rightSideVisible(el) {
     if (!isVisible(el)) return false;
     const rect = el.getBoundingClientRect();
-    return rect.left > window.innerWidth * 0.45 && rect.width > 80 && rect.height > 18;
+    return rect.left > window.innerWidth * 0.45 && rect.width > 12 && rect.height > 12;
+  }
+
+  function hardClick(el) {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+    };
+    try {
+      el.dispatchEvent(new PointerEvent('pointerdown', init));
+      el.dispatchEvent(new MouseEvent('mousedown', init));
+      el.dispatchEvent(new PointerEvent('pointerup', init));
+      el.dispatchEvent(new MouseEvent('mouseup', init));
+      el.dispatchEvent(new MouseEvent('click', init));
+      if (typeof el.click === 'function') el.click();
+      return true;
+    } catch (error) {
+      try {
+        if (typeof el.click === 'function') el.click();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  function bestClickableTabNode(node) {
+    let current = node;
+    for (let i = 0; i < 4 && current && current !== document.body; i += 1) {
+      const role = current.getAttribute?.('role') || '';
+      const tag = current.tagName || '';
+      const rect = current.getBoundingClientRect();
+      if (
+        rightSideVisible(current) &&
+        (role === 'tab' || role === 'button' || tag === 'BUTTON' || current.tabIndex >= 0) &&
+        rect.width < 260 &&
+        rect.height < 80
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return node;
   }
 
   function clickCommentsTab() {
     const candidates = Array.from(document.querySelectorAll('button, [role="tab"], [role="button"], div, span')).filter((node) => {
       if (!rightSideVisible(node)) return false;
+      if (node.closest('[data-streal-comment-context-card="true"], [data-streal-comment-badge="true"]')) return false;
+      const rawLines = String(node.innerText || node.textContent || '')
+        .toLowerCase()
+        .split(/\n+/)
+        .map((line) => normalizeText(line))
+        .filter(Boolean);
       const text = elementText(node);
-      return text === 'bình luận' || text === 'comments' || text === 'comment';
+      if (!text) return false;
+      if (text.includes('bạn có thể thích') || text.includes('you may like')) return false;
+      return text === 'bình luận' || text === 'comments' || text === 'comment' || rawLines.includes('bình luận') || rawLines.includes('comments');
     });
     const target = candidates.sort((a, b) => {
       const ar = a.getBoundingClientRect();
       const br = b.getBoundingClientRect();
-      return ar.top - br.top || ar.left - br.left;
+      const at = elementText(a);
+      const bt = elementText(b);
+      const exactScoreA = at === 'bình luận' || at === 'comments' || at === 'comment' ? -1000 : 0;
+      const exactScoreB = bt === 'bình luận' || bt === 'comments' || bt === 'comment' ? -1000 : 0;
+      return exactScoreA - exactScoreB || ar.top - br.top || ar.width - br.width;
     })[0];
     if (!target) return false;
-    try {
-      target.click();
-      return true;
-    } catch (error) {
-      return false;
+    return hardClick(bestClickableTabNode(target));
+  }
+
+  async function ensureCommentsTab(status) {
+    for (let i = 0; i < 4; i += 1) {
+      clickCommentsTab();
+      await sleep(i === 0 ? 500 : 800);
+      const scroller = findCommentScroller();
+      if (scroller) return scroller;
+      if (status) status(`Đang chuyển về tab Bình luận... lần ${i + 1}/4`);
     }
+    return null;
   }
 
   function maybeOpenCommentPanel() {
@@ -358,14 +422,16 @@
         if (rect.left < window.innerWidth * 0.46) return;
         const attr = `${node.className || ''} ${node.id || ''} ${node.getAttribute('data-e2e') || ''}`.toLowerCase();
         const text = normalizeText(node.innerText || node.textContent || '').slice(0, 500);
+        const isRecommendationPanel = text.includes('bạn có thể thích') || text.includes('you may like') || attr.includes('recommend') || attr.includes('suggest');
+        const hasCommentSignal = attr.includes('comment') || text.includes('bình luận') || text.includes('comment') || text.includes('trả lời') || text.includes('reply');
+        if (isRecommendationPanel && !hasCommentSignal) return;
+        if (!hasCommentSignal) return;
         let score = 0;
         if (rect.left > window.innerWidth * 0.48) score += 240;
         if (rect.right > window.innerWidth * 0.78) score += 80;
         if (attr.includes('comment')) score += 180;
         if (text.includes('bình luận') || text.includes('comment')) score += 120;
         if (text.includes('trả lời') || text.includes('reply')) score += 40;
-        if (text.includes('bạn có thể thích') || text.includes('you may like')) score -= 260;
-        if (attr.includes('recommend') || attr.includes('suggest')) score -= 220;
         score += Math.min(extraScroll / 20, 120);
         score -= Math.abs(rect.right - window.innerWidth) / 20;
         candidates.push({ node, score });
@@ -506,9 +572,9 @@
     const delayMs = Number(options.delayMs || 900);
     const status = typeof options.status === 'function' ? options.status : null;
     maybeOpenCommentPanel();
-    await sleep(900);
+    await sleep(500);
 
-    let scroller = findCommentScroller();
+    let scroller = await ensureCommentsTab(status);
     if (!scroller) {
       clickCommentsTab();
       await sleep(700);
@@ -534,6 +600,13 @@
       if (status) status(`Đang tìm comment... lượt ${i + 1}/${maxScrolls + 1}`);
       const latestScroller = findCommentScroller();
       if (latestScroller) scroller = latestScroller;
+      else {
+        scroller = await ensureCommentsTab(status);
+        if (!scroller) {
+          if (status) status('Không xác định được panel Bình luận, đã dừng để tránh quét Bạn có thể thích.');
+          break;
+        }
+      }
       const before = scrollCommentPanel(scroller);
       if (before === null) {
         if (status) status('Không còn xác định được panel bình luận TikTok, đã dừng để tránh cuộn nhầm video.');
