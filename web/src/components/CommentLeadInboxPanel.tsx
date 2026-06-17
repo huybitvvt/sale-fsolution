@@ -420,7 +420,7 @@ export function CommentLeadInboxPanel() {
     setBusy(true);
     setStatus('Đang tải inbox bình luận...');
     try {
-      const params = new URLSearchParams({ limit: '1000' });
+      const params = new URLSearchParams({ limit: '5000' });
       if (sourceFilter === 'tiktok') params.set('source', 'tiktok');
       else if (sourceFilter === 'instagram') params.set('source', 'instagram');
       else if (sourceFilter === 'facebook') params.set('source', 'facebook');

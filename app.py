@@ -11,7 +11,7 @@ import requests as _req
 from html import unescape
 from datetime import datetime, time, timezone, timedelta
 from email.utils import parsedate_to_datetime
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -2452,12 +2452,26 @@ def _facebook_comment_url(post_url: str, comment_id: str) -> str:
     return f'https://www.facebook.com/{comment_id}'
 
 
+def _url_with_query_param(url: str, key: str, value: str) -> str:
+    url = str(url or '').strip()
+    key = str(key or '').strip()
+    value = str(value or '').strip()
+    if not url or not key or not value:
+        return url
+    parts = urlsplit(url)
+    params = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != key]
+    params.append((key, value))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(params), parts.fragment))
+
+
 def _comment_url_for_row(source: str, post_url: str, comment_id: str) -> str:
     src = str(source or '').lower()
-    cid = str(comment_id or '').strip()
+    cid = str(comment_id or '').strip().replace('tiktok_', '', 1)
     post_url = str(post_url or '').strip()
     if 'tiktok' in src:
-        return f'{post_url}?comment={cid.replace("tiktok_", "")}' if post_url and cid else post_url
+        if post_url and cid and cid.isdigit():
+            return _url_with_query_param(post_url, 'comment', cid)
+        return post_url
     if 'facebook' in src:
         return _facebook_comment_url(post_url, cid)
     return post_url
@@ -5105,7 +5119,7 @@ def list_post_comments():
     source = (request.args.get('source') or '').strip().lower()
     post_id = (request.args.get('post_id') or '').strip()
     keyword = (request.args.get('keyword') or '').strip().lower()
-    limit = max(1, min(request.args.get('limit', 200, type=int), 1000))
+    limit = max(1, min(request.args.get('limit', 5000, type=int), 5000))
     rows, warning = _load_post_comment_rows(source=source, post_id=post_id, limit=limit)
     if keyword:
         rows = [row for row in rows if keyword in str(row.get('message') or '').lower()]

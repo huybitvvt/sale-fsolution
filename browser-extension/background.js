@@ -419,7 +419,7 @@ async function openTikTokCommentContext(request) {
   const payload = request.payload || {};
   const url = normalizeTikTokUrl({
     ...payload,
-    post_url: payload.post_url || payload.comment_url || payload.url,
+    post_url: payload.comment_url || payload.url || payload.post_url,
   });
   if (!url) {
     return {

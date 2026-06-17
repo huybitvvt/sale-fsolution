@@ -27,6 +27,7 @@ export type FbPost = {
   created_time?: string;
   permalink_url?: string;
   is_hidden?: boolean;
+  group_id?: string;
   _group_id?: string;
   _page_id?: string;
   _page_name?: string;
