@@ -3878,7 +3878,9 @@ def get_api(group_id: str) -> FacebookGroupAPI:
 def _require_auth_for_api():
     if request.method == 'OPTIONS':
         return None
-    public_endpoints = {'auth_status', 'auth_login', 'auth_setup'}
+    if request.method == 'GET' and request.path.rstrip('/') == '/api/groups/resolve':
+        return None
+    public_endpoints = {'auth_status', 'auth_login', 'auth_setup', 'api_resolve_group'}
     if request.path.startswith('/api/') and request.endpoint not in public_endpoints:
         if _setup_required():
             return jsonify({'ok': False, 'error': 'Cần setup tài khoản đầu tiên', 'setup_required': True}), 401
