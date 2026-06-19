@@ -22,7 +22,7 @@ type Props = {
   title?: string;
   kicker?: string;
   onSave: (payload: StaffPayload, staffId?: string) => Promise<boolean>;
-  onDelete: (staffId: string) => Promise<void>;
+  onDelete: (staffId: string, options?: { skipConfirm?: boolean }) => Promise<void>;
   onModalOpen?: () => void;
 };
 
@@ -223,6 +223,56 @@ export function StaffCookiePanel({
       return true;
     });
   }, [query, roleFilter, staff]);
+
+  const [selectedStaffIds, setSelectedStaffIds] = useState<Record<string, boolean>>({});
+
+  const selectableRows = useMemo(
+    () => rows.filter((item) => canManage && item.id && item.id !== currentStaff?.id),
+    [rows, canManage, currentStaff?.id],
+  );
+
+  const selectedIds = useMemo(
+    () => selectableRows.map((item) => item.id!).filter((id) => selectedStaffIds[id]),
+    [selectableRows, selectedStaffIds],
+  );
+
+  useEffect(() => {
+    const valid = new Set(staff.map((item) => item.id).filter(Boolean));
+    setSelectedStaffIds((prev) => {
+      const next = Object.fromEntries(Object.entries(prev).filter(([id]) => valid.has(id)));
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [staff]);
+
+  function toggleStaffSelection(staffId: string, checked: boolean) {
+    setSelectedStaffIds((prev) => {
+      const next = { ...prev };
+      if (checked) next[staffId] = true;
+      else delete next[staffId];
+      return next;
+    });
+  }
+
+  function toggleSelectAllStaff(checked: boolean) {
+    setSelectedStaffIds((prev) => {
+      const next = { ...prev };
+      selectableRows.forEach((item) => {
+        if (!item.id) return;
+        if (checked) next[item.id] = true;
+        else delete next[item.id];
+      });
+      return next;
+    });
+  }
+
+  async function deleteSelectedStaff() {
+    if (!selectedIds.length) return;
+    if (!confirm(`Xoá ${selectedIds.length} nhân sự đã chọn?`)) return;
+    for (const staffId of selectedIds) {
+      await onDelete(staffId, { skipConfirm: true });
+    }
+    setSelectedStaffIds({});
+  }
 
   function setField(key: 'name' | 'username' | 'password', value: string) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -441,6 +491,11 @@ export function StaffCookiePanel({
           <option value="admin">Admin</option>
           <option value="staff">Nhân sự</option>
         </select>
+        {canManage && selectedIds.length ? (
+          <button type="button" className="btn-cancel danger" onClick={() => void deleteSelectedStaff()}>
+            Xoá đã chọn ({selectedIds.length})
+          </button>
+        ) : null}
       </div>
 
       <div className="data-table-wrap">
@@ -448,7 +503,17 @@ export function StaffCookiePanel({
           <thead>
             <tr>
               <th className="select-col">
-                <input type="checkbox" disabled />
+                {canManage && selectableRows.length ? (
+                  <input
+                    type="checkbox"
+                    title="Chọn tất cả"
+                    checked={
+                      selectableRows.length > 0 &&
+                      selectableRows.every((item) => item.id && selectedStaffIds[item.id])
+                    }
+                    onChange={(e) => toggleSelectAllStaff(e.target.checked)}
+                  />
+                ) : null}
               </th>
               <th>Họ tên</th>
               <th>Tài khoản</th>
@@ -468,7 +533,13 @@ export function StaffCookiePanel({
                 return (
                   <tr key={item.id || item.username}>
                     <td className="select-col">
-                      <input type="checkbox" disabled />
+                      {canManage && item.id && item.id !== currentStaff?.id ? (
+                        <input
+                          type="checkbox"
+                          checked={!!selectedStaffIds[item.id]}
+                          onChange={(e) => toggleStaffSelection(item.id!, e.target.checked)}
+                        />
+                      ) : null}
                     </td>
                     <td>
                       <b>{item.name || 'Chưa đặt tên'}</b>

@@ -1086,7 +1086,8 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
 .select-col { width: 42px; text-align: center !important; }
 .select-col input { width: 16px; height: 16px; accent-color: #2563eb; }
 .staff-data-table { min-width: 1040px; }
-.staff-manager-panel .table-toolbar { margin-top: 4px; }
+.staff-manager-panel .table-toolbar .btn-cancel.danger { color: #e11d48; border-color: #fecdd3; }
+.staff-manager-panel .table-toolbar .btn-cancel.danger:hover { background: #fff1f2; }
 .settings-module .staff-manager-panel {
   border: 0;
   box-shadow: none;

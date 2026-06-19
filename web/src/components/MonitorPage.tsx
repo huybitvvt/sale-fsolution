@@ -2157,8 +2157,8 @@ export function MonitorPage() {
     }
   }
 
-  async function deleteStaffCookie(staffId: string) {
-    if (!confirm('Xoá cookie nhân sự này?')) return;
+  async function deleteStaffCookie(staffId: string, options?: { skipConfirm?: boolean }) {
+    if (!options?.skipConfirm && !confirm('Xoá nhân sự này?')) return;
     setStaffStatus('Đang xoá...');
     try {
       const r = await api(`/api/staff-cookies/${staffId}`, { method: 'DELETE' });
