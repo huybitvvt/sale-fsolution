@@ -18,3 +18,6 @@ data/managed_channels.json
 *.log
 
 .vercel
+.tmp_*.txt
+.tmp_*.json
+_debug_*.html

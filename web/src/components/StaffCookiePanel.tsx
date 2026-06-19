@@ -23,6 +23,7 @@ type Props = {
   kicker?: string;
   onSave: (payload: StaffPayload, staffId?: string) => Promise<boolean>;
   onDelete: (staffId: string) => Promise<void>;
+  onModalOpen?: () => void;
 };
 
 const EMPTY: StaffPayload = {
@@ -153,6 +154,7 @@ export function StaffCookiePanel({
   kicker = 'Quản lý tài khoản',
   onSave,
   onDelete,
+  onModalOpen,
 }: Props) {
   const [query, setQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
@@ -241,8 +243,9 @@ export function StaffCookiePanel({
   }
 
   function openAdd() {
+    onModalOpen?.();
     setEditingId('');
-    setForm({ ...EMPTY, facebook_cookies: [newCookieRow(0)] });
+    setForm({ ...EMPTY, facebook_cookies: [] });
     resetPicker();
     setCookieBridgeStatus('');
     setRevealedFormCookieIds(new Set());
@@ -250,6 +253,7 @@ export function StaffCookiePanel({
   }
 
   function openEdit(item: StaffAccount) {
+    onModalOpen?.();
     const cookies = (item.facebook_cookies || []).map((entry, index) => ({
       id: entry.id || `fb_${index}`,
       label: entry.label || `Cookie ${index + 1}`,
@@ -368,7 +372,7 @@ export function StaffCookiePanel({
     const payload: StaffPayload = {
       ...form,
       facebook_cookies: form.facebook_cookies
-        .filter((item) => String(item.cookie || '').trim() || item.id)
+        .filter((item) => String(item.cookie || '').trim())
         .map((item) => ({
           ...item,
           cookie: String(item.cookie || '').trim(),
@@ -734,9 +738,9 @@ export function StaffCookiePanel({
               </div>
             </div>
             <div className="field staff-cookie-field">
-              <label>Cookie Facebook (nhiều)</label>
+              <label>Cookie Facebook (tùy chọn — thêm sau cũng được)</label>
               <div className="staff-cookie-tools">
-                <span>Mỗi nhân sự có thể gắn nhiều cookie — dùng khi cần nhiều tài khoản FB.</span>
+                <span>Thêm mới có thể bỏ trống. Tên FB (nếu có cookie) được lấy nền sau khi lưu.</span>
                 <span>{bridgeReady ? 'Extension đã kết nối' : 'Có thể dán thủ công nếu chưa cài extension'}</span>
               </div>
               <div className="staff-fb-cookie-list">
@@ -796,7 +800,7 @@ export function StaffCookiePanel({
             </div>
           </div>
           <div className="modal-actions modal-actions-between">
-            <div className="modal-result">{editingId ? 'Mật khẩu và cookie có thể để trống nếu không đổi.' : ''}</div>
+            <div className="modal-result">{editingId ? 'Mật khẩu và cookie có thể để trống nếu không đổi.' : 'Cookie có thể thêm sau khi tạo tài khoản.'}</div>
             <div className="staff-modal-actions">
               <button type="button" className="btn-cancel" onClick={resetModal}>
                 Huỷ

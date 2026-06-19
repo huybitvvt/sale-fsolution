@@ -1415,15 +1415,19 @@ def _supabase_staff_write_warning(dropped: list[str]) -> str:
     )
 
 
-def _validate_staff_cookies(cookies: list[dict], required: bool = True) -> str:
-    rows = [item for item in cookies if str(item.get('cookie') or '').strip()]
-    if required and not rows:
-        return 'Thiếu cookie Facebook'
-    for item in rows:
-        if 'c_user=' not in str(item.get('cookie') or ''):
+def _sanitize_staff_cookie_rows(cookies: list[dict]) -> tuple[list[dict], str]:
+    valid: list[dict] = []
+    warnings: list[str] = []
+    for item in cookies:
+        cookie = str(item.get('cookie') or '').strip()
+        if not cookie:
+            continue
+        if 'c_user=' not in cookie:
             label = str(item.get('label') or 'Cookie').strip() or 'Cookie'
-            return f'{label} chưa có c_user, vui lòng kiểm tra lại'
-    return ''
+            warnings.append(f'{label}: bỏ qua vì thiếu c_user')
+            continue
+        valid.append(item)
+    return valid, ' | '.join(warnings)
 
 
 def _staff_with_active_cookie(staff: dict) -> dict:
@@ -1616,7 +1620,22 @@ def _fetch_facebook_profile(cookie: str, *, allow_token: bool = True, fast: bool
     return {'ok': False, 'name': '', 'id': user_id, 'error': 'Không đọc được tên Facebook'}
 
 
-def _enrich_staff_facebook_cookies_with_names(cookies: list[dict]) -> list[dict]:
+def _prepare_staff_facebook_cookies_for_save(cookies: list[dict], *, fetch_names: bool = False) -> list[dict]:
+    prepared = []
+    for item in cookies:
+        row = dict(item)
+        cookie_val = str(row.get('cookie') or '').strip()
+        if not cookie_val:
+            continue
+        if not row.get('facebook_user_id'):
+            row['facebook_user_id'] = _extract_cookie_user(cookie_val)
+        prepared.append(row)
+    if fetch_names and prepared:
+        return _enrich_staff_facebook_cookies_with_names(prepared, fast=True)
+    return prepared
+
+
+def _enrich_staff_facebook_cookies_with_names(cookies: list[dict], *, fast: bool = False) -> list[dict]:
     enriched = []
     profile_cache: dict[str, dict] = {}
     for item in cookies:
@@ -1627,7 +1646,7 @@ def _enrich_staff_facebook_cookies_with_names(cookies: list[dict]) -> list[dict]
         if cookie_val and not fb_name:
             cache_key = fb_id or cookie_val[:24]
             if cache_key not in profile_cache:
-                profile_cache[cache_key] = _fetch_facebook_profile(cookie_val)
+                profile_cache[cache_key] = _fetch_facebook_profile(cookie_val, fast=fast)
             profile = profile_cache[cache_key]
             if profile.get('ok'):
                 row['facebook_name'] = profile.get('name', '')
@@ -1869,6 +1888,88 @@ def _load_supabase_staff(username: str) -> tuple[dict, str]:
         return {}, str(e)
 
 
+def _load_supabase_staff_by_id(staff_id: str) -> tuple[dict, str]:
+    if not USE_SUPABASE:
+        return {}, ''
+    try:
+        row = sb.get_staff_user_by_id(staff_id, SUPABASE_STAFF_TABLE)
+        return row or {}, ''
+    except Exception as e:
+        return {}, str(e)
+
+
+def _upsert_staff_list_cache_row(row: dict) -> None:
+    global _staff_list_cache
+    normalized = _normalize_supabase_staff(row)
+    key = normalized.get('id') or normalized.get('username')
+    if not key:
+        return
+    rows = list(_staff_list_cache.get('rows') or [])
+    replaced = False
+    for index, item in enumerate(rows):
+        item_key = item.get('id') or item.get('username')
+        if item_key == key:
+            rows[index] = normalized
+            replaced = True
+            break
+    if not replaced:
+        rows.append(normalized)
+    _staff_list_cache = {
+        'rows': rows,
+        'warning': str(_staff_list_cache.get('warning') or ''),
+        'at': time_module.monotonic(),
+    }
+
+
+def _remove_staff_list_cache_row(staff_id: str = '', username: str = '') -> None:
+    global _staff_list_cache
+    rows = list(_staff_list_cache.get('rows') or [])
+    if not rows:
+        return
+    staff_id = str(staff_id or '').strip()
+    username = str(username or '').strip().lower()
+
+    def _should_remove(item: dict) -> bool:
+        if staff_id and str(item.get('id') or '') == staff_id:
+            return True
+        if username and str(item.get('username') or '').strip().lower() == username:
+            return True
+        return False
+
+    filtered = [item for item in rows if not _should_remove(item)]
+    if len(filtered) != len(rows):
+        _staff_list_cache = {
+            'rows': filtered,
+            'warning': str(_staff_list_cache.get('warning') or ''),
+            'at': time_module.monotonic(),
+        }
+
+
+def _schedule_staff_cookie_name_refresh(staff_id: str, cookies: list[dict]) -> None:
+    staff_id = str(staff_id or '').strip()
+    if not staff_id:
+        return
+    pending = [
+        item for item in cookies
+        if str(item.get('cookie') or '').strip() and not str(item.get('facebook_name') or '').strip()
+    ]
+    if not pending:
+        return
+
+    def _job():
+        try:
+            enriched = _enrich_staff_facebook_cookies_with_names(pending, fast=True)
+            if not any(str(item.get('facebook_name') or '').strip() for item in enriched):
+                return
+            merged = _merge_staff_facebook_cookies(enriched, {'id': staff_id, 'facebook_cookies': cookies})
+            _persist_facebook_cookie_names({'id': staff_id}, merged)
+            _upsert_staff_list_cache_row({'id': staff_id, 'facebook_cookies': merged})
+        except Exception:
+            pass
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
 def _list_supabase_staff() -> tuple[list, str]:
     if not USE_SUPABASE:
         return [], ''
@@ -1893,7 +1994,7 @@ def _invalidate_staff_list_cache() -> None:
     _staff_list_cache = {'rows': None, 'warning': '', 'at': 0.0}
 
 
-def _merged_public_staff_rows() -> tuple[list, str]:
+def _merged_public_staff_rows(*, refresh_remote: bool = True) -> tuple[list, str]:
     merged: dict[str, dict] = {}
     for item in _staff_accounts():
         if not _as_enabled(item.get('enabled', True)):
@@ -1902,7 +2003,14 @@ def _merged_public_staff_rows() -> tuple[list, str]:
         if key:
             merged[key] = item
 
-    remote_rows, warning = _list_supabase_staff()
+    if refresh_remote:
+        remote_rows, warning = _list_supabase_staff()
+    else:
+        cached_rows = _staff_list_cache.get('rows')
+        if cached_rows is not None:
+            remote_rows, warning = cached_rows, str(_staff_list_cache.get('warning') or '')
+        else:
+            remote_rows, warning = _list_supabase_staff()
     for item in remote_rows:
         if not _as_enabled(item.get('enabled', True)):
             continue
@@ -3876,11 +3984,11 @@ def auth_setup():
             'setup_required': False,
             'error': 'Hệ thống đã có admin. Vui lòng đăng nhập bằng tài khoản đã tạo.',
         }), 409
-    if not name or not username or not password or not cookie:
-        return jsonify({'ok': False, 'error': 'Nhập đủ tên, tài khoản, mật khẩu và cookie'}), 400
+    if not name or not username or not password:
+        return jsonify({'ok': False, 'error': 'Nhập đủ tên, tài khoản và mật khẩu'}), 400
     if len(password) < 6:
         return jsonify({'ok': False, 'error': 'Mật khẩu tối thiểu 6 ký tự'}), 400
-    if 'c_user=' not in cookie:
+    if cookie and 'c_user=' not in cookie:
         return jsonify({'ok': False, 'error': 'Cookie chưa có c_user, vui lòng kiểm tra lại'}), 400
 
     salt, digest = _hash_password(password)
@@ -5504,22 +5612,73 @@ def tiktok_config_delete():
     return jsonify({'ok': True, 'config': _public_tiktok_config(), 'storage': 'supabase' if USE_SUPABASE else 'local'})
 
 
+def _lookup_local_group(slug: str):
+    slug = str(slug or '').strip().strip('/')
+    if not slug:
+        return None
+    for row in _merged_facebook_groups():
+        gid = str(row.get('id') or '').strip()
+        if gid and gid == slug:
+            name = str(row.get('name') or '').strip()
+            return {'id': gid, 'name': name or gid}
+    return None
+
+
+def _safe_group_membership(api, group_id: str):
+    if not group_id:
+        return None
+    if not getattr(api, 'access_token', None) and not getattr(api, 'cookie', None):
+        return None
+    try:
+        return bool(api.check_membership(group_id))
+    except Exception:
+        return None
+
+
 @app.route('/api/groups/resolve')
 def api_resolve_group():
-    slug = request.args.get('slug', '').strip()
+    slug = request.args.get('slug', '').strip().strip('/')
     if not slug:
         return jsonify({'ok': False, 'error': 'Thiếu slug'}), 400
+
+    local = _lookup_local_group(slug)
+    if local:
+        api = get_api(DEFAULT_GROUP)
+        return jsonify({
+            'ok': True,
+            'id': local['id'],
+            'name': local['name'],
+            'is_member': _safe_group_membership(api, local['id']),
+            'source': 'local',
+        })
+
+    if re.fullmatch(r'\d{6,}', slug):
+        api = get_api(DEFAULT_GROUP)
+        return jsonify({
+            'ok': True,
+            'id': slug,
+            'name': slug,
+            'is_member': _safe_group_membership(api, slug),
+            'source': 'numeric-id',
+        })
+
     try:
         api = get_api(DEFAULT_GROUP)
-        data = api.resolve_slug(slug)
-        if data and 'id' in data:
-            is_member = api.check_membership(data['id'])
-            return jsonify({'ok': True, 'id': data['id'], 'name': data.get('name', slug), 'is_member': is_member})
-        if data is None and not api.access_token:
+        if not api.access_token and not api.cookie:
             return jsonify({
                 'ok': False,
-                'error': 'Cookie/token Facebook hết hạn — cập nhật data/cookie.txt rồi restart server',
-            }), 401
+                'error': 'Chưa có cookie Facebook. Vào Nhân sự để thêm cookie hoặc nhập trực tiếp ID nhóm.',
+                'facebook_auth_required': True,
+            }), 400
+        data = api.resolve_slug(slug)
+        if data and 'id' in data:
+            return jsonify({
+                'ok': True,
+                'id': data['id'],
+                'name': data.get('name', slug),
+                'is_member': _safe_group_membership(api, data['id']),
+                'source': 'facebook',
+            })
         err = (data or {}).get('error', {}).get('message', 'Không tìm thấy group')
         return jsonify({'ok': False, 'error': err})
     except Exception as e:
@@ -6057,97 +6216,108 @@ def staff_cookies_save():
     global _staff_cookies
     if not _is_admin():
         return jsonify({'ok': False, 'error': 'Chỉ admin được thêm nhân sự'}), 403
-    body = request.get_json() or {}
-    name = str(body.get('name') or '').strip()[:80]
-    username = str(body.get('username') or '').strip().lower()[:60]
-    password = str(body.get('password') or '')
-    managed_groups = _normalize_staff_managed_groups(body.get('managed_groups'))
-    facebook_cookies = _normalize_staff_facebook_cookies(
-        body.get('facebook_cookies'),
-        body.get('cookie', ''),
-    )
-    facebook_cookies = [item for item in facebook_cookies if str(item.get('cookie') or '').strip()]
-    facebook_cookies = _enrich_staff_facebook_cookies_with_names(facebook_cookies)
-    cookie = _primary_staff_cookie({'facebook_cookies': facebook_cookies, 'cookie': ''})
-    cookie_error = _validate_staff_cookies(facebook_cookies, required=True)
-    if cookie_error:
-        return jsonify({'ok': False, 'error': cookie_error}), 400
-    if not name:
-        return jsonify({'ok': False, 'error': 'Thiếu tên nhân sự'}), 400
-    if not username:
-        return jsonify({'ok': False, 'error': 'Thiếu tài khoản đăng nhập'}), 400
-    if len(password) < 6:
-        return jsonify({'ok': False, 'error': 'Mật khẩu tối thiểu 6 ký tự'}), 400
+    try:
+        body = request.get_json() or {}
+        name = str(body.get('name') or '').strip()[:80]
+        username = str(body.get('username') or '').strip().lower()[:60]
+        password = str(body.get('password') or '')
+        managed_groups = _normalize_staff_managed_groups(body.get('managed_groups'))
+        facebook_cookies = _normalize_staff_facebook_cookies(
+            body.get('facebook_cookies'),
+            body.get('cookie', ''),
+        )
+        facebook_cookies, cookie_warning = _sanitize_staff_cookie_rows(facebook_cookies)
+        facebook_cookies = _prepare_staff_facebook_cookies_for_save(facebook_cookies, fetch_names=False)
+        cookie = _primary_staff_cookie({'facebook_cookies': facebook_cookies, 'cookie': ''})
+        if not name:
+            return jsonify({'ok': False, 'error': 'Thiếu tên nhân sự'}), 400
+        if not username:
+            return jsonify({'ok': False, 'error': 'Thiếu tài khoản đăng nhập'}), 400
+        if len(password) < 6:
+            return jsonify({'ok': False, 'error': 'Mật khẩu tối thiểu 6 ký tự'}), 400
 
-    staff = _staff_cookies.setdefault('staff', [])
-    if any(item.get('username') == username for item in staff):
-        return jsonify({'ok': False, 'error': 'Tài khoản đăng nhập đã tồn tại'}), 400
-    if USE_SUPABASE:
-        existing_row, existing_error = _load_supabase_staff(username)
-        if existing_row and _as_enabled(existing_row.get('enabled', True)):
-            return jsonify({'ok': False, 'error': 'Tài khoản đăng nhập đã tồn tại trong Supabase'}), 400
-        if existing_error and 'Could not find the table' in existing_error:
-            return jsonify({'ok': False, 'error': f'Chưa có bảng {SUPABASE_STAFF_TABLE} trong Supabase'}), 500
-    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
-    saved_id = uuid.uuid4().hex[:12]
-    salt, digest = _hash_password(password)
-    remote_row = {
-        'id': saved_id,
-        'name': name,
-        'username': username,
-        'password': password,
-        'role': 'staff',
-        'cookie': cookie,
-        'facebook_user_id': _extract_cookie_user(cookie),
-        'managed_groups': managed_groups,
-        'facebook_cookies': facebook_cookies,
-        'enabled': True,
-    }
-    if USE_SUPABASE:
+        staff = _staff_cookies.setdefault('staff', [])
+        if any(item.get('username') == username for item in staff):
+            return jsonify({'ok': False, 'error': 'Tài khoản đăng nhập đã tồn tại'}), 400
+        existing_row = {}
+        if USE_SUPABASE:
+            existing_row, existing_error = _load_supabase_staff(username)
+            if existing_row and _as_enabled(existing_row.get('enabled', True)):
+                return jsonify({'ok': False, 'error': 'Tài khoản đăng nhập đã tồn tại trong Supabase'}), 400
+            if existing_error and 'Could not find the table' in existing_error:
+                return jsonify({'ok': False, 'error': f'Chưa có bảng {SUPABASE_STAFF_TABLE} trong Supabase'}), 500
+        now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+        saved_id = uuid.uuid4().hex[:12]
+        salt, digest = _hash_password(password)
+        remote_row = {
+            'id': saved_id,
+            'name': name,
+            'username': username,
+            'password': password,
+            'role': 'staff',
+            'cookie': cookie,
+            'facebook_user_id': _extract_cookie_user(cookie),
+            'managed_groups': managed_groups,
+            'facebook_cookies': facebook_cookies,
+            'enabled': True,
+        }
         write_warning = ''
-        try:
-            if existing_row and not _as_enabled(existing_row.get('enabled', True)):
-                remote_row['id'] = existing_row.get('id') or saved_id
-                _, dropped = sb.update_staff_user(username, remote_row, SUPABASE_STAFF_TABLE)
-                saved_id = remote_row['id']
-            else:
-                _, dropped = sb.insert_staff_user(remote_row, SUPABASE_STAFF_TABLE)
-            write_warning = _supabase_staff_write_warning(dropped)
-        except Exception as e:
-            return jsonify({'ok': False, 'error': f'Không lưu được nhân sự lên Supabase: {e}'}), 500
-    else:
-        write_warning = ''
+        if USE_SUPABASE:
+            try:
+                if existing_row and not _as_enabled(existing_row.get('enabled', True)):
+                    remote_row['id'] = existing_row.get('id') or saved_id
+                    _, dropped = sb.update_staff_user(username, remote_row, SUPABASE_STAFF_TABLE)
+                    saved_id = remote_row['id']
+                else:
+                    _, dropped = sb.insert_staff_user(remote_row, SUPABASE_STAFF_TABLE)
+                write_warning = _supabase_staff_write_warning(dropped)
+            except Exception as e:
+                err = str(e)
+                if sb.is_missing_column_error(err):
+                    missing = []
+                    if 'facebook_cookies' in err:
+                        missing.append('facebook_cookies')
+                    if 'managed_groups' in err:
+                        missing.append('managed_groups')
+                    if 'active_cookie_id' in err:
+                        missing.append('active_cookie_id')
+                    write_warning = _supabase_staff_write_warning(missing or ['facebook_cookies'])
+                else:
+                    write_warning = f'Không lưu được nhân sự lên Supabase: {err}. Đã lưu cục bộ.'
 
-    local_row = {
-        'id': saved_id,
-        'name': name,
-        'username': username,
-        'password_salt': salt,
-        'password_hash': digest,
-        'cookie': cookie,
-        'role': 'staff',
-        'managed_groups': managed_groups,
-        'facebook_cookies': facebook_cookies,
-        'enabled': True,
-        'created_at': now,
-        'updated_at': now,
-    }
-    staff.append(local_row)
-    if not _staff_cookies.get('active_staff_id'):
-        _staff_cookies['active_staff_id'] = saved_id
-    _save_staff_cookies()
-    _invalidate_facebook_cache()
-    _invalidate_staff_list_cache()
-    staff_rows, warning = _merged_public_staff_rows()
-    warnings = [part for part in [warning, write_warning] if part]
-    return jsonify({
-        'ok': True,
-        'active_staff_id': _current_staff_id(),
-        'staff': staff_rows,
-        'can_manage': True,
-        'storage': 'supabase' if USE_SUPABASE else 'local',
-        'warning': ' | '.join(warnings),
-    })
+        local_row = {
+            'id': saved_id,
+            'name': name,
+            'username': username,
+            'password_salt': salt,
+            'password_hash': digest,
+            'cookie': cookie,
+            'role': 'staff',
+            'managed_groups': managed_groups,
+            'facebook_cookies': facebook_cookies,
+            'enabled': True,
+            'created_at': now,
+            'updated_at': now,
+        }
+        staff.append(local_row)
+        if not _staff_cookies.get('active_staff_id'):
+            _staff_cookies['active_staff_id'] = saved_id
+        _save_staff_cookies()
+        _invalidate_facebook_cache()
+        _upsert_staff_list_cache_row(local_row)
+        _schedule_staff_cookie_name_refresh(saved_id, facebook_cookies)
+        staff_rows, warning = _merged_public_staff_rows(refresh_remote=False)
+        warnings = [part for part in [warning, write_warning, cookie_warning] if part]
+        return jsonify({
+            'ok': True,
+            'active_staff_id': _current_staff_id(),
+            'staff': staff_rows,
+            'can_manage': True,
+            'storage': 'supabase' if USE_SUPABASE else 'local',
+            'warning': ' | '.join(warnings),
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'Không lưu được nhân sự: {e}'}), 500
 
 
 @app.route('/api/staff-cookies/<staff_id>', methods=['PUT', 'PATCH'])
@@ -6161,8 +6331,9 @@ def staff_cookies_update(staff_id):
     remote_target = {}
     remote_warning = ''
     if USE_SUPABASE:
-        remote_rows, remote_warning = _list_supabase_staff()
-        remote_target = next((item for item in remote_rows if item.get('id') == staff_id), {})
+        remote_row_raw, remote_warning = _load_supabase_staff_by_id(staff_id)
+        if remote_row_raw:
+            remote_target = _normalize_supabase_staff(remote_row_raw)
 
     # Supabase is the source of truth in production. Local JSON can be stale
     # after deploys, so let remote values win when both records exist.
@@ -6180,7 +6351,8 @@ def staff_cookies_update(staff_id):
     if incoming_cookies is None and body.get('cookie'):
         incoming_cookies = [{'id': 'primary', 'label': 'Cookie chính', 'cookie': body.get('cookie', '')}]
     facebook_cookies = _merge_staff_facebook_cookies(incoming_cookies, target)
-    facebook_cookies = _enrich_staff_facebook_cookies_with_names(facebook_cookies)
+    facebook_cookies, cookie_warning = _sanitize_staff_cookie_rows(facebook_cookies)
+    facebook_cookies = _prepare_staff_facebook_cookies_for_save(facebook_cookies, fetch_names=False)
     cookie = _primary_staff_cookie({'facebook_cookies': facebook_cookies, 'cookie': target.get('cookie', '')})
 
     if not name:
@@ -6189,9 +6361,6 @@ def staff_cookies_update(staff_id):
         return jsonify({'ok': False, 'error': 'Thiếu tài khoản đăng nhập'}), 400
     if password and len(password) < 6:
         return jsonify({'ok': False, 'error': 'Mật khẩu tối thiểu 6 ký tự'}), 400
-    cookie_error = _validate_staff_cookies(facebook_cookies, required=False)
-    if cookie_error:
-        return jsonify({'ok': False, 'error': cookie_error}), 400
 
     for item in staff:
         if item.get('id') != staff_id and item.get('username') == username and _as_enabled(item.get('enabled', True)):
@@ -6274,7 +6443,21 @@ def staff_cookies_update(staff_id):
 
     _save_staff_cookies()
     _invalidate_facebook_cache()
-    _invalidate_staff_list_cache()
+    cache_row = local_target or {
+        'id': staff_id,
+        'name': name,
+        'username': username,
+        'role': target.get('role') or 'staff',
+        'managed_groups': managed_groups,
+        'facebook_cookies': facebook_cookies,
+        'cookie': cookie,
+        'facebook_user_id': _extract_cookie_user(cookie),
+        'enabled': True,
+        'created_at': target.get('created_at') or now,
+        'updated_at': now,
+    }
+    _upsert_staff_list_cache_row(cache_row)
+    _schedule_staff_cookie_name_refresh(staff_id, facebook_cookies)
 
     if staff_id == _current_staff_id():
         refreshed_staff = {
@@ -6289,8 +6472,8 @@ def staff_cookies_update(staff_id):
         refreshed_staff['facebook_user_id'] = _extract_cookie_user(cookie)
         _set_logged_in_staff(refreshed_staff)
 
-    staff_rows, warning = _merged_public_staff_rows()
-    warnings = [part for part in [warning, remote_warning, write_warning] if part]
+    staff_rows, warning = _merged_public_staff_rows(refresh_remote=False)
+    warnings = [part for part in [warning, remote_warning, write_warning, cookie_warning] if part]
     return jsonify({
         'ok': True,
         'active_staff_id': _current_staff_id(),
@@ -6328,8 +6511,8 @@ def staff_cookies_delete(staff_id):
         pass
     _save_staff_cookies()
     _invalidate_facebook_cache()
-    _invalidate_staff_list_cache()
-    staff_rows, warning = _merged_public_staff_rows()
+    _remove_staff_list_cache_row(staff_id, target.get('username', ''))
+    staff_rows, warning = _merged_public_staff_rows(refresh_remote=False)
     return jsonify({'ok': True, 'active_staff_id': _current_staff_id(), 'staff': staff_rows, 'can_manage': True, 'warning': warning})
 
 
@@ -7178,6 +7361,6 @@ _load_state()
 threading.Thread(target=_poll_telegram, daemon=True).start()
 
 if __name__ == '__main__':
-    print(f'[server] supabase={"on" if USE_SUPABASE else "off"} | http://localhost:{PORT}')
+    print(f'[server] supabase={"on" if USE_SUPABASE else "off"} | staff cookie optional | http://localhost:{PORT}')
     app.run(debug=False, host='0.0.0.0', port=PORT, threaded=True)
 

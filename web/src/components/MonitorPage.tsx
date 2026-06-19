@@ -266,6 +266,17 @@ export function MonitorPage() {
   const checkAuth = useCallback(async () => {
     try {
       const r = await api('/api/auth/status');
+      if (!r.ok) {
+        setSetupRequired(false);
+        setAuthenticated(false);
+        setCurrentStaff(null);
+        setAuthStatus(
+          r.status >= 500
+            ? 'Backend chưa chạy (port 5000). Chạy npm run dev:backend hoặc npm run dev.'
+            : `Không kiểm tra được đăng nhập (${r.status})`,
+        );
+        return;
+      }
       const d = await r.json();
       setSetupRequired(!!d.setup_required && !d.simple_login);
       setAuthenticated(!!d.authenticated);
@@ -647,7 +658,12 @@ export function MonitorPage() {
       const r = await api('/api/groups/resolve?slug=' + encodeURIComponent(gid));
       const d = await r.json();
       if (d.ok && d.name) {
-        setGroupNames((prev) => ({ ...prev, [gid]: d.name }));
+        setGroupNames((prev) => {
+          const cached = prev[gid];
+          if (cached && cached !== gid) return prev;
+          if (prev[gid] === d.name) return prev;
+          return { ...prev, [gid]: d.name };
+        });
       }
     } catch {
       /* ignore */
@@ -2089,18 +2105,25 @@ export function MonitorPage() {
   }
 
   async function saveStaffCookie(payload: StaffPayload, staffId?: string) {
+    setStaffStatus('');
     if (!payload.name.trim() || !payload.username.trim()) {
       setStaffStatus('Nhập đủ tên và tài khoản đăng nhập');
       return false;
     }
     const cookies = (payload.facebook_cookies || []).filter((item) => String(item.cookie || '').trim());
-    if (!staffId && (!payload.password || !cookies.length)) {
-      setStaffStatus('Nhập đủ mật khẩu và ít nhất một cookie Facebook khi thêm nhân sự');
+    const skippedCookies = (payload.facebook_cookies || []).filter(
+      (item) => String(item.cookie || '').trim() && !String(item.cookie || '').includes('c_user='),
+    );
+    payload = {
+      ...payload,
+      facebook_cookies: cookies.filter((item) => String(item.cookie || '').includes('c_user=')),
+    };
+    if (!staffId && !payload.password) {
+      setStaffStatus('Nhập mật khẩu khi thêm nhân sự');
       return false;
     }
-    const invalidCookie = cookies.find((item) => !String(item.cookie || '').includes('c_user='));
-    if (invalidCookie) {
-      setStaffStatus(`Cookie "${invalidCookie.label || 'Facebook'}" chưa có c_user`);
+    if (!staffId && payload.password.length < 6) {
+      setStaffStatus('Mật khẩu tối thiểu 6 ký tự');
       return false;
     }
     setStaffStatus(staffId ? 'Đang cập nhật nhân sự...' : 'Đang lưu nhân sự...');
@@ -2109,6 +2132,7 @@ export function MonitorPage() {
         method: staffId ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        timeoutMs: 15000,
       });
       const d = await r.json().catch(() => ({
         ok: false,
@@ -2121,7 +2145,7 @@ export function MonitorPage() {
         const savedStaff = (d.staff || []).find((item: StaffAccount) => item.id === staffId);
         const cookieCount = savedStaff?.facebook_cookies?.length || 0;
         const cookieNote = cookieCount > 1 ? ` · ${cookieCount} cookie FB` : '';
-        setStaffStatus(`${staffId ? '✅ Đã cập nhật nhân sự' : '✅ Đã thêm nhân sự'} (${storageText})${cookieNote}${d.warning ? ` · ${d.warning}` : ''}`);
+        setStaffStatus(`${staffId ? '✅ Đã cập nhật nhân sự' : '✅ Đã thêm nhân sự'} (${storageText})${cookieNote}${d.warning ? ` · ${d.warning}` : ''}${skippedCookies.length ? ` · Bỏ qua ${skippedCookies.length} cookie thiếu c_user` : ''}`);
         return true;
       } else {
         setStaffStatus('❌ ' + (d.error || 'Lỗi lưu nhân sự'));
@@ -2304,6 +2328,7 @@ export function MonitorPage() {
                 kicker="Quản lý tài khoản"
                 onSave={saveStaffCookie}
                 onDelete={deleteStaffCookie}
+                onModalOpen={() => setStaffStatus('')}
               />
           ) : null}
 

@@ -1,0 +1,13 @@
+{
+  "name": "seeding-fb",
+  "private": true,
+  "description": "Repo gốc. Vercel phải đặt Root Directory = web",
+  "scripts": {
+    "build": "npm --prefix web run build",
+    "dev": "start \"Flask :5000\" cmd /k \"npm run dev:backend\" && npm --prefix web run dev",
+    "dev:web": "npm --prefix web run dev",
+    "dev:backend": "python app.py",
+    "start": "npm --prefix web run start",
+    "vercel-build": "npm --prefix web install && npm --prefix web run build"
+  }
+}

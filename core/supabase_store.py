@@ -147,14 +147,29 @@ def get_staff_user(username: str, table: Optional[str] = None) -> Optional[dict]
     return rows[0] if rows else None
 
 
+def get_staff_user_by_id(staff_id: str, table: Optional[str] = None) -> Optional[dict]:
+    staff_id = (staff_id or '').strip()
+    if not staff_id:
+        return None
+    table_name = table or STAFF_USERS_TABLE
+    encoded = quote(staff_id, safe='')
+    r = _request('GET', f'{table_name}?select=*&id=eq.{encoded}&limit=1')
+    rows = r.json()
+    return rows[0] if rows else None
+
+
 _OPTIONAL_STAFF_JSON_COLUMNS = (
     'managed_groups',
     'facebook_cookies',
     'active_cookie_id',
 )
 _KNOWN_MISSING_STAFF_COLUMNS: set[str] = set()
-_SENSITIVE_STAFF_FIELDS = frozenset({
+_SENSITIVE_STAFF_READ_FIELDS = frozenset({
     'password',
+    'password_hash',
+    'password_salt',
+})
+_SENSITIVE_STAFF_WRITE_FIELDS = frozenset({
     'password_hash',
     'password_salt',
 })
@@ -162,7 +177,7 @@ _SENSITIVE_STAFF_FIELDS = frozenset({
 
 def _sanitize_staff_row_read(row: dict) -> dict:
     cleaned = dict(row or {})
-    for key in _SENSITIVE_STAFF_FIELDS:
+    for key in _SENSITIVE_STAFF_READ_FIELDS:
         cleaned.pop(key, None)
     cleaned.setdefault('managed_groups', [])
     cleaned.setdefault('facebook_cookies', [])
@@ -174,7 +189,7 @@ def is_missing_column_error(message: str) -> bool:
 
 
 def _write_staff_payload(row: dict) -> dict:
-    return {k: v for k, v in (row or {}).items() if k not in _SENSITIVE_STAFF_FIELDS}
+    return {k: v for k, v in (row or {}).items() if k not in _SENSITIVE_STAFF_WRITE_FIELDS}
 
 
 def _is_missing_supabase_column_error(message: str) -> bool:

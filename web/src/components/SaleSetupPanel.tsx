@@ -28,6 +28,7 @@ type Props = {
   staffKicker?: string;
   onSaveStaff: (payload: StaffPayload, staffId?: string) => Promise<boolean>;
   onDeleteStaff: (staffId: string) => Promise<void>;
+  onStaffModalOpen?: () => void;
 };
 
 export function SaleSetupPanel(props: Props) {
@@ -55,6 +56,7 @@ export function SaleSetupPanel(props: Props) {
     staffKicker = 'Quản lý đăng nhập',
     onSaveStaff,
     onDeleteStaff,
+    onStaffModalOpen,
   } = props;
 
   return (
@@ -115,6 +117,7 @@ export function SaleSetupPanel(props: Props) {
             kicker={staffKicker}
             onSave={onSaveStaff}
             onDelete={onDeleteStaff}
+            onModalOpen={onStaffModalOpen}
           />
         </>
       ) : null}

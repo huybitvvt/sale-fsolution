@@ -99,8 +99,8 @@ export function AuthPanel({ mode, status, onLogin, onSetup }: Props) {
           </div>
           {isSetup ? (
             <div className="auth-field">
-              <label>Cookie Facebook</label>
-              <textarea value={cookie} onChange={(e) => setCookie(e.target.value)} placeholder="Dán cookie có c_user=..." />
+              <label>Cookie Facebook (tuỳ chọn)</label>
+              <textarea value={cookie} onChange={(e) => setCookie(e.target.value)} placeholder="Có thể thêm sau ở mục Nhân sự" />
             </div>
           ) : null}
           {status ? <div className="auth-status">{status}</div> : null}
