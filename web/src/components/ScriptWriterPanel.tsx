@@ -562,11 +562,12 @@ export function ScriptWriterPanel() {
   }, [selected]);
 
   const mentionMatch = useMemo(() => {
-    const match = chatInput.match(/@([^\s@]*)$/);
+    const matches = Array.from(chatInput.matchAll(/@([^\s@]*)/g));
+    const match = matches[matches.length - 1];
     return match ? match[1].toLocaleLowerCase('vi') : '';
   }, [chatInput]);
 
-  const mentionOpen = /@([^\s@]*)$/.test(chatInput);
+  const mentionOpen = /@([^\s@]*)/.test(chatInput);
   const mentionSuggestions = useMemo(() => {
     if (!mentionOpen) return [];
     return techniques
@@ -666,7 +667,16 @@ export function ScriptWriterPanel() {
   }
 
   function selectMentionTechnique(technique: ContentTechnique) {
-    setChatInput((value) => value.replace(/@([^\s@]*)$/, `@${technique.name} `));
+    setChatInput((value) => {
+      const matches = Array.from(value.matchAll(/@([^\s@]*)/g));
+      const match = matches[matches.length - 1];
+      if (!match || typeof match.index !== 'number') return `${value}@${technique.name} `;
+      const start = match.index;
+      const end = start + match[0].length;
+      const suffix = value.slice(end);
+      const spacer = suffix.startsWith(' ') || !suffix ? '' : ' ';
+      return `${value.slice(0, start)}@${technique.name}${spacer}${suffix}`;
+    });
     setSelectedTechniqueIds((ids) => (ids.includes(technique.id) ? ids : [...ids, technique.id]));
   }
 
