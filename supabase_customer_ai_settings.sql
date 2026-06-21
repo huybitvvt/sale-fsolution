@@ -36,9 +36,24 @@ execute function public.set_customer_ai_settings_updated_at();
 create index if not exists idx_customer_ai_settings_staff_key
 on public.customer_ai_settings (staff_key);
 
--- App hiện dùng backend riêng. Nếu backend chưa có service role key, tắt RLS
--- để publishable/anon key trong backend ghi được bảng này.
-alter table public.customer_ai_settings disable row level security;
+-- App hiện dùng backend riêng nhưng backend đang cầm publishable key.
+-- Bật RLS và tạo policy mở cho anon/authenticated để PostgREST cho ghi bảng này.
+-- Cách bảo mật hơn cho production: dùng SUPABASE_SERVICE_ROLE_KEY ở backend,
+-- rồi thay policy mở này bằng policy chặt hơn hoặc chỉ dùng service_role.
+alter table public.customer_ai_settings enable row level security;
+
+drop policy if exists "customer_ai_settings_anon_select" on public.customer_ai_settings;
+drop policy if exists "customer_ai_settings_anon_insert" on public.customer_ai_settings;
+drop policy if exists "customer_ai_settings_anon_update" on public.customer_ai_settings;
+drop policy if exists "customer_ai_settings_anon_delete" on public.customer_ai_settings;
+drop policy if exists "customer_ai_settings_anon_all" on public.customer_ai_settings;
+
+create policy "customer_ai_settings_anon_all"
+on public.customer_ai_settings
+for all
+to anon, authenticated
+using (true)
+with check (true);
 
 grant usage on schema public to anon, authenticated, service_role;
 grant select, insert, update, delete on public.customer_ai_settings to anon, authenticated, service_role;
@@ -47,7 +62,8 @@ notify pgrst, 'reload schema';
 
 select
   c.relname as table_name,
-  c.relrowsecurity as rls_enabled
+  c.relrowsecurity as rls_enabled,
+  c.relforcerowsecurity as force_rls
 from pg_class c
 join pg_namespace n on n.oid = c.relnamespace
 where n.nspname = 'public' and c.relname = 'customer_ai_settings';
