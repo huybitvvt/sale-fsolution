@@ -54,6 +54,7 @@ function resetNextBuild() {
 }
 
 console.log('[dev] Starting Flask on http://127.0.0.1:5000');
+tryFreePort(5000);
 const backend = run('flask', 'python', ['app.py'], root);
 
 console.log('[dev] Starting Next.js on http://localhost:3000');

@@ -883,7 +883,7 @@ export function ManageDashboardPanel(props: ManageDashboardProps) {
                           onSummarizeComments={onSummarizeComments}
                           onExploreComments={onExploreComments}
                           onCommentSent={async (postId) => { await onCommentSent(postId); }}
-                          onMarkProcessed={onMarkProcessed ? async (post) => { await onMarkProcessed(post); } : undefined}
+                          onMarkProcessed={onMarkProcessed}
                           onOpenLightbox={onOpenLightbox}
                         />
                       ))

@@ -7,6 +7,7 @@ import { ChannelManagerPanel } from '@/components/ChannelManagerPanel';
 import { ConsoleHome } from '@/components/ConsoleHome';
 import { HistoryPanel } from '@/components/HistoryPanel';
 import { LeadManagerPanel } from '@/components/LeadManagerPanel';
+import { LeadProcessedModal } from '@/components/LeadProcessedModal';
 import { ManageDashboardPanel } from '@/components/ManageDashboardPanel';
 import { MarketingPipelinePanel } from '@/components/MarketingPipelinePanel';
 import { ScriptWriterPanel } from '@/components/ScriptWriterPanel';
@@ -187,6 +188,8 @@ export function MonitorPage() {
   const [membershipCheckingIds, setMembershipCheckingIds] = useState<string[]>([]);
 
   const [postModal, setPostModal] = useState(false);
+  const [leadProcessPost, setLeadProcessPost] = useState<FbPost | null>(null);
+  const [leadProcessBusy, setLeadProcessBusy] = useState(false);
   const [postSelected, setPostSelected] = useState<Record<string, boolean>>({});
   const [postPageId, setPostPageId] = useState('');
   const [postTitle, setPostTitle] = useState('');
@@ -803,26 +806,96 @@ export function MonitorPage() {
     }
   }, [loadTodayCommentStats]);
 
-  const handleMarkProcessed = useCallback(async (post: FbPost) => {
-    const r = await api('/api/posts/mark-processed', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+  const reloadLeads = useCallback(async () => {
+    try {
+      const r = await api('/api/ai/leads');
+      if (r.ok) setLeads(await r.json());
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const confirmLeadProcessed = useCallback(async (crmStatus: string, assignedSale: string): Promise<Lead> => {
+    if (!leadProcessPost) throw new Error('Không có bài viết');
+    setLeadProcessBusy(true);
+    try {
+      const post = leadProcessPost;
+      const payload = {
         post_id: post.id,
         group_id: post._group_id || post.group_id || '',
         post_url: post.permalink_url || '',
         message: post.message || '',
-      }),
-    });
-    const d = await r.json();
-    if (!d.ok) {
-      throw new Error(
-        d.error || (r.status === 404 ? 'Backend chưa có API này — hãy khởi động lại Flask (app.py)' : 'Không đánh dấu được'),
-      );
+        author_name: post.from?.name || '',
+        crm_status: crmStatus,
+        assigned_sale: assignedSale,
+      };
+      if (!payload.post_id) throw new Error('Bài viết thiếu ID — tải lại danh sách bài');
+
+      async function parseApiResponse(r: Response) {
+        try {
+          return await r.json() as { ok?: boolean; lead?: Lead; error?: string; warning?: string };
+        } catch {
+          throw new Error(
+            r.status === 404
+              ? 'Backend chưa có API lead — chạy lại npm run dev'
+              : `Backend lỗi HTTP ${r.status}`,
+          );
+        }
+      }
+
+      let lead: Lead | undefined;
+      let warning = '';
+
+      const markRes = await api('/api/posts/mark-processed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const markData = await parseApiResponse(markRes);
+      if (!markData.ok) {
+        throw new Error(markData.error || `Không lưu được lead (HTTP ${markRes.status})`);
+      }
+      if (markData.lead) {
+        lead = markData.lead;
+        warning = markData.warning || '';
+      } else {
+        const saveRes = await api('/api/leads/save-processed', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (saveRes.status === 404) {
+          throw new Error('Backend cũ chưa hỗ trợ Lead CRM — chạy lại npm run dev hoặc deploy Flask mới');
+        }
+        const saveData = await parseApiResponse(saveRes);
+        if (!saveData.ok || !saveData.lead) {
+          throw new Error(saveData.error || `Không lưu được lead (HTTP ${saveRes.status})`);
+        }
+        lead = saveData.lead;
+        warning = saveData.warning || markData.warning || '';
+      }
+      setAllPosts((prev) => prev.filter((p) => p.id !== post.id));
+      const pid = String(lead.post_id || post.id);
+      setLeads((prev) => {
+        const bucket = [...(prev[pid] || [])];
+        const idx = bucket.findIndex((item) => item.lead_key === lead.lead_key);
+        if (idx >= 0) bucket[idx] = lead;
+        else bucket.push(lead);
+        return { ...prev, [pid]: bucket };
+      });
+      void loadCommentLogs();
+      if (warning) setToolStatus(`⚠️ ${warning}`);
+      return lead;
+    } catch (err) {
+      throw new Error(formatFetchError(err, 'Không lưu được lead'));
+    } finally {
+      setLeadProcessBusy(false);
     }
-    setAllPosts((prev) => prev.filter((p) => p.id !== post.id));
-    void loadCommentLogs();
-  }, [loadCommentLogs]);
+  }, [leadProcessPost, loadCommentLogs]);
+
+  const openLeadProcessModal = useCallback((post: FbPost) => {
+    setLeadProcessPost(post);
+  }, []);
 
   useEffect(() => {
     void checkAuth();
@@ -2616,9 +2689,8 @@ export function MonitorPage() {
           {activeView === 'leads' ? (
             <LeadManagerPanel
               leads={leads}
+              groupNames={groupNames}
               busy={leadsBusy}
-              onExtract={extractLeadsAll}
-              onSyncPhones={syncPhoneLeadsFromComments}
               onDelete={deleteLead}
               onDeleteMany={deleteSelectedLeads}
             />
@@ -2732,7 +2804,7 @@ export function MonitorPage() {
           onSummarizeComments={summarizeComments}
           onExploreComments={openFbCommentExplorer}
           onCommentSent={handleCommentSent}
-          onMarkProcessed={handleMarkProcessed}
+          onMarkProcessed={openLeadProcessModal}
           onOpenLightbox={setLightbox}
           saleSetupProps={{
             aiProvider,
@@ -2761,6 +2833,23 @@ export function MonitorPage() {
       ) : null}
         </main>
       </div>
+
+      <LeadProcessedModal
+        post={leadProcessPost}
+        groupName={
+          leadProcessPost
+            ? groupNames[leadProcessPost._group_id || leadProcessPost.group_id || ''] || ''
+            : ''
+        }
+        processorName={currentStaff?.name || currentStaff?.username}
+        busy={leadProcessBusy}
+        onClose={() => setLeadProcessPost(null)}
+        onConfirm={confirmLeadProcessed}
+        onOpenLeads={() => {
+          setLeadProcessPost(null);
+          openView('leads');
+        }}
+      />
 
       <div className={`modal-overlay${postModal ? ' open' : ''}`} onClick={(e) => e.target === e.currentTarget && setPostModal(false)} role="presentation">
         <div className="modal">

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node -e \"try{require('fs').rmSync('.next',{recursive:true,force:true})}catch(e){}\"",
     "dev": "next dev --port 3000",
     "dev:clean": "node -e \"try{require('fs').rmSync('.next',{recursive:true,force:true})}catch(e){}\" && next dev --port 3000",
     "build": "next build",

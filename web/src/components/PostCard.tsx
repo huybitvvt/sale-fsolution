@@ -96,7 +96,7 @@ export function PostCard({
   onSummarizeComments?: (post: FbPost) => Promise<string>;
   onExploreComments?: (post: FbPost) => void;
   onCommentSent?: (postId: string) => Promise<void>;
-  onMarkProcessed?: (post: FbPost) => Promise<void>;
+  onMarkProcessed?: (post: FbPost) => void | Promise<void>;
 }) {
   const authorName = post.from?.name || 'Ẩn danh';
   const reactions = post.reactions?.summary?.total_count ?? 0;
@@ -128,7 +128,6 @@ export function PostCard({
   const [pageId, setPageId] = useState('');
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [summaryMsg, setSummaryMsg] = useState('');
-  const [markBusy, setMarkBusy] = useState(false);
   const [markMsg, setMarkMsg] = useState('');
   const [imageUrl, setImageUrl] = useState('');
   const [uploadingImage, setUploadingImage] = useState(false);
@@ -677,22 +676,9 @@ export function PostCard({
             <button
               type="button"
               className="btn-mark-processed"
-              disabled={markBusy}
-              onClick={async () => {
-                setMarkBusy(true);
-                setMarkMsg('');
-                try {
-                  await onMarkProcessed(post);
-                  setMarkMsg('✅ Đã xử lý');
-                } catch {
-                  setMarkMsg('❌ Không lưu được');
-                } finally {
-                  setMarkBusy(false);
-                  window.setTimeout(() => setMarkMsg(''), 4000);
-                }
-              }}
+              onClick={() => onMarkProcessed(post)}
             >
-              {markBusy ? '⏳...' : '✅ Đã xử lý'}
+              ✅ Đã xử lý
             </button>
           ) : null}
           <button type="button" className="btn-write-comment" onClick={() => setCmtOpen((o) => !o)}>

@@ -139,6 +139,18 @@ export type Lead = {
   confidence?: number;
   evidence?: string;
   created_at?: string;
+  score?: number;
+  lead_level?: string;
+  lead_level_label?: string;
+  crm_status?: string;
+  assigned_sale?: string;
+  matched_keyword?: string;
+  platform_tag?: string;
+  business_module?: string;
+  score_breakdown?: string[];
+  processed_at?: string;
+  processed_by?: string;
+  processed_by_staff_id?: string;
 };
 
 export type ContentPipelineArticle = {

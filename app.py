@@ -956,6 +956,86 @@ def _save_leads():
     _write_json(LEADS_FILE, _leads)
 
 
+_LEAD_NEED_KEYWORDS = [
+    'tôi cần', 'nhu cầu', 'cần hỗ trợ', 'cần xây dựng', 'cần tool', 'cần phần mềm',
+    'tìm đơn vị làm', 'tìm người làm', 'cần đơn vị', 'cần làm',
+]
+_LEAD_PLATFORM_KEYWORDS = [
+    'appsheet', 'app sheet', 'google sheet', 'webapp', 'web app', 'phần mềm', 'excel',
+]
+_LEAD_BUSINESS_MODULES = [
+    'bán hàng', 'khách hàng', 'crm', 'sale', 'vận đơn', 'quản lý đơn', 'hàng hóa',
+    'marketing', 'kế toán', 'thuế', 'nhân sự', 'chấm công', 'kho', 'thiết bị',
+    'quản lý kho', 'quản lý vận tải',
+]
+_LEAD_LEVELS = [
+    ('cold', 'Lead lạnh', 0, 10),
+    ('interest', 'Lead quan tâm', 11, 30),
+    ('warm', 'Lead ấm', 31, 60),
+    ('hot', 'Lead nóng', 61, 90),
+    ('vip', 'Lead rất nóng', 91, 999),
+]
+
+
+def _lead_text_blob(lead: dict) -> str:
+    parts = [
+        lead.get('need'), lead.get('comment_text'), lead.get('evidence'),
+        lead.get('product_or_service'), lead.get('budget'), lead.get('urgency'),
+    ]
+    return ' '.join(str(item or '').strip() for item in parts if str(item or '').strip()).lower()
+
+
+def _lead_first_match(text: str, keywords: list[str]) -> str:
+    for kw in keywords:
+        if kw in text:
+            return kw
+    return ''
+
+
+def _score_lead(lead: dict) -> tuple[int, dict]:
+    text = _lead_text_blob(lead)
+    score = 0
+    breakdown: list[str] = []
+    if _lead_first_match(text, _LEAD_NEED_KEYWORDS):
+        score += 10
+        breakdown.append('Từ khóa nhu cầu +10')
+    if 'báo giá' in text or 'bao gia' in text:
+        score += 20
+        breakdown.append('Báo giá +20')
+    phone = str(lead.get('phone') or '').strip()
+    phones = lead.get('phones') if isinstance(lead.get('phones'), list) else []
+    if phone or phones:
+        score += 30
+        breakdown.append('SĐT +30')
+    if re.search(r'trong tháng|trong tuần|tuần này|tháng này|deadline|hạn chót|triển khai trong', text):
+        score += 20
+        breakdown.append('Deadline +20')
+    if re.search(r'gấp|khẩn|urgent|asap|triển khai gấp', text):
+        score += 25
+        breakdown.append('Yêu cầu gấp +25')
+    if re.search(r'ngân sách|budget|triệu|tỷ|chi phí', text) or str(lead.get('budget') or '').strip():
+        score += 25
+        breakdown.append('Ngân sách +25')
+    platform_tag = _lead_first_match(text, _LEAD_PLATFORM_KEYWORDS)
+    business_module = _lead_first_match(text, _LEAD_BUSINESS_MODULES)
+    if platform_tag or business_module:
+        score += 30
+        breakdown.append('Matching solution +30')
+    fields = {
+        'matched_keyword': _lead_first_match(text, _LEAD_NEED_KEYWORDS),
+        'platform_tag': platform_tag,
+        'business_module': business_module,
+    }
+    return score, {**fields, 'score_breakdown': breakdown}
+
+
+def _lead_level_from_score(score: int) -> tuple[str, str]:
+    for level_id, label, low, high in _LEAD_LEVELS:
+        if low <= score <= high:
+            return level_id, label
+    return 'cold', 'Lead lạnh'
+
+
 def _lead_key(lead: dict) -> str:
     base = '|'.join([
         str(lead.get('platform') or lead.get('source_platform') or ''),
@@ -1003,7 +1083,7 @@ def _normalise_lead(lead: dict, post_id: str = '') -> dict:
             comment_author = str(lead.get('name') or lead.get('customer_name') or 'Ẩn danh').strip()
         if not comment_text:
             comment_text = str(lead.get('evidence') or lead.get('need') or lead.get('customer_need') or '').strip()
-    return {
+    base = {
         **lead,
         'lead_key': str(lead.get('lead_key') or _lead_key({**lead, 'post_id': pid, 'phone': phone})),
         'platform': platform,
@@ -1028,6 +1108,27 @@ def _normalise_lead(lead: dict, post_id: str = '') -> dict:
         'contact_status': 'has_phone' if phone else str(lead.get('contact_status') or 'no_phone'),
         'confidence': float(lead.get('confidence') or (0.95 if phone else 0.6)),
         'evidence': str(lead.get('evidence') or '').strip(),
+        'assigned_sale': str(lead.get('assigned_sale') or lead.get('sale_owner') or '').strip(),
+        'crm_status': str(lead.get('crm_status') or '').strip(),
+        'processed_at': str(lead.get('processed_at') or '').strip(),
+        'processed_by': str(lead.get('processed_by') or lead.get('processed_by_staff_name') or '').strip(),
+        'processed_by_staff_id': str(lead.get('processed_by_staff_id') or '').strip(),
+    }
+    score_val = lead.get('score')
+    if score_val is None:
+        score_val, score_fields = _score_lead(base)
+    else:
+        _, score_fields = _score_lead(base)
+        score_val = int(score_val)
+    level_id, level_label = _lead_level_from_score(int(score_val))
+    crm_status = base.get('crm_status') or ('Lead mới' if int(score_val) > 10 else 'Theo dõi')
+    return {
+        **base,
+        **score_fields,
+        'score': int(score_val),
+        'lead_level': level_id,
+        'lead_level_label': level_label,
+        'crm_status': crm_status,
     }
 
 
@@ -1307,6 +1408,13 @@ def _supabase_lead_row_to_public(row: dict) -> dict:
         'comment_author': raw.get('comment_author') or row.get('comment_author') or '',
         'comment_text': raw.get('comment_text') or row.get('comment_text') or '',
         'created_at': row.get('created_at') or raw.get('created_at') or '',
+        'processed_at': raw.get('processed_at') or row.get('processed_at') or '',
+        'processed_by': raw.get('processed_by') or row.get('processed_by_staff_name') or row.get('created_by_staff_name') or '',
+        'processed_by_staff_id': raw.get('processed_by_staff_id') or row.get('created_by_staff_id') or '',
+        'score': raw.get('score') if raw.get('score') is not None else row.get('score'),
+        'lead_level': raw.get('lead_level') or '',
+        'lead_level_label': raw.get('lead_level_label') or '',
+        'crm_status': raw.get('crm_status') or '',
     }
 
 
@@ -5626,36 +5734,105 @@ def api_reply_post_comment():
         return jsonify(payload), 500
 
 
-@app.route('/api/posts/mark-processed', methods=['POST'])
-def api_mark_post_processed():
-    body = request.get_json() or {}
+def _upsert_lead_from_processed_post(body: dict, staff: dict) -> tuple[dict, str]:
     post_id = str(body.get('post_id') or '').strip()
-    if not post_id:
-        return jsonify({'ok': False, 'error': 'Thiếu ID bài viết'}), 400
-    staff = _current_staff()
-    if not staff:
-        return jsonify({'ok': False, 'error': 'Chưa đăng nhập'}), 401
-
-    staff_id = str(staff.get('id') or '')
-    if post_id in _staff_processed_post_ids(staff_id):
-        return jsonify({'ok': True, 'post_id': post_id, 'already': True})
-
     group_id = str(body.get('group_id') or body.get('_group_id') or '').strip()
     post_url = str(body.get('post_url') or body.get('permalink_url') or '').strip()
-    preview = str(body.get('message') or body.get('post_message') or '').strip()[:240]
+    message = str(body.get('message') or body.get('post_message') or '').strip()
+    preview = message[:240]
     comment_text = preview or 'Đã đánh dấu xử lý — không cần quét lại'
-    log = _record_comment_log(
-        post_id,
-        group_id,
-        post_url,
-        comment_text,
-        '',
-        'processed',
-    )
-    payload = {'ok': True, 'post_id': post_id, 'log': log}
-    if log.get('storage_warning'):
-        payload['warning'] = log['storage_warning']
-    return jsonify(payload)
+    author_name = str(body.get('author_name') or body.get('from_name') or '').strip()
+    phones = extract_phones(message)
+    phone = phones[0] if phones else ''
+    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    processor = str(staff.get('name') or staff.get('username') or 'Nhân sự').strip()
+    staff_id = str(staff.get('id') or '')
+    crm_status = str(body.get('crm_status') or 'Lead mới').strip() or 'Lead mới'
+    assigned_sale = str(body.get('assigned_sale') or body.get('sale_owner') or '').strip()
+    lead = _normalise_lead({
+        'platform': 'facebook',
+        'source': 'processed_post',
+        'post_id': post_id,
+        'group_id': group_id,
+        'post_url': post_url,
+        'name': author_name or 'Ẩn danh',
+        'need': message[:500] or comment_text,
+        'evidence': message[:300] or comment_text,
+        'phone': phone,
+        'phones': phones,
+        'processed_at': now,
+        'processed_by': processor,
+        'processed_by_staff_id': staff_id,
+        'crm_status': crm_status,
+        'assigned_sale': assigned_sale,
+        'created_at': now,
+    }, post_id)
+    _merge_leads_into_memory([lead])
+    supabase_ok, supabase_error = _save_leads_to_supabase([lead])
+    warning = ''
+    if not supabase_ok and supabase_error:
+        warning = f'Đã lưu lead local, Supabase chưa ghi được: {supabase_error}'
+    return lead, warning
+
+
+@app.route('/api/leads/save-processed', methods=['POST'])
+def api_leads_save_processed():
+    try:
+        body = request.get_json() or {}
+        post_id = str(body.get('post_id') or '').strip()
+        if not post_id:
+            return jsonify({'ok': False, 'error': 'Thiếu ID bài viết'}), 400
+        staff = _current_staff()
+        if not staff:
+            return jsonify({'ok': False, 'error': 'Chưa đăng nhập'}), 401
+        lead, warning = _upsert_lead_from_processed_post(body, staff)
+        payload = {'ok': True, 'post_id': post_id, 'lead': lead}
+        if warning:
+            payload['warning'] = warning
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'Lỗi lưu lead: {e}'}), 500
+
+
+@app.route('/api/posts/mark-processed', methods=['POST'])
+def api_mark_post_processed():
+    try:
+        body = request.get_json() or {}
+        post_id = str(body.get('post_id') or '').strip()
+        if not post_id:
+            return jsonify({'ok': False, 'error': 'Thiếu ID bài viết'}), 400
+        staff = _current_staff()
+        if not staff:
+            return jsonify({'ok': False, 'error': 'Chưa đăng nhập'}), 401
+
+        staff_id = str(staff.get('id') or '')
+        already_logged = post_id in _staff_processed_post_ids(staff_id)
+
+        group_id = str(body.get('group_id') or body.get('_group_id') or '').strip()
+        post_url = str(body.get('post_url') or body.get('permalink_url') or '').strip()
+        preview = str(body.get('message') or body.get('post_message') or '').strip()[:240]
+        comment_text = preview or 'Đã đánh dấu xử lý — không cần quét lại'
+        log = {}
+        if not already_logged:
+            log = _record_comment_log(
+                post_id,
+                group_id,
+                post_url,
+                comment_text,
+                '',
+                'processed',
+            )
+
+        lead, lead_warning = _upsert_lead_from_processed_post(body, staff)
+
+        payload = {'ok': True, 'post_id': post_id, 'log': log, 'lead': lead, 'already': already_logged}
+        if lead_warning:
+            payload['warning'] = lead_warning
+        elif log.get('storage_warning'):
+            payload['warning'] = log['storage_warning']
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'Lỗi lưu lead: {e}'}), 500
 
 
 @app.route('/api/comment-logs', methods=['GET'])
