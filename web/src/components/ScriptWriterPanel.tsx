@@ -949,7 +949,13 @@ export function ScriptWriterPanel() {
         timeoutMs: AI_TIMEOUT_MS,
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.error || 'AI chưa trả kết quả');
+      if (!response.ok || !payload.ok) {
+        const fallback =
+          response.status === 404
+            ? 'Backend live chưa có API chat AI. Chờ backend Render deploy commit mới rồi thử lại.'
+            : `AI chưa trả kết quả${response.status ? ` (HTTP ${response.status})` : ''}`;
+        throw new Error(payload.error || fallback);
+      }
       const result = payload.result as ScriptAiResult;
       setAiDraft(result);
       setChatMessages((rows) => [
