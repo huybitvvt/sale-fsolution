@@ -126,7 +126,7 @@ def kv_get(key: str, default: Any = None) -> Any:
 
 
 def kv_set(key: str, value: Any) -> None:
-    _request('POST', 'app_kv', json=[{'key': key, 'value': value}],
+    _request('POST', 'app_kv?on_conflict=key', json=[{'key': key, 'value': value}],
              prefer='resolution=merge-duplicates,return=minimal')
 
 

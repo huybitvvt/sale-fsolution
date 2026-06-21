@@ -7970,6 +7970,10 @@ CONTENT_SECTION_LABELS = {
     'body': 'Thân bài',
     'ending': 'Kết bài',
 }
+APP_KV_RLS_FIX_HINT = (
+    'Supabase app_kv đang chặn ghi do RLS. '
+    'Sửa bằng cách thêm SUPABASE_SERVICE_ROLE_KEY cho backend hoặc chạy supabase_app_kv_rls_fix.sql trong Supabase SQL Editor.'
+)
 CONTENT_SECTION_BLOCK_TYPES = {
     'opening': {'hook', 'h1', 'h2'},
     'body': {'body', 'text', 'scene', 'quote'},
@@ -8009,6 +8013,16 @@ def _clean_content_studio_setup(raw) -> dict:
     return {'sections': sections}
 
 
+def _app_kv_storage_warning(exc: Exception) -> str:
+    message = str(exc or '')[:300]
+    lowered = message.lower()
+    if 'row-level security' in lowered or '42501' in lowered:
+        return f'{APP_KV_RLS_FIX_HINT} Chi tiết: {message}'
+    if 'permission denied' in lowered or 'permission' in lowered:
+        return f'Supabase app_kv chưa cấp quyền ghi cho key hiện tại. {APP_KV_RLS_FIX_HINT} Chi tiết: {message}'
+    return message
+
+
 def _load_content_studio_setup() -> tuple[dict, str, str]:
     local = _clean_content_studio_setup(_read_json(CONTENT_STUDIO_SETUP_FILE, _default_content_studio_setup()))
     if not USE_SUPABASE:
@@ -8020,7 +8034,7 @@ def _load_content_studio_setup() -> tuple[dict, str, str]:
             _write_json(CONTENT_STUDIO_SETUP_FILE, setup)
             return setup, 'supabase', ''
     except Exception as e:
-        return local, 'local', str(e)[:300]
+        return local, 'local', _app_kv_storage_warning(e)
     return local, 'local', ''
 
 
@@ -8032,7 +8046,7 @@ def _save_content_studio_setup(setup: dict) -> tuple[str, str]:
             sb.kv_set(CONTENT_STUDIO_SETUP_KV, cleaned)
             return 'supabase', ''
         except Exception as e:
-            return 'local', str(e)[:300]
+            return 'local', _app_kv_storage_warning(e)
     return 'local', ''
 
 
@@ -8084,7 +8098,7 @@ def _load_content_techniques() -> tuple[list[dict], str, str]:
             _write_json(CONTENT_TECHNIQUES_FILE, rows)
             return rows, 'supabase', ''
     except Exception as e:
-        return local, 'local', str(e)[:300]
+        return local, 'local', _app_kv_storage_warning(e)
     return local, 'local', ''
 
 
@@ -8096,7 +8110,7 @@ def _save_content_techniques(rows: list[dict]) -> tuple[str, str]:
             sb.kv_set(CONTENT_TECHNIQUES_KV, cleaned)
             return 'supabase', ''
         except Exception as e:
-            return 'local', str(e)[:300]
+            return 'local', _app_kv_storage_warning(e)
     return 'local', ''
 
 
