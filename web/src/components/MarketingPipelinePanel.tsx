@@ -96,6 +96,23 @@ function formatDateTime(value?: string) {
   return parsed.toLocaleString('vi-VN');
 }
 
+function historyFingerprint(row: Pick<HistoryRow, 'title' | 'content' | 'scheduledAt' | 'targets'>) {
+  const targets = [...(row.targets || [])]
+    .map((target) => `${target.type}:${target.id}`)
+    .sort()
+    .join(',');
+  return [row.title.trim(), row.content.trim(), row.scheduledAt || '', targets].join('|');
+}
+
+function displayPostStatus(status: string) {
+  const value = (status || '').trim().toLowerCase();
+  if (value === 'posted') return 'Đã đăng';
+  if (value === 'scheduled') return 'Đã lưu lịch';
+  if (value === 'failed') return 'Lỗi';
+  if (value === 'draft') return 'Bản nháp';
+  return status || '-';
+}
+
 async function readPayload(res: Response) {
   try {
     return await res.json();
@@ -209,13 +226,21 @@ export function MarketingPipelinePanel({
         name: target.name || target.id || '-',
       })),
       status: post.status || 'draft',
+      results: (post.publish_results || []).map((item) => ({
+        ok: !!item.ok,
+        target: { type: item.type === 'page' ? 'page' : 'group', id: item.id || '', name: item.name || item.id || '' },
+        post_id: item.post_id,
+        error: item.error,
+      })),
       createdAt: post.created_at || post.updated_at || '',
     }));
   }, [data.posts]);
 
   const visibleHistory = useMemo(() => {
+    const importedKeys = new Set(importedHistory.map(historyFingerprint));
     const seen = new Set<string>();
-    return [...history, ...importedHistory].filter((row) => {
+    return [...importedHistory, ...history].filter((row) => {
+      if (row.status === 'Đã lưu lịch' && importedKeys.has(historyFingerprint(row))) return false;
       if (seen.has(row.id)) return false;
       seen.add(row.id);
       return true;
@@ -468,8 +493,7 @@ export function MarketingPipelinePanel({
       });
       const payload = await readPayload(res);
       if (!res.ok || !payload.ok) throw new Error(payload.error || 'Không lưu được lịch đăng');
-      appendHistory({ title, content, mediaUrl, mediaUrls, hashtags, scheduledAt, targets: selectedTargets, status: 'Đã lưu lịch' });
-      setLocalStatus('Đã lưu lịch đăng lên backend. Cron/worker có thể gọi /api/content-pipeline/scheduled/run để tự đăng khi tới giờ.');
+      setLocalStatus('Đã lưu lịch đăng. Backend sẽ tự kiểm tra và đăng khi tới giờ.');
       void onReload();
     } catch (err: unknown) {
       setLocalStatus(`Lỗi đặt lịch: ${formatFetchError(err)}`);
@@ -772,8 +796,8 @@ export function MarketingPipelinePanel({
                   <td>{formatDateTime(row.scheduledAt)}</td>
                   <td>{row.targets.length ? row.targets.map((target) => target.name).join(', ') : '-'}</td>
                   <td>
-                    <span className={row.status.includes('lỗi') || row.status.includes('failed') ? 'pill-danger' : 'pill-ok'}>
-                      {row.status}
+                    <span className={row.status.toLowerCase().includes('lỗi') || row.status.toLowerCase().includes('failed') ? 'pill-danger' : 'pill-ok'}>
+                      {displayPostStatus(row.status)}
                     </span>
                     {row.results?.some((item) => !item.ok) ? (
                       <small className="publish-error-detail">

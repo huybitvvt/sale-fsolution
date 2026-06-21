@@ -15,7 +15,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request, session, copy_current_request_context
+from flask import Flask, jsonify, render_template, request, session, copy_current_request_context, has_request_context
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -87,6 +87,7 @@ CONTENT_SCRIPTS_RLS_HINT = (
 BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '')
 DEFAULT_GROUP = os.environ.get('DEFAULT_GROUP', '3809441172650624')
 PORT = int(os.environ.get('PORT', 5000))
+SCHEDULED_POST_WORKER_INTERVAL_SECONDS = int(os.environ.get('SCHEDULED_POST_WORKER_INTERVAL_SECONDS', '30') or '30')
 WEB_UI_URL = (os.environ.get('WEB_UI_URL') or 'http://localhost:3000').rstrip('/')
 USE_LEGACY_UI = os.environ.get('USE_LEGACY_UI', '').lower() in ('1', 'true', 'yes')
 SUPABASE_URL = os.environ.get('SUPABASE_URL') or os.environ.get('VITE_SUPABASE_URL', '')
@@ -192,6 +193,8 @@ _comment_tags: list = []
 _comment_tag_assignments: dict = {}
 _comment_inbox_workflow: dict = {}
 _comment_manual_phones: dict = {}
+_runtime_staff_context = threading.local()
+_scheduled_posts_lock = threading.Lock()
 
 
 def _default_business_profile() -> dict:
@@ -1952,7 +1955,8 @@ def _staff_with_active_cookie(staff: dict) -> dict:
     if not staff:
         return {}
     merged = dict(staff)
-    active_id = str(session.get('active_cookie_id') or merged.get('active_cookie_id') or '').strip()
+    session_active_id = session.get('active_cookie_id') if has_request_context() else ''
+    active_id = str(session_active_id or merged.get('active_cookie_id') or '').strip()
     if active_id:
         merged['active_cookie_id'] = active_id
     return merged
@@ -2859,6 +2863,11 @@ def _setup_required() -> bool:
 
 
 def _current_staff() -> dict:
+    override = getattr(_runtime_staff_context, 'staff', None)
+    if override:
+        return _staff_with_active_cookie(override)
+    if not has_request_context():
+        return {}
     staff_id = session.get('staff_id', '')
     if not staff_id:
         return {}
@@ -4961,9 +4970,11 @@ def _get_classifier() -> AIClassifier:
 
 
 def get_api(group_id: str) -> FacebookGroupAPI:
-    staff_id = _active_staff_id()
-    active_cookie_id = str(session.get('active_cookie_id') or _active_staff().get('active_cookie_id') or '')
-    active_cookie = _active_cookie()
+    active_staff = _active_staff()
+    staff_id = str(active_staff.get('id') or '')
+    session_cookie_id = session.get('active_cookie_id') if has_request_context() else ''
+    active_cookie_id = str(session_cookie_id or active_staff.get('active_cookie_id') or '')
+    active_cookie = _primary_staff_cookie(active_staff)
     cache_key = f'{staff_id or "default"}:{active_cookie_id}:{group_id}'
     if cache_key not in _api_cache:
         token_file = _staff_token_file(staff_id, cookie_id=active_cookie_id, cookie=active_cookie) if staff_id else None
@@ -8558,28 +8569,57 @@ def content_pipeline_post_schedule(post_id):
     return jsonify({'ok': False, 'error': 'Không tìm thấy bản nháp'}), 404
 
 
-@app.route('/api/content-pipeline/scheduled/run', methods=['GET', 'POST'])
-def content_pipeline_run_scheduled():
+def _staff_for_scheduled_post(post: dict) -> dict:
+    staff_id = str(post.get('created_by_staff_id') or '').strip()
+    staff = _find_local_staff_account(staff_id) if staff_id else None
+    if staff:
+        return _sync_staff_cookie_fields(dict(staff))
+    return _active_staff()
+
+
+def _run_due_scheduled_posts() -> dict:
+    if not _scheduled_posts_lock.acquire(blocking=False):
+        return {'ok': True, 'ran': 0, 'busy': True, 'results': []}
     now = datetime.now(timezone.utc)
     ran = 0
     results = []
-    for post in _content_pipeline.get('posts') or []:
-        if str(post.get('status') or '') != 'scheduled':
-            continue
-        due_at = _parse_iso_datetime(post.get('scheduled_at'))
-        if not due_at or due_at > now:
-            continue
-        targets = post.get('scheduled_targets') or []
-        result = _publish_content_pipeline_post(post, targets if isinstance(targets, list) else [])
-        post['publish_results'] = result.get('results') or []
-        post['published_at'] = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
-        post['status'] = 'posted' if result.get('ok') else 'failed'
-        post['updated_at'] = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
-        results.append({'id': post.get('id'), **result})
-        ran += 1
-    if ran:
-        _save_content_pipeline()
-    return jsonify({'ok': True, 'ran': ran, 'results': results})
+    previous_staff = getattr(_runtime_staff_context, 'staff', None)
+    try:
+        for post in _content_pipeline.get('posts') or []:
+            if str(post.get('status') or '') != 'scheduled':
+                continue
+            due_at = _parse_iso_datetime(post.get('scheduled_at'))
+            if not due_at or due_at > now:
+                continue
+            targets = post.get('scheduled_targets') or []
+            staff = _staff_for_scheduled_post(post)
+            if staff:
+                _runtime_staff_context.staff = staff
+                result = _publish_content_pipeline_post(post, targets if isinstance(targets, list) else [])
+            else:
+                if hasattr(_runtime_staff_context, 'staff'):
+                    delattr(_runtime_staff_context, 'staff')
+                result = {'ok': False, 'error': 'Không tìm thấy nhân sự/cookie đã tạo lịch', 'results': []}
+            post['publish_results'] = result.get('results') or []
+            post['published_at'] = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+            post['status'] = 'posted' if result.get('ok') else 'failed'
+            post['updated_at'] = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+            results.append({'id': post.get('id'), **result})
+            ran += 1
+        if ran:
+            _save_content_pipeline()
+        return {'ok': True, 'ran': ran, 'results': results}
+    finally:
+        if previous_staff:
+            _runtime_staff_context.staff = previous_staff
+        elif hasattr(_runtime_staff_context, 'staff'):
+            delattr(_runtime_staff_context, 'staff')
+        _scheduled_posts_lock.release()
+
+
+@app.route('/api/content-pipeline/scheduled/run', methods=['GET', 'POST'])
+def content_pipeline_run_scheduled():
+    return jsonify(_run_due_scheduled_posts())
 
 
 # ── Supabase ───────────────────────────────────────────
@@ -8602,8 +8642,24 @@ def saved_posts():
 
 
 # ── Start ──────────────────────────────────────────────
+def _scheduled_posts_worker():
+    interval = max(10, SCHEDULED_POST_WORKER_INTERVAL_SECONDS)
+    time_module.sleep(5)
+    while True:
+        try:
+            with app.app_context():
+                result = _run_due_scheduled_posts()
+                if result.get('ran'):
+                    print(f"[scheduler] published {result.get('ran')} scheduled post(s)")
+        except Exception as e:
+            print(f'[scheduler] scheduled post worker failed: {e}')
+        time_module.sleep(interval)
+
+
 _load_state()
 threading.Thread(target=_poll_telegram, daemon=True).start()
+if SCHEDULED_POST_WORKER_INTERVAL_SECONDS > 0:
+    threading.Thread(target=_scheduled_posts_worker, daemon=True).start()
 
 if __name__ == '__main__':
     print(f'[server] supabase={"on" if USE_SUPABASE else "off"} | staff cookie optional | http://localhost:{PORT}')
