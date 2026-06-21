@@ -2296,7 +2296,7 @@ def _fetch_facebook_profile(cookie: str, *, allow_token: bool = True, fast: bool
     if fast or not allow_token:
         return {'ok': False, 'name': '', 'id': user_id, 'error': 'Không đọc được tên Facebook'}
 
-    token_file = _staff_token_file(_current_staff_id() or 'default')
+    token_file = _staff_token_file(_current_staff_id() or 'default', cookie=cookie)
     token = FacebookTokenGenerator(FB_CLIENT_ID, cookie, token_file).GetToken()
     if token:
         try:
@@ -2907,19 +2907,31 @@ def _active_cookie() -> str:
     return _primary_staff_cookie(_active_staff())
 
 
-def _staff_token_file(staff_id: str) -> str:
+def _staff_token_file(staff_id: str, cookie_id: str = '', cookie: str = '') -> str:
     safe_id = re.sub(r'[^a-zA-Z0-9_-]+', '_', staff_id or 'default')
-    return os.path.join(STAFF_TOKEN_DIR, f'{safe_id}.txt')
+    cookie_key = str(cookie_id or _extract_cookie_user(cookie) or 'primary').strip()
+    safe_cookie = re.sub(r'[^a-zA-Z0-9_-]+', '_', cookie_key or 'primary')
+    return os.path.join(STAFF_TOKEN_DIR, f'{safe_id}__{safe_cookie}.txt')
 
 
-def _clear_staff_access_token(staff_id: str = '') -> None:
+def _clear_staff_access_token(staff_id: str = '', cookie_id: str = '', cookie: str = '') -> None:
     staff_id = str(staff_id or _active_staff_id() or '').strip()
     if not staff_id:
         return
-    try:
-        os.remove(_staff_token_file(staff_id))
-    except OSError:
-        pass
+    token_files = [_staff_token_file(staff_id, cookie_id=cookie_id, cookie=cookie)]
+    if not cookie_id and not cookie:
+        safe_id = re.sub(r'[^a-zA-Z0-9_-]+', '_', staff_id or 'default')
+        try:
+            for name in os.listdir(STAFF_TOKEN_DIR):
+                if name == f'{safe_id}.txt' or name.startswith(f'{safe_id}__'):
+                    token_files.append(os.path.join(STAFF_TOKEN_DIR, name))
+        except OSError:
+            pass
+    for token_file in set(token_files):
+        try:
+            os.remove(token_file)
+        except OSError:
+            pass
 
 
 def _invalidate_facebook_cache(staff_id: str = '') -> None:
@@ -4942,10 +4954,11 @@ def _get_classifier() -> AIClassifier:
 def get_api(group_id: str) -> FacebookGroupAPI:
     staff_id = _active_staff_id()
     active_cookie_id = str(session.get('active_cookie_id') or _active_staff().get('active_cookie_id') or '')
+    active_cookie = _active_cookie()
     cache_key = f'{staff_id or "default"}:{active_cookie_id}:{group_id}'
     if cache_key not in _api_cache:
-        token_file = _staff_token_file(staff_id) if staff_id else None
-        _api_cache[cache_key] = FacebookGroupAPI(group_id, cookie=_active_cookie(), token_file=token_file)
+        token_file = _staff_token_file(staff_id, cookie_id=active_cookie_id, cookie=active_cookie) if staff_id else None
+        _api_cache[cache_key] = FacebookGroupAPI(group_id, cookie=active_cookie, token_file=token_file)
     return _api_cache[cache_key]
 
 
@@ -7686,10 +7699,7 @@ def staff_cookies_delete(staff_id):
     _staff_cookies['staff'] = [item for item in staff if item.get('id') != staff_id]
     if _staff_cookies.get('active_staff_id') == staff_id:
         _staff_cookies['active_staff_id'] = (_staff_cookies['staff'][0]['id'] if _staff_cookies['staff'] else '')
-    try:
-        os.remove(_staff_token_file(staff_id))
-    except OSError:
-        pass
+    _clear_staff_access_token(staff_id)
     _save_staff_cookies()
     _invalidate_facebook_cache()
     staff_rows, warning = _staff_list_after_change()
