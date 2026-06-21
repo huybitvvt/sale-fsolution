@@ -97,6 +97,39 @@ type PostFetchReport = {
 };
 
 const SCAN_SELECTED_STORAGE_KEY = 'scanSelectedGroups';
+const DEFAULT_GEMINI_PRO_MODEL = 'gemini-3.1-pro-preview';
+const GEMINI_MODEL_FALLBACKS: AiModelOption[] = [
+  {
+    id: 'gemini-3.1-pro-preview',
+    display_name: 'Gemini Pro 3.1 Preview',
+    description: 'Model Pro chất lượng cao',
+  },
+  {
+    id: 'gemini-2.5-pro',
+    display_name: 'Gemini Pro 2.5',
+    description: 'Model Pro ổn định, chất lượng cao',
+  },
+  {
+    id: 'gemini-3.5-flash',
+    display_name: 'Gemini 3.5 Flash',
+    description: 'Model Flash mới nhất',
+  },
+  {
+    id: 'gemini-2.5-flash',
+    display_name: 'Gemini 2.5 Flash',
+    description: 'Nhanh, chi phí thấp',
+  },
+  {
+    id: 'gemini-flash-latest',
+    display_name: 'Gemini Flash Latest',
+    description: 'Alias Flash mặc định',
+  },
+];
+
+function shouldUpgradeGeminiModel(model?: string) {
+  const value = String(model || '').toLowerCase();
+  return !value || value === 'gemini-flash-latest' || value.includes('flash-lite');
+}
 
 function postGroupId(post: FbPost): string {
   return String(post._group_id || post.group_id || '').trim();
@@ -130,7 +163,7 @@ export function MonitorPage() {
   const [aiProviders, setAiProviders] = useState<AiProviders>({});
   const [aiConfig, setAiConfig] = useState<AiConfig>({});
   const [aiProvider, setAiProvider] = useState('gemini');
-  const [aiModel, setAiModel] = useState('gemini-3.1-pro-preview');
+  const [aiModel, setAiModel] = useState(DEFAULT_GEMINI_PRO_MODEL);
   const [aiModels, setAiModels] = useState<AiModelOption[]>([]);
   const [aiModelStatus, setAiModelStatus] = useState('');
   const [aiModelsLoading, setAiModelsLoading] = useState(false);
@@ -1110,13 +1143,16 @@ export function MonitorPage() {
       const r = await api('/api/ai/models', { timeoutMs: 45000 });
       const d = await r.json().catch(() => ({}));
       if (r.ok && d.ok) {
-        setAiModels(Array.isArray(d.models) ? d.models : []);
+        const rows = Array.isArray(d.models) && d.models.length ? d.models : GEMINI_MODEL_FALLBACKS;
+        setAiModels(rows);
         setAiModelStatus(d.warning || '');
       } else {
-        setAiModelStatus(d.error || `Không tải được model Gemini (${r.status})`);
+        setAiModels(GEMINI_MODEL_FALLBACKS);
+        setAiModelStatus(`${d.error || `Không tải được model Gemini (${r.status})`} · đang dùng danh sách Pro dự phòng`);
       }
     } catch {
-      setAiModelStatus('Không kết nối được backend khi tải model Gemini');
+      setAiModels(GEMINI_MODEL_FALLBACKS);
+      setAiModelStatus('Không kết nối được backend khi tải model Gemini · đang dùng danh sách Pro dự phòng');
     } finally {
       setAiModelsLoading(false);
     }
@@ -1141,11 +1177,22 @@ export function MonitorPage() {
         const cfg = await cRes.json();
         setAiConfig(cfg);
         setAiProvider('gemini');
-        setAiModel(cfg.model || 'gemini-3.1-pro-preview');
+        const resolvedModel = shouldUpgradeGeminiModel(cfg.model) ? DEFAULT_GEMINI_PRO_MODEL : cfg.model;
+        setAiModel(resolvedModel);
         const modelsPayload = await modelsRes.json().catch(() => ({}));
         if (modelsPayload.ok) {
-          setAiModels(Array.isArray(modelsPayload.models) ? modelsPayload.models : []);
+          setAiModels(Array.isArray(modelsPayload.models) && modelsPayload.models.length ? modelsPayload.models : GEMINI_MODEL_FALLBACKS);
           setAiModelStatus(modelsPayload.warning || '');
+        } else {
+          setAiModels(GEMINI_MODEL_FALLBACKS);
+          setAiModelStatus(`${modelsPayload.error || `Không tải được model Gemini (${modelsRes.status})`} · đang dùng danh sách Pro dự phòng`);
+        }
+        if (resolvedModel !== cfg.model) {
+          void api('/api/ai/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: 'gemini', model: resolvedModel }),
+          });
         }
         const autoClassify = !!cfg.auto_classify;
         setAiAutoClassify(autoClassify);
