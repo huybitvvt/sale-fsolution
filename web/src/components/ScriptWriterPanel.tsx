@@ -34,6 +34,7 @@ import {
   X,
 } from 'lucide-react';
 import { AI_TIMEOUT_MS, api } from '@/lib/api';
+import { BusinessProfilePanel } from '@/components/BusinessProfilePanel';
 import './script-writer-panel.css';
 
 type ScriptStatus = 'draft' | 'pending' | 'approved';
@@ -86,6 +87,22 @@ type ScriptAiResult = {
   sections?: Partial<Record<SectionKey, string>>;
 };
 
+type AiModelOption = {
+  id: string;
+  name?: string;
+  display_name?: string;
+  description?: string;
+};
+
+type AiConfig = {
+  provider?: string;
+  model?: string;
+  customer_name?: string;
+  keys_masked?: Record<string, string>;
+  storage?: string;
+  warning?: string;
+};
+
 const BLOCK_TYPES: Array<{ id: BlockType; label: string; icon: string; placeholder: string }> = [
   { id: 'text', label: 'TEXT', icon: '📝', placeholder: 'Nhập nội dung...' },
   { id: 'h1', label: 'H1', icon: '🔠', placeholder: 'Tiêu đề lớn...' },
@@ -120,6 +137,37 @@ const STATUS_LABELS: Record<ScriptStatus, string> = {
   pending: 'Chờ duyệt',
   approved: 'Đã duyệt',
 };
+
+const DEFAULT_MODELS: Record<string, string> = {
+  gemini: 'gemini-3.1-pro-preview',
+  openai: 'gpt-4o-mini',
+  groq: 'llama-3.3-70b-versatile',
+};
+
+const MODEL_FALLBACKS: Record<string, AiModelOption[]> = {
+  gemini: [
+    { id: 'gemini-3.1-pro-preview', display_name: 'Gemini Pro 3.1 Preview' },
+    { id: 'gemini-2.5-pro', display_name: 'Gemini Pro 2.5' },
+    { id: 'gemini-3.5-flash', display_name: 'Gemini 3.5 Flash' },
+    { id: 'gemini-2.5-flash', display_name: 'Gemini 2.5 Flash' },
+  ],
+  openai: [
+    { id: 'gpt-4o-mini', display_name: 'ChatGPT / GPT-4o mini' },
+    { id: 'gpt-4o', display_name: 'ChatGPT / GPT-4o' },
+    { id: 'gpt-4.1-mini', display_name: 'GPT-4.1 mini' },
+    { id: 'gpt-4.1', display_name: 'GPT-4.1' },
+  ],
+  groq: [
+    { id: 'llama-3.3-70b-versatile', display_name: 'Groq Llama 3.3 70B Versatile' },
+    { id: 'llama-3.1-8b-instant', display_name: 'Groq Llama 3.1 8B Instant' },
+    { id: 'openai/gpt-oss-120b', display_name: 'Groq GPT OSS 120B' },
+    { id: 'openai/gpt-oss-20b', display_name: 'Groq GPT OSS 20B' },
+  ],
+};
+
+function fallbackModels(provider: string) {
+  return MODEL_FALLBACKS[provider] || MODEL_FALLBACKS.gemini;
+}
 
 const INITIAL_SCRIPTS: ScriptDocument[] = [
   {
@@ -482,6 +530,14 @@ export function ScriptWriterPanel() {
   const [chatBusy, setChatBusy] = useState(false);
   const [aiDraft, setAiDraft] = useState<ScriptAiResult | null>(null);
   const [selectedTechniqueIds, setSelectedTechniqueIds] = useState<string[]>([]);
+  const [aiProvider, setAiProvider] = useState('gemini');
+  const [aiModel, setAiModel] = useState(DEFAULT_MODELS.gemini);
+  const [aiModels, setAiModels] = useState<AiModelOption[]>(MODEL_FALLBACKS.gemini);
+  const [aiCustomerName, setAiCustomerName] = useState('');
+  const [aiKeyInput, setAiKeyInput] = useState('');
+  const [aiKeyMasked, setAiKeyMasked] = useState('');
+  const [aiConfigStatus, setAiConfigStatus] = useState('');
+  const [aiConfigBusy, setAiConfigBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -526,6 +582,12 @@ export function ScriptWriterPanel() {
   useEffect(() => {
     void loadTechniques();
     // loadTechniques is stable enough for this mount-only fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    void loadAiConfig();
+    // loadAiConfig is a mount-only bootstrap for the content AI panel.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -614,6 +676,84 @@ export function ScriptWriterPanel() {
       setTechniqueStatus(payload.warning || '');
     } catch (error) {
       setTechniqueStatus(error instanceof Error ? error.message : 'Không tải được kỹ thuật content');
+    }
+  }
+
+  async function loadAiModels(provider = aiProvider) {
+    if (provider === 'openai') {
+      setAiModels(MODEL_FALLBACKS.openai);
+      return;
+    }
+    try {
+      const query = provider === 'groq' ? '?provider=groq' : '';
+      const response = await api(`/api/ai/models${query}`, { timeoutMs: 45000 });
+      const payload = await response.json().catch(() => ({}));
+      const rows = Array.isArray(payload.models) && payload.models.length ? payload.models : fallbackModels(provider);
+      setAiModels(rows);
+      if (payload.warning) setAiConfigStatus(payload.warning);
+    } catch {
+      setAiModels(fallbackModels(provider));
+    }
+  }
+
+  async function loadAiConfig() {
+    setAiConfigStatus('Đang tải cấu hình AI...');
+    try {
+      const response = await api('/api/ai/config', { timeoutMs: 30000 });
+      const cfg: AiConfig = await response.json().catch(() => ({}));
+      const provider = cfg.provider === 'openai' || cfg.provider === 'groq' ? cfg.provider : 'gemini';
+      const model = cfg.model || DEFAULT_MODELS[provider] || DEFAULT_MODELS.gemini;
+      setAiProvider(provider);
+      setAiModel(model);
+      setAiCustomerName(cfg.customer_name || '');
+      setAiKeyMasked((cfg.keys_masked || {})[provider] || '');
+      setAiConfigStatus(cfg.warning || (cfg.storage === 'supabase' ? 'Đã nạp cấu hình AI theo user.' : ''));
+      setAiModels(fallbackModels(provider));
+      void loadAiModels(provider);
+    } catch {
+      setAiConfigStatus('Không tải được cấu hình AI.');
+    }
+  }
+
+  async function saveAiConfig() {
+    setAiConfigBusy(true);
+    setAiConfigStatus('Đang lưu cấu hình AI...');
+    try {
+      const body: Record<string, string> = {
+        provider: aiProvider,
+        model: aiModel || DEFAULT_MODELS[aiProvider] || DEFAULT_MODELS.gemini,
+        customer_name: aiCustomerName,
+      };
+      if (aiKeyInput.trim()) body.key = aiKeyInput.trim();
+      const response = await api('/api/ai/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        timeoutMs: 30000,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không lưu được cấu hình AI');
+      setAiKeyInput('');
+      await loadAiConfig();
+      setAiConfigStatus(payload.warning || (payload.storage === 'supabase' ? 'Đã lưu AI key/model theo user.' : 'Đã lưu cấu hình AI.'));
+    } catch (error) {
+      setAiConfigStatus(error instanceof Error ? error.message : 'Không lưu được cấu hình AI');
+    } finally {
+      setAiConfigBusy(false);
+    }
+  }
+
+  async function testAiConfig() {
+    setAiConfigBusy(true);
+    setAiConfigStatus('Đang test AI...');
+    try {
+      const response = await api('/api/ai/test', { method: 'POST', timeoutMs: 45000 });
+      const payload = await response.json().catch(() => ({}));
+      setAiConfigStatus(payload.ok ? 'Kết nối AI OK.' : (payload.error || 'AI chưa kết nối được.'));
+    } catch {
+      setAiConfigStatus('Không gọi được backend để test AI.');
+    } finally {
+      setAiConfigBusy(false);
     }
   }
 
@@ -1248,6 +1388,53 @@ export function ScriptWriterPanel() {
                 <MessageSquare /> CTA
               </button>
             </div>
+            <div className="script-ai-config-card">
+              <div className="script-tech-head">
+                <div><Bot /><strong>Cấu hình AI theo khách</strong></div>
+                <button type="button" title="Tải lại cấu hình AI" disabled={aiConfigBusy} onClick={() => void loadAiConfig()}><RefreshCw /></button>
+              </div>
+              <div className="script-ai-config-grid">
+                <input
+                  value={aiCustomerName}
+                  onChange={(event) => setAiCustomerName(event.target.value)}
+                  placeholder="Tên khách / thương hiệu"
+                />
+                <select
+                  value={aiProvider}
+                  onChange={(event) => {
+                    const provider = event.target.value;
+                    setAiProvider(provider);
+                    setAiModel(DEFAULT_MODELS[provider] || DEFAULT_MODELS.gemini);
+                    setAiModels(fallbackModels(provider));
+                    setAiKeyMasked('');
+                    void loadAiModels(provider);
+                  }}
+                >
+                  <option value="gemini">Google Gemini</option>
+                  <option value="openai">OpenAI / ChatGPT</option>
+                  <option value="groq">Groq</option>
+                </select>
+                <select value={aiModel} onChange={(event) => setAiModel(event.target.value)}>
+                  {aiModels.map((item) => (
+                    <option key={item.id} value={item.id}>{item.display_name || item.id}</option>
+                  ))}
+                </select>
+                <input
+                  value={aiKeyInput}
+                  onChange={(event) => setAiKeyInput(event.target.value)}
+                  placeholder={aiKeyMasked ? `Đã lưu ${aiKeyMasked}` : 'Nhập API key một lần'}
+                />
+              </div>
+              <div className="script-ai-config-actions">
+                <button type="button" className="script-primary compact" disabled={aiConfigBusy} onClick={() => void saveAiConfig()}>
+                  <Save /> Lưu AI
+                </button>
+                <button type="button" disabled={aiConfigBusy} onClick={() => void testAiConfig()}>
+                  <Sparkles /> Test AI
+                </button>
+              </div>
+              {aiConfigStatus ? <p className="script-tech-status">{aiConfigStatus}</p> : null}
+            </div>
             <div className="script-ai-chat-log" aria-live="polite">
               {chatMessages.map((message) => (
                 <div className={`script-ai-bubble ${message.role}`} key={message.id}>
@@ -1323,6 +1510,10 @@ export function ScriptWriterPanel() {
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="script-business-profile-card">
+              <BusinessProfilePanel embedded />
             </div>
 
             <div className="script-ai-composer">

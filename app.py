@@ -107,6 +107,7 @@ SUPABASE_LEAD_TABLE = os.environ.get('SUPABASE_LEAD_TABLE', 'leads')
 SUPABASE_STAFF_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 SUPABASE_CHANNEL_TABLE = os.environ.get('SUPABASE_CHANNEL_TABLE', 'managed_channels')
 SUPABASE_SCRIPT_TABLE = os.environ.get('SUPABASE_SCRIPT_TABLE', 'content_scripts')
+SUPABASE_CUSTOMER_AI_TABLE = os.environ.get('SUPABASE_CUSTOMER_AI_TABLE', 'customer_ai_settings')
 SUPABASE_COMMENT_IMAGE_BUCKET = os.environ.get('SUPABASE_COMMENT_IMAGE_BUCKET', 'comment-images')
 SUPABASE_POST_MEDIA_BUCKET = os.environ.get('SUPABASE_POST_MEDIA_BUCKET', SUPABASE_COMMENT_IMAGE_BUCKET)
 APP_TIMEZONE = os.environ.get('APP_TIMEZONE', 'Asia/Ho_Chi_Minh')
@@ -3590,9 +3591,14 @@ def _save_business_profile():
     os.replace(tmp, BUSINESS_PROFILE_FILE)
 
 
+def _business_profile_key() -> str:
+    return _current_staff_ai_key() or 'default'
+
+
 def _load_business_profile_from_supabase() -> tuple[dict, str]:
     if not SUPABASE_URL or not SUPABASE_KEY:
         return {}, 'Chưa cấu hình Supabase'
+    profile_id = _business_profile_key()
     try:
         resp = _req.get(
             f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_PROFILE_TABLE}",
@@ -3600,7 +3606,7 @@ def _load_business_profile_from_supabase() -> tuple[dict, str]:
                 'apikey': SUPABASE_KEY,
                 'Authorization': f'Bearer {SUPABASE_KEY}',
             },
-            params={'id': 'eq.default', 'select': '*', 'limit': '1'},
+            params={'id': f'eq.{profile_id}', 'select': '*', 'limit': '1'},
             timeout=20,
         )
         if resp.status_code != 200:
@@ -3624,7 +3630,7 @@ def _save_business_profile_to_supabase(profile: dict) -> tuple[bool, str]:
     if not SUPABASE_URL or not SUPABASE_KEY:
         return False, 'Chưa cấu hình Supabase'
     payload = {
-        'id': 'default',
+        'id': _business_profile_key(),
         'business_name': profile.get('business_name', ''),
         'phone': profile.get('phone', ''),
         'address': profile.get('address', ''),
@@ -5101,8 +5107,117 @@ def _count_today_success_supabase(staff_id: str = '') -> tuple[int | None, str]:
         return None, str(e)[:300]
 
 
+def _current_staff_ai_key() -> str:
+    staff = _current_staff()
+    staff_id = str(staff.get('id') or '').strip()
+    username = str(staff.get('username') or '').strip().lower()
+    if staff_id:
+        return f'staff:{staff_id}'
+    if username:
+        return f'user:{username}'
+    return ''
+
+
+def _current_staff_display_name() -> str:
+    staff = _current_staff()
+    return str(staff.get('name') or staff.get('username') or '').strip()
+
+
+def _merge_ai_config(base: dict, row: dict | None = None) -> dict:
+    defaults = _default_ai_config()
+    cfg = {**defaults, **(base or {})}
+    cfg['keys'] = {**defaults.get('keys', {}), **((base or {}).get('keys') or {})}
+    if not row:
+        return cfg
+    provider = str(row.get('provider') or cfg.get('provider') or 'gemini').strip().lower()
+    if provider not in PROVIDERS:
+        provider = 'gemini'
+    cfg['provider'] = provider
+    default_model = PROVIDERS.get(provider, {}).get('default_model', DEFAULT_MODEL)
+    cfg['model'] = str(row.get('model') or cfg.get('model') or default_model).strip() or default_model
+    raw_keys = row.get('api_keys') if isinstance(row.get('api_keys'), dict) else {}
+    cfg['keys'] = {**cfg.get('keys', {}), **{str(k): str(v or '') for k, v in raw_keys.items() if v}}
+    active_key = str(row.get('api_key') or '').strip()
+    if active_key:
+        cfg['keys'][provider] = active_key
+    cfg['customer_name'] = str(row.get('customer_name') or cfg.get('customer_name') or '').strip()
+    return cfg
+
+
+def _load_customer_ai_row() -> tuple[dict | None, str]:
+    staff_key = _current_staff_ai_key()
+    if not USE_SUPABASE or not staff_key:
+        return None, ''
+    try:
+        return sb.get_customer_ai_settings(staff_key, SUPABASE_CUSTOMER_AI_TABLE), ''
+    except Exception as e:
+        return None, str(e)[:300]
+
+
+def _effective_ai_config() -> tuple[dict, str, str]:
+    row, warning = _load_customer_ai_row()
+    cfg = _merge_ai_config(_ai_config, row)
+    if not cfg.get('customer_name'):
+        cfg['customer_name'] = _current_staff_display_name()
+    if row:
+        return cfg, 'supabase', warning
+    return cfg, 'global', warning
+
+
+def _save_customer_ai_config(body: dict) -> tuple[str, str]:
+    global _ai_config
+    provider = str(body.get('provider') or _ai_config.get('provider') or 'gemini').strip().lower()
+    if provider not in PROVIDERS:
+        provider = 'gemini'
+    default_model = PROVIDERS.get(provider, {}).get('default_model', DEFAULT_MODEL)
+    model = str(body.get('model') or default_model).strip() or default_model
+    customer_name = str(body.get('customer_name') or _current_staff_display_name()).strip()
+
+    cfg, _, _ = _effective_ai_config()
+    keys = dict(cfg.get('keys') or {})
+    if 'key' in body:
+        key = str(body.get('key') or '').strip()
+        if key:
+            keys[provider] = key
+
+    staff_key = _current_staff_ai_key()
+    if USE_SUPABASE and staff_key:
+        staff = _current_staff()
+        try:
+            sb.upsert_customer_ai_settings({
+                'staff_key': staff_key,
+                'staff_id': str(staff.get('id') or ''),
+                'username': str(staff.get('username') or ''),
+                'customer_name': customer_name,
+                'provider': provider,
+                'model': model,
+                'api_key': keys.get(provider, ''),
+                'api_keys': keys,
+            }, SUPABASE_CUSTOMER_AI_TABLE)
+            return 'supabase', ''
+        except Exception as e:
+            warning = str(e)[:300]
+        _ai_config['provider'] = provider
+        _ai_config['model'] = model
+        _ai_config.setdefault('keys', {}).update(keys)
+        _save_ai_config()
+        return 'global', warning
+
+    _ai_config['provider'] = provider
+    _ai_config['model'] = model
+    _ai_config.setdefault('keys', {}).update(keys)
+    _ai_config['customer_name'] = customer_name
+    _save_ai_config()
+    return 'global', ''
+
+
 def _get_ai_key(provider: str) -> str:
-    stored_key = (_ai_config.get('keys') or {}).get(provider, '')
+    cfg, _, _ = _effective_ai_config()
+    return _get_ai_key_from_config(provider, cfg)
+
+
+def _get_ai_key_from_config(provider: str, config: dict) -> str:
+    stored_key = (config.get('keys') or {}).get(provider, '')
     env_keys = {
         'gemini': 'GEMINI_API_KEY',
         'openai': 'OPENAI_API_KEY',
@@ -5114,11 +5229,12 @@ def _get_ai_key(provider: str) -> str:
 
 
 def _get_classifier() -> AIClassifier:
-    provider = _ai_config.get('provider', 'gemini')
+    cfg, _, _ = _effective_ai_config()
+    provider = cfg.get('provider', 'gemini')
     default_model = PROVIDERS.get(provider, {}).get('default_model', DEFAULT_MODEL)
-    model = _ai_config.get('model', default_model) or default_model
-    api_key = _get_ai_key(provider)
-    categories = _ai_config.get('categories', DEFAULT_CATEGORIES)
+    model = cfg.get('model', default_model) or default_model
+    api_key = _get_ai_key_from_config(provider, cfg)
+    categories = cfg.get('categories', DEFAULT_CATEGORIES)
     return AIClassifier(provider, model, api_key, categories)
 
 
@@ -8699,13 +8815,16 @@ def business_profile_get():
     try:
         storage = 'local'
         warning = ''
-        if not any((_business_profile or {}).values()):
+        if USE_SUPABASE:
             remote_profile, warning = _load_business_profile_from_supabase()
             if remote_profile:
                 _business_profile = {**_default_business_profile(), **remote_profile}
                 _save_business_profile()
                 storage = 'supabase'
-        payload = {'ok': True, 'profile': _business_profile, 'storage': storage}
+            else:
+                _business_profile = _default_business_profile()
+        profile = _business_profile if any((_business_profile or {}).values()) else _default_business_profile()
+        payload = {'ok': True, 'profile': profile, 'storage': storage}
         if warning:
             payload['warning'] = warning
         return jsonify(payload)
@@ -8798,14 +8917,15 @@ def ai_models():
 
 @app.route('/api/ai/config', methods=['GET'])
 def ai_config_get():
-    defaults = _default_ai_config()
-    safe = {**defaults, **_ai_config}
-    safe['keys'] = {**defaults.get('keys', {}), **(_ai_config.get('keys') or {})}
+    safe, storage, warning = _effective_ai_config()
     safe_keys = {}
     for k, v in safe.get('keys', {}).items():
         safe_keys[k] = ('***' + v[-4:]) if v and len(v) > 4 else ('***' if v else '')
     safe.pop('keys', None)
     safe['keys_masked'] = safe_keys
+    safe['storage'] = storage
+    if warning:
+        safe['warning'] = warning
     return jsonify(safe)
 
 
@@ -8813,24 +8933,19 @@ def ai_config_get():
 def ai_config_save():
     global _ai_config
     body = request.get_json() or {}
-    if 'provider' in body:
-        provider = str(body.get('provider') or '').strip().lower()
-        if provider in PROVIDERS:
-            _ai_config['provider'] = provider
-    if 'model' in body:
-        _ai_config['model'] = body['model']
     if 'auto_classify' in body:
         _ai_config['auto_classify'] = bool(body['auto_classify'])
     if 'categories' in body and isinstance(body['categories'], list):
         _ai_config['categories'] = body['categories']
-    if 'key' in body:
-        provider = str(body.get('provider', _ai_config.get('provider', 'gemini')) or '').strip().lower()
-        provider = provider if provider in PROVIDERS else _ai_config.get('provider', 'gemini')
-        if 'keys' not in _ai_config:
-            _ai_config['keys'] = {}
-        _ai_config['keys'][provider] = body['key']
-    _save_ai_config()
-    return jsonify({'ok': True})
+    storage, warning = _save_customer_ai_config(body)
+    if 'auto_classify' in body or ('categories' in body and isinstance(body['categories'], list)):
+        _save_ai_config()
+    payload = {'ok': True, 'storage': storage}
+    if warning:
+        payload['warning'] = (
+            f'Đã lưu tạm cấu hình AI, Supabase chưa ghi bảng {SUPABASE_CUSTOMER_AI_TABLE}: {warning}'
+        )
+    return jsonify(payload)
 
 
 @app.route('/api/ai/test', methods=['POST'])
@@ -8845,10 +8960,36 @@ def ai_test():
 @app.route('/api/ai/key/<provider>', methods=['DELETE'])
 def ai_key_delete(provider):
     global _ai_config
-    if 'keys' in _ai_config and provider in _ai_config['keys']:
-        _ai_config['keys'][provider] = ''
-        _save_ai_config()
-    return jsonify({'ok': True})
+    cfg, _, _ = _effective_ai_config()
+    keys = dict(cfg.get('keys') or {})
+    if provider in keys:
+        keys[provider] = ''
+    storage = 'global'
+    warning = ''
+    staff_key = _current_staff_ai_key()
+    active_provider = str(cfg.get('provider') or provider or 'gemini').strip().lower()
+    if USE_SUPABASE and staff_key:
+        staff = _current_staff()
+        try:
+            sb.upsert_customer_ai_settings({
+                'staff_key': staff_key,
+                'staff_id': str(staff.get('id') or ''),
+                'username': str(staff.get('username') or ''),
+                'customer_name': cfg.get('customer_name') or _current_staff_display_name(),
+                'provider': active_provider,
+                'model': cfg.get('model') or PROVIDERS.get(active_provider, {}).get('default_model') or DEFAULT_MODEL,
+                'api_key': keys.get(active_provider, ''),
+                'api_keys': keys,
+            }, SUPABASE_CUSTOMER_AI_TABLE)
+            storage = 'supabase'
+        except Exception as e:
+            warning = str(e)[:300]
+    _ai_config.setdefault('keys', {}).update(keys)
+    _save_ai_config()
+    payload = {'ok': True, 'storage': storage}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
 
 
 @app.route('/api/ai/classify', methods=['POST'])

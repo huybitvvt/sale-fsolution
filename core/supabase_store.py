@@ -35,6 +35,7 @@ SUPABASE_KEY = (
 STAFF_USERS_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 MANAGED_CHANNEL_TABLE = os.environ.get('SUPABASE_CHANNEL_TABLE', 'managed_channels')
 CONTENT_SCRIPT_TABLE = os.environ.get('SUPABASE_SCRIPT_TABLE', 'content_scripts')
+CUSTOMER_AI_TABLE = os.environ.get('SUPABASE_CUSTOMER_AI_TABLE', 'customer_ai_settings')
 
 _TIMEOUT = 30
 
@@ -128,6 +129,32 @@ def kv_get(key: str, default: Any = None) -> Any:
 def kv_set(key: str, value: Any) -> None:
     _request('POST', 'app_kv?on_conflict=key', json=[{'key': key, 'value': value}],
              prefer='resolution=merge-duplicates,return=minimal')
+
+
+# ── per-customer AI settings ───────────────────────────
+def get_customer_ai_settings(staff_key: str, table: Optional[str] = None) -> Optional[dict]:
+    staff_key = (staff_key or '').strip()
+    if not staff_key:
+        return None
+    table_name = table or CUSTOMER_AI_TABLE
+    r = _request(
+        'GET',
+        f'{table_name}?select=*&staff_key=eq.{quote(staff_key, safe="")}&limit=1',
+    )
+    rows = r.json()
+    return rows[0] if rows else None
+
+
+def upsert_customer_ai_settings(row: dict, table: Optional[str] = None) -> dict:
+    table_name = table or CUSTOMER_AI_TABLE
+    r = _request(
+        'POST',
+        f'{table_name}?on_conflict=staff_key',
+        json=[row],
+        prefer='resolution=merge-duplicates,return=representation',
+    )
+    rows = r.json()
+    return rows[0] if rows else {}
 
 
 # ── staff_users ─────────────────────────────────────────

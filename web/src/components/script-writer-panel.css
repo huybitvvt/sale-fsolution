@@ -724,6 +724,81 @@
   cursor: pointer;
 }
 .script-ai-draft-actions svg { width: 12px; height: 12px; }
+.script-ai-config-card,
+.script-business-profile-card {
+  margin-top: 10px;
+  border: 1px solid var(--script-border);
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px;
+}
+.script-ai-config-grid {
+  display: grid;
+  gap: 6px;
+}
+.script-ai-config-grid input,
+.script-ai-config-grid select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #e1e2ea;
+  border-radius: 8px;
+  background: #fff;
+  color: #29264f;
+  padding: 8px 9px;
+  outline: none;
+  font-size: 11px;
+  font-family: inherit;
+}
+.script-ai-config-grid input:focus,
+.script-ai-config-grid select:focus {
+  border-color: var(--script-primary);
+}
+.script-ai-config-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 7px;
+}
+.script-ai-config-actions button:not(.script-primary) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid #ded9ff;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--script-primary-dark);
+  padding: 7px 9px;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.script-ai-config-actions svg { width: 12px; height: 12px; }
+.script-business-profile-card .setup-section {
+  gap: 7px;
+}
+.script-business-profile-card .ai-row {
+  gap: 6px;
+}
+.script-business-profile-card .setup-section-title {
+  font-size: 12px;
+}
+.script-business-profile-card .profile-grid {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+.script-business-profile-card .profile-field label {
+  font-size: 9px;
+}
+.script-business-profile-card .profile-field input,
+.script-business-profile-card .profile-field textarea {
+  font-size: 11px;
+  border-radius: 8px;
+}
+.script-business-profile-card .btn-ai-sm {
+  min-height: 26px;
+  padding: 5px 8px;
+  font-size: 9.5px;
+}
 .script-tech-manager {
   margin-top: 10px;
   border: 1px solid var(--script-border);
