@@ -5108,7 +5108,8 @@ def _get_ai_key(provider: str) -> str:
         'openai': 'OPENAI_API_KEY',
         'claude': 'CLAUDE_API_KEY',
     }
-    return stored_key or os.environ.get(env_keys.get(provider, ''), '') or DEFAULT_API_KEY
+    fallback_key = DEFAULT_API_KEY if provider == 'gemini' else ''
+    return stored_key or os.environ.get(env_keys.get(provider, ''), '') or fallback_key
 
 
 def _get_classifier() -> AIClassifier:
@@ -8197,7 +8198,7 @@ def _build_script_ai_prompt(
         'body': sections.get('body', ''),
         'ending': sections.get('ending', ''),
     }, ensure_ascii=False)
-    return f"""Bạn là trợ lý Gemini viết content tiếng Việt cho Content Studio.
+    return f"""Bạn là trợ lý AI viết content tiếng Việt cho Content Studio.
 
 NHIỆM VỤ:
 - Đọc nội dung hiện tại của thanh kết quả AI bên trái gồm 3 phần: Mở bài, Thân bài, Kết bài.
@@ -8611,11 +8612,9 @@ def scripts_ai_chat():
     selected_ids = body.get('selected_technique_ids') if isinstance(body.get('selected_technique_ids'), list) else []
     techniques = _resolve_content_techniques(message, selected_ids)
     classifier = _get_classifier()
-    if classifier.provider != 'gemini':
-        model = _ai_config.get('model') or DEFAULT_MODEL
-        classifier = AIClassifier('gemini', model, _get_ai_key('gemini'), _ai_config.get('categories', DEFAULT_CATEGORIES))
     if not classifier.api_key:
-        return jsonify({'ok': False, 'error': 'Chưa cấu hình Gemini API key — vào Setup để lưu key trước'}), 400
+        provider_label = PROVIDERS.get(classifier.provider, {}).get('name') or classifier.provider.upper()
+        return jsonify({'ok': False, 'error': f'Chưa cấu hình API key cho {provider_label} — vào Setup để lưu key trước'}), 400
 
     prompt = _build_script_ai_prompt(message, script, active_section, setup, techniques)
     try:

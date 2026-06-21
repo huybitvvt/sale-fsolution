@@ -206,10 +206,11 @@ export function SaleSetupPanel(props: Props) {
   return (
     <div className="setup-panel">
       <div className="setup-section">
-        <div className="setup-section-title">Google Gemini API</div>
+        <div className="setup-section-title">Cấu hình AI</div>
         <div className="ai-row">
           <select value={aiProvider || 'gemini'} onChange={(e) => onProviderChange(e.target.value)}>
             <option value="gemini">Google Gemini</option>
+            <option value="openai">OpenAI / ChatGPT</option>
           </select>
           <select className="ai-model-select" value={aiModel} onChange={(e) => onModelChange(e.target.value)}>
             {modelOptions.map((item) => (

@@ -41,7 +41,6 @@ import {
   isStaffAdmin,
 } from '@/lib/utils';
 
-type AiProviders = Record<string, { default_model?: string }>;
 type AiModelOption = {
   id: string;
   name?: string;
@@ -98,6 +97,7 @@ type PostFetchReport = {
 
 const SCAN_SELECTED_STORAGE_KEY = 'scanSelectedGroups';
 const DEFAULT_GEMINI_PRO_MODEL = 'gemini-3.1-pro-preview';
+const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
 const GEMINI_MODEL_FALLBACKS: AiModelOption[] = [
   {
     id: 'gemini-3.1-pro-preview',
@@ -125,10 +125,48 @@ const GEMINI_MODEL_FALLBACKS: AiModelOption[] = [
     description: 'Alias Flash mặc định',
   },
 ];
+const OPENAI_MODEL_FALLBACKS: AiModelOption[] = [
+  {
+    id: 'gpt-4o-mini',
+    display_name: 'ChatGPT / GPT-4o mini',
+    description: 'Nhanh, dễ test, chi phí thấp',
+  },
+  {
+    id: 'gpt-4o',
+    display_name: 'ChatGPT / GPT-4o',
+    description: 'Chất lượng cao',
+  },
+  {
+    id: 'gpt-4.1-mini',
+    display_name: 'GPT-4.1 mini',
+    description: 'Cân bằng chất lượng và chi phí',
+  },
+  {
+    id: 'gpt-4.1',
+    display_name: 'GPT-4.1',
+    description: 'Model GPT mạnh hơn cho nội dung',
+  },
+];
+
+function defaultModelForProvider(provider?: string) {
+  if (provider === 'openai') return DEFAULT_OPENAI_MODEL;
+  return DEFAULT_GEMINI_PRO_MODEL;
+}
+
+function fallbackModelsForProvider(provider?: string) {
+  if (provider === 'openai') return OPENAI_MODEL_FALLBACKS;
+  return GEMINI_MODEL_FALLBACKS;
+}
 
 function shouldUpgradeGeminiModel(model?: string) {
   const value = String(model || '').toLowerCase();
   return !value || value === 'gemini-flash-latest' || value.includes('flash-lite');
+}
+
+function shouldUpgradeAiModel(provider: string, model?: string) {
+  const value = String(model || '').toLowerCase();
+  if (provider === 'openai') return !value || value.startsWith('gemini');
+  return shouldUpgradeGeminiModel(model);
 }
 
 function postGroupId(post: FbPost): string {
@@ -160,7 +198,6 @@ export function MonitorPage() {
   const [leads, setLeads] = useState<Record<string, Lead[]>>({});
   const [commentSummaries, setCommentSummaries] = useState<Record<string, CommentSummary>>({});
   const [leadsBusy, setLeadsBusy] = useState(false);
-  const [aiProviders, setAiProviders] = useState<AiProviders>({});
   const [aiConfig, setAiConfig] = useState<AiConfig>({});
   const [aiProvider, setAiProvider] = useState('gemini');
   const [aiModel, setAiModel] = useState(DEFAULT_GEMINI_PRO_MODEL);
@@ -1137,8 +1174,15 @@ export function MonitorPage() {
 
   const catOptions = [...new Set(Object.values(classifications))].sort();
 
-  const loadAiModels = useCallback(async () => {
+  const loadAiModels = useCallback(async (providerArg?: string) => {
+    const provider = providerArg || aiProvider || 'gemini';
     setAiModelsLoading(true);
+    if (provider === 'openai') {
+      setAiModels(OPENAI_MODEL_FALLBACKS);
+      setAiModelStatus('');
+      setAiModelsLoading(false);
+      return;
+    }
     try {
       const r = await api('/api/ai/models', { timeoutMs: 45000 });
       const d = await r.json().catch(() => ({}));
@@ -1156,7 +1200,7 @@ export function MonitorPage() {
     } finally {
       setAiModelsLoading(false);
     }
-  }, []);
+  }, [aiProvider]);
 
   useEffect(() => {
     if (!authChecked || !authenticated) return;
@@ -1164,8 +1208,7 @@ export function MonitorPage() {
 
     const loadAiBundle = async (): Promise<boolean> => {
       try {
-        const [pRes, cRes, modelsRes, clRes, lRes, csRes] = await Promise.all([
-          api('/api/ai/providers'),
+        const [cRes, modelsRes, clRes, lRes, csRes] = await Promise.all([
           api('/api/ai/config'),
           api('/api/ai/models', { timeoutMs: 45000 }),
           api('/api/ai/classifications'),
@@ -1173,25 +1216,30 @@ export function MonitorPage() {
           api('/api/ai/comment-summaries'),
         ]);
         if (cancelled) return false;
-        setAiProviders(await pRes.json());
         const cfg = await cRes.json();
         setAiConfig(cfg);
-        setAiProvider('gemini');
-        const resolvedModel = shouldUpgradeGeminiModel(cfg.model) ? DEFAULT_GEMINI_PRO_MODEL : cfg.model;
+        const configuredProvider = cfg.provider === 'openai' ? 'openai' : 'gemini';
+        setAiProvider(configuredProvider);
+        const resolvedModel = shouldUpgradeAiModel(configuredProvider, cfg.model)
+          ? defaultModelForProvider(configuredProvider)
+          : cfg.model;
         setAiModel(resolvedModel);
         const modelsPayload = await modelsRes.json().catch(() => ({}));
-        if (modelsPayload.ok) {
+        if (configuredProvider === 'openai') {
+          setAiModels(OPENAI_MODEL_FALLBACKS);
+          setAiModelStatus('');
+        } else if (modelsPayload.ok) {
           setAiModels(Array.isArray(modelsPayload.models) && modelsPayload.models.length ? modelsPayload.models : GEMINI_MODEL_FALLBACKS);
           setAiModelStatus(modelsPayload.warning || '');
         } else {
           setAiModels(GEMINI_MODEL_FALLBACKS);
           setAiModelStatus('');
         }
-        if (resolvedModel !== cfg.model) {
+        if (resolvedModel !== cfg.model || configuredProvider !== cfg.provider) {
           void api('/api/ai/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: 'gemini', model: resolvedModel }),
+            body: JSON.stringify({ provider: configuredProvider, model: resolvedModel }),
           });
         }
         const autoClassify = !!cfg.auto_classify;
@@ -2195,7 +2243,11 @@ export function MonitorPage() {
 
   async function onProviderChange(next: string) {
     const provider = next || 'gemini';
+    const model = defaultModelForProvider(provider);
     setAiProvider(provider);
+    setAiModel(model);
+    setAiModels(fallbackModelsForProvider(provider));
+    setAiModelStatus('');
     setAiStatus('');
     try {
       await api('/api/ai/config', {
@@ -2203,9 +2255,11 @@ export function MonitorPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider,
-          model: aiModel || (aiProviders[provider] || {}).default_model || '',
+          model,
         }),
       });
+      const cRes = await api('/api/ai/config');
+      setAiConfig(await cRes.json());
     } catch {
       setAiStatus('❌ Không kết nối được backend khi đổi AI');
     }
@@ -2218,13 +2272,13 @@ export function MonitorPage() {
       const r = await api('/api/ai/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'gemini', model: next }),
+        body: JSON.stringify({ provider: aiProvider || 'gemini', model: next }),
       });
       const d = await r.json().catch(() => ({}));
       if (r.ok && d.ok) {
         const cRes = await api('/api/ai/config');
         setAiConfig(await cRes.json());
-        setAiStatus('✅ Đã lưu model Gemini');
+        setAiStatus('✅ Đã lưu model AI');
       } else {
         setAiStatus('❌ ' + (d.error || 'Không lưu được model'));
       }
@@ -2244,7 +2298,7 @@ export function MonitorPage() {
       const r = await api('/api/ai/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'gemini', model: aiModel, key: aiKeyInput.trim() }),
+        body: JSON.stringify({ provider: aiProvider || 'gemini', model: aiModel, key: aiKeyInput.trim() }),
       });
       const d = await r.json();
       if (d.ok) {
@@ -2253,7 +2307,7 @@ export function MonitorPage() {
         setAiConfig(await cRes.json());
         setAiKeyEdit(false);
         setAiKeyInput('');
-        void loadAiModels();
+        void loadAiModels(aiProvider || 'gemini');
       } else setAiStatus('❌ ' + (d.error || 'Lỗi lưu key'));
     } catch {
       setAiStatus('❌ Không kết nối được backend. Kiểm tra Flask port 5000 và refresh lại trang.');
@@ -2285,7 +2339,7 @@ export function MonitorPage() {
       await api('/api/ai/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'gemini', model: aiModel, auto_classify: next }),
+        body: JSON.stringify({ provider: aiProvider || 'gemini', model: aiModel, auto_classify: next }),
       });
     } catch {
       setAiStatus('❌ Không kết nối được backend khi lưu tự động AI');
