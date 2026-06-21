@@ -1148,11 +1148,11 @@ export function MonitorPage() {
         setAiModelStatus(d.warning || '');
       } else {
         setAiModels(GEMINI_MODEL_FALLBACKS);
-        setAiModelStatus(`${d.error || `Không tải được model Gemini (${r.status})`} · đang dùng danh sách Pro dự phòng`);
+        setAiModelStatus('');
       }
     } catch {
       setAiModels(GEMINI_MODEL_FALLBACKS);
-      setAiModelStatus('Không kết nối được backend khi tải model Gemini · đang dùng danh sách Pro dự phòng');
+      setAiModelStatus('');
     } finally {
       setAiModelsLoading(false);
     }
@@ -1185,7 +1185,7 @@ export function MonitorPage() {
           setAiModelStatus(modelsPayload.warning || '');
         } else {
           setAiModels(GEMINI_MODEL_FALLBACKS);
-          setAiModelStatus(`${modelsPayload.error || `Không tải được model Gemini (${modelsRes.status})`} · đang dùng danh sách Pro dự phòng`);
+          setAiModelStatus('');
         }
         if (resolvedModel !== cfg.model) {
           void api('/api/ai/config', {
