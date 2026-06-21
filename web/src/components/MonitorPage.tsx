@@ -761,7 +761,9 @@ export function MonitorPage() {
         const rows = Array.isArray(d.channels) ? d.channels : [];
         channelsRef.current = rows;
         setChannels(rows);
-        setChannelStatus(`✅ Đã đồng bộ Page Facebook: thêm ${d.added || 0}, cập nhật ${d.updated || 0}`);
+        const sourceNote = d.source === 'cookie_html' ? ' · lấy bằng cookie HTML' : '';
+        const warning = d.warning ? ` · ${d.warning}` : '';
+        setChannelStatus(`✅ Đã đồng bộ Page Facebook: thêm ${d.added || 0}, cập nhật ${d.updated || 0}${sourceNote}${warning}`);
       } else {
         setChannelStatus('❌ ' + (d.error || 'Không đồng bộ được Page Facebook'));
       }

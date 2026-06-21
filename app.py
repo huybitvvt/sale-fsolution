@@ -710,8 +710,14 @@ def _page_token_from_cache(page_id: str) -> str:
     cached = (_pages_cache.get(page_id) or {}).get('access_token') or ''
     if cached:
         return cached
-    pages = get_api(DEFAULT_GROUP).get_pages() or []
-    _pages_cache = {p['id']: {'name': p['name'], 'access_token': p['access_token']} for p in pages if p.get('id')}
+    pages, _, _ = _load_facebook_pages_for_active_cookie()
+    for p in pages:
+        if p.get('id'):
+            prev = _pages_cache.get(str(p.get('id'))) or {}
+            _pages_cache[str(p.get('id'))] = {
+                'name': p.get('name', '') or prev.get('name', ''),
+                'access_token': p.get('access_token', '') or prev.get('access_token', ''),
+            }
     return (_pages_cache.get(page_id) or {}).get('access_token') or ''
 
 
@@ -2009,6 +2015,178 @@ def _parse_facebook_name_from_html(html: str, user_id: str) -> str:
         if name:
             return name
     return ''
+
+
+def _extract_facebook_page_id_from_href(href: str) -> str:
+    href = unescape(str(href or '')).replace('\\/', '/')
+    if not href:
+        return ''
+    patterns = (
+        r'[?&]id=(\d{10,20})',
+        r'/profile\.php\?id=(\d{10,20})',
+        r'/pages/[^/?#]+/(\d{10,20})',
+        r'facebook\.com/(?:pages/[^/?#]+/)?(\d{10,20})(?:[/?#]|$)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, href, flags=re.I)
+        if match:
+            return match.group(1)
+    return ''
+
+
+def _clean_facebook_page_name(raw: str) -> str:
+    text = unescape(re.sub(r'<[^>]+>', ' ', str(raw or '')))
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'\s*[\|\-–]\s*Facebook.*$', '', text, flags=re.I).strip()
+    blocked = {
+        'facebook',
+        'fanpage',
+        'pages',
+        'page',
+        'trang',
+        'thích',
+        'theo dõi',
+        'follow',
+        'like',
+        'xem thêm',
+        'see more',
+    }
+    if not text or text.lower() in blocked:
+        return ''
+    if len(text) > 120:
+        return ''
+    return text
+
+
+def _fetch_facebook_pages_from_cookie_html(cookie: str) -> tuple[list[dict], str]:
+    cookie = str(cookie or '').strip()
+    if not cookie:
+        return [], 'Chưa có cookie Facebook đang active.'
+    urls = [
+        'https://www.facebook.com/pages/?category=your_pages',
+        'https://m.facebook.com/pages/?category=your_pages',
+        'https://mbasic.facebook.com/pages/?category=your_pages',
+        'https://www.facebook.com/bookmarks/pages',
+        'https://m.facebook.com/bookmarks/pages',
+    ]
+    headers = _facebook_cookie_headers(cookie)
+    pages_by_id: dict[str, dict] = {}
+    current_user_id = _extract_cookie_user(cookie)
+    last_error = ''
+
+    for url in urls:
+        try:
+            resp = _req.get(url, headers=headers, timeout=18, allow_redirects=True)
+            html = resp.text or ''
+            if resp.status_code >= 400:
+                last_error = f'Facebook HTML {resp.status_code}'
+                continue
+            if '/login' in resp.url.lower() or 'đăng nhập' in html[:900].lower() or '<title>log in' in html[:900].lower():
+                last_error = 'Cookie Facebook bị chuyển về trang đăng nhập.'
+                continue
+
+            # Prefer explicit JSON-like page objects when Facebook embeds them.
+            for match in re.finditer(
+                r'"(?:id|pageID|page_id|profile_id|profile_plus_id)"\s*:\s*"(\d{10,20})".{0,500}?"(?:name|title|profile_name)"\s*:\s*"([^"]{2,160})"',
+                html,
+                flags=re.I | re.S,
+            ):
+                page_id = match.group(1)
+                name = _clean_facebook_page_name(_decode_facebook_name(match.group(2)))
+                if page_id == current_user_id:
+                    continue
+                if page_id and name:
+                    pages_by_id[page_id] = {
+                        'id': page_id,
+                        'name': name,
+                        'access_token': '',
+                        'source': 'cookie_html',
+                    }
+
+            for match in re.finditer(
+                r'"(?:name|title|profile_name)"\s*:\s*"([^"]{2,160})".{0,500}?"(?:id|pageID|page_id|profile_id|profile_plus_id)"\s*:\s*"(\d{10,20})"',
+                html,
+                flags=re.I | re.S,
+            ):
+                name = _clean_facebook_page_name(_decode_facebook_name(match.group(1)))
+                page_id = match.group(2)
+                if page_id == current_user_id:
+                    continue
+                if page_id and name:
+                    pages_by_id[page_id] = {
+                        'id': page_id,
+                        'name': name,
+                        'access_token': '',
+                        'source': 'cookie_html',
+                    }
+
+            for match in re.finditer(r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, flags=re.I | re.S):
+                href = unescape(match.group(1))
+                label = _clean_facebook_page_name(match.group(2))
+                if not label:
+                    continue
+                page_id = _extract_facebook_page_id_from_href(href)
+                if not page_id:
+                    continue
+                if page_id == current_user_id:
+                    continue
+                if any(word in label.lower() for word in ('quảng cáo', 'ads manager', 'business suite', 'meta business')):
+                    continue
+                pages_by_id[page_id] = {
+                    'id': page_id,
+                    'name': label,
+                    'access_token': '',
+                    'source': 'cookie_html',
+                }
+        except Exception as e:
+            last_error = str(e)[:180]
+
+    pages = list(pages_by_id.values())
+    pages.sort(key=lambda item: item.get('name') or item.get('id') or '')
+    warning = ''
+    if pages:
+        warning = 'Đồng bộ Page bằng cookie HTML nên có thể chưa có Page token để đăng/đọc bài Page. Nếu đăng Page lỗi, hãy cập nhật cookie admin Page hoặc thêm Page thủ công.'
+    elif last_error:
+        warning = last_error
+    return pages, warning
+
+
+def _load_facebook_pages_for_active_cookie() -> tuple[list[dict], str, str]:
+    """Return pages, warning, source. Graph is preferred because it includes Page tokens."""
+    global _pages_cache
+    graph_pages: list[dict] = []
+    graph_error = ''
+    try:
+        api = get_api(DEFAULT_GROUP)
+        graph_pages = api.get_pages() or []
+        graph_error = getattr(api, 'last_graph_error', '') or ''
+    except Exception as e:
+        graph_error = str(e)[:240]
+    if graph_pages:
+        _pages_cache = {
+            str(p.get('id') or ''): {'name': p.get('name', ''), 'access_token': p.get('access_token', '')}
+            for p in graph_pages
+            if p.get('id')
+        }
+        return graph_pages, '', 'facebook_graph'
+
+    html_pages, html_warning = _fetch_facebook_pages_from_cookie_html(_active_cookie())
+    if html_pages:
+        # Preserve any token already cached, but allow HTML-discovered Pages to appear in the UI.
+        for page in html_pages:
+            page_id = str(page.get('id') or '')
+            cached = _pages_cache.get(page_id) or {}
+            _pages_cache[page_id] = {
+                'name': page.get('name', '') or cached.get('name', ''),
+                'access_token': cached.get('access_token', '') or page.get('access_token', ''),
+            }
+        warning = html_warning or 'Graph không trả Page; đã lấy Page bằng cookie HTML.'
+        if graph_error:
+            warning = f'{warning} Graph: {graph_error}'
+        return html_pages, warning, 'cookie_html'
+
+    warning = graph_error or html_warning or 'Không tìm thấy Page nào từ Graph hoặc cookie HTML.'
+    return [], warning, 'none'
 
 
 def _remember_facebook_display_name(staff: dict, name: str) -> None:
@@ -5239,11 +5417,15 @@ def api_create_page_post():
 
 @app.route('/api/pages')
 def api_pages():
-    global _pages_cache
     try:
-        pages = get_api(DEFAULT_GROUP).get_pages() or []
-        _pages_cache = {p['id']: {'name': p['name'], 'access_token': p['access_token']} for p in pages}
-        return jsonify([{'id': p['id'], 'name': p['name']} for p in pages])
+        pages, warning, source = _load_facebook_pages_for_active_cookie()
+        rows = [{'id': p.get('id'), 'name': p.get('name')} for p in pages if p.get('id')]
+        if request.args.get('format') == 'object':
+            payload = {'ok': True, 'pages': rows, 'source': source}
+            if warning:
+                payload['warning'] = warning
+            return jsonify(payload)
+        return jsonify(rows)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -6810,18 +6992,21 @@ def channels_sync_facebook_pages():
     """Đồng bộ các Facebook Page mà cookie hiện tại có quyền quản trị vào bảng kênh theo dõi."""
     global _managed_channels, _pages_cache
     try:
-        pages = get_api(DEFAULT_GROUP).get_pages() or []
+        pages, warning, source = _load_facebook_pages_for_active_cookie()
     except Exception as e:
         return jsonify({'ok': False, 'error': f'Không lấy được danh sách Page Facebook: {e}'}), 500
 
     if not pages:
         return jsonify({
             'ok': False,
-            'error': 'Không tìm thấy Page nào qua Facebook API. Có thể Page mới tạo chưa được Facebook trả về; hãy bấm + Thêm và nhập thủ công ID Page.',
+            'error': warning or 'Không tìm thấy Page nào qua Facebook API/cookie HTML. Có thể Page mới tạo chưa được Facebook trả về; hãy bấm + Thêm và nhập thủ công ID Page.',
         }), 400
 
     _pages_cache = {
-        str(p.get('id') or ''): {'name': p.get('name', ''), 'access_token': p.get('access_token', '')}
+        str(p.get('id') or ''): {
+            'name': p.get('name', ''),
+            'access_token': p.get('access_token', '') or (_pages_cache.get(str(p.get('id') or '')) or {}).get('access_token', ''),
+        }
         for p in pages
         if p.get('id')
     }
@@ -6870,7 +7055,10 @@ def channels_sync_facebook_pages():
     _save_managed_channels()
     rows = [_public_managed_channel(item) for item in _managed_channels]
     rows.sort(key=lambda item: item.get('created_at') or item.get('updated_at') or '', reverse=True)
-    return jsonify({'ok': True, 'added': added, 'updated': updated, 'channels': rows})
+    payload = {'ok': True, 'added': added, 'updated': updated, 'channels': rows, 'source': source}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
 
 
 @app.route('/api/channels', methods=['POST'])
