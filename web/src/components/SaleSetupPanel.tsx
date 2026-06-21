@@ -63,22 +63,22 @@ function defaultContentStudioSetup(): ContentStudioSetup {
   return {
     sections: {
       opening: {
-        label: 'Mở bài',
+        label: 'HOOK',
         name: 'Hook',
         description: 'Tối đa 3 dòng',
         rule: 'Hook phải thu hút, rõ chủ đề và tối đa 3 dòng.',
       },
       body: {
-        label: 'Thân bài',
-        name: 'Thân bài',
+        label: 'BODY',
+        name: 'Body',
         description: 'Rõ ý chính',
         rule: 'Triển khai nội dung chính mạch lạc, dễ hiểu, bám đúng sản phẩm và khách hàng.',
       },
       ending: {
-        label: 'Kết bài',
-        name: 'Kết bài',
+        label: 'CTA',
+        name: 'CTA',
         description: 'Chốt hành động',
-        rule: 'Kết bài phải có CTA tự nhiên, không bịa ưu đãi hoặc cam kết.',
+        rule: 'CTA phải tự nhiên, không bịa ưu đãi hoặc cam kết.',
       },
     },
   };

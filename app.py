@@ -286,22 +286,22 @@ def _default_content_studio_setup() -> dict:
     return {
         'sections': {
             'opening': {
-                'label': 'Mở bài',
+                'label': 'HOOK',
                 'name': 'Hook',
                 'description': 'Tối đa 3 dòng',
                 'rule': 'Hook phải thu hút, rõ chủ đề và tối đa 3 dòng.',
             },
             'body': {
-                'label': 'Thân bài',
-                'name': 'Thân bài',
+                'label': 'BODY',
+                'name': 'Body',
                 'description': 'Rõ ý chính',
                 'rule': 'Triển khai nội dung chính mạch lạc, dễ hiểu, bám đúng sản phẩm và khách hàng.',
             },
             'ending': {
-                'label': 'Kết bài',
-                'name': 'Kết bài',
+                'label': 'CTA',
+                'name': 'CTA',
                 'description': 'Chốt hành động',
-                'rule': 'Kết bài phải có CTA tự nhiên, không bịa ưu đãi hoặc cam kết.',
+                'rule': 'CTA phải tự nhiên, không bịa ưu đãi hoặc cam kết.',
             },
         },
     }
@@ -8105,9 +8105,9 @@ CONTENT_STUDIO_SETUP_KV = 'content_studio_setup'
 CONTENT_TECHNIQUES_KV = 'content_techniques'
 CONTENT_SECTION_KEYS = ('opening', 'body', 'ending')
 CONTENT_SECTION_LABELS = {
-    'opening': 'Mở bài',
-    'body': 'Thân bài',
-    'ending': 'Kết bài',
+    'opening': 'HOOK',
+    'body': 'BODY',
+    'ending': 'CTA',
 }
 APP_KV_RLS_FIX_HINT = (
     'Supabase app_kv đang chặn ghi do RLS. '
@@ -8355,12 +8355,12 @@ def _build_script_ai_prompt(
     return f"""Bạn là trợ lý AI viết content tiếng Việt cho Content Studio.
 
 NHIỆM VỤ:
-- Đọc nội dung hiện tại của thanh kết quả AI bên trái gồm 3 phần: Mở bài, Thân bài, Kết bài.
+- Đọc nội dung hiện tại của thanh kết quả AI bên trái theo các block content: HOOK, BODY, CTA.
 - Đọc rule setup cố định và kỹ thuật content được gọi từ database.
 - Nếu người dùng đang chọn một phần cụ thể, chỉ xử lý phần đó, trừ khi câu lệnh yêu cầu rõ "toàn bài", "full", hoặc nêu nhiều phần.
 - Giữ nguyên cấu trúc cũ. Khi người dùng yêu cầu đổi một chi tiết nhỏ, chỉ thay đúng chi tiết đó trong phần được chọn.
 - Không bịa thông tin sản phẩm, giá, bảo hành, ưu đãi.
-- Hook/Mở bài bắt buộc tối đa 3 dòng.
+- HOOK bắt buộc tối đa 3 dòng.
 
 PHẦN ĐANG CHỌN: {active_section or 'all'} ({active_label})
 
@@ -8382,9 +8382,9 @@ Trả về CHỈ JSON object, không markdown, đúng cấu trúc:
   "target_section": "opening|body|ending|all|none",
   "action": "replace|append|none",
   "sections": {{
-    "opening": "nội dung Mở bài mới nếu có",
-    "body": "nội dung Thân bài mới nếu có",
-    "ending": "nội dung Kết bài mới nếu có"
+    "opening": "nội dung HOOK mới nếu có",
+    "body": "nội dung BODY mới nếu có",
+    "ending": "nội dung CTA mới nếu có"
   }}
 }}"""
 

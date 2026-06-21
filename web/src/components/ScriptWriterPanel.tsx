@@ -115,9 +115,9 @@ const BLOCK_TYPES: Array<{ id: BlockType; label: string; icon: string; placehold
 ];
 
 const SCRIPT_SECTIONS: ScriptSection[] = [
-  { id: 'opening', label: 'Mở bài', blockType: 'hook', emptyText: 'Chưa có mở bài' },
-  { id: 'body', label: 'Thân bài', blockType: 'body', emptyText: 'Chưa có thân bài' },
-  { id: 'ending', label: 'Kết bài', blockType: 'cta', emptyText: 'Chưa có kết bài' },
+  { id: 'opening', label: 'HOOK', blockType: 'hook', emptyText: 'Chưa có hook' },
+  { id: 'body', label: 'BODY', blockType: 'body', emptyText: 'Chưa có body' },
+  { id: 'ending', label: 'CTA', blockType: 'cta', emptyText: 'Chưa có CTA' },
 ];
 
 const SECTION_BLOCK_TYPES: Record<SectionKey, BlockType[]> = {
@@ -127,9 +127,9 @@ const SECTION_BLOCK_TYPES: Record<SectionKey, BlockType[]> = {
 };
 
 const SECTION_LABELS: Record<SectionKey, string> = {
-  opening: 'Mở bài',
-  body: 'Thân bài',
-  ending: 'Kết bài',
+  opening: 'HOOK',
+  body: 'BODY',
+  ending: 'CTA',
 };
 
 const STATUS_LABELS: Record<ScriptStatus, string> = {
@@ -523,7 +523,7 @@ export function ScriptWriterPanel() {
     {
       id: 'welcome',
       role: 'ai',
-      text: 'Chọn Mở bài, Thân bài hoặc Kết bài ở bên trái rồi nhập yêu cầu. Gõ @ để gọi kỹ thuật content đã lưu.',
+      text: 'Chọn HOOK, BODY hoặc CTA ở bên trái rồi nhập yêu cầu. Gõ @ để gọi kỹ thuật content đã lưu.',
     },
   ]);
   const [chatInput, setChatInput] = useState('');
@@ -1381,10 +1381,10 @@ export function ScriptWriterPanel() {
               <button type="button" disabled={chatBusy} onClick={() => quickAi('Cải thiện đoạn đang chọn, giữ nguyên ý chính và chỉ sửa phần này.')}>
                 <Sparkles /> Cải thiện
               </button>
-              <button type="button" disabled={chatBusy} onClick={() => quickAi('Viết hook mở bài tối đa 3 dòng, thật thu hút.', 'opening')}>
+              <button type="button" disabled={chatBusy} onClick={() => quickAi('Viết HOOK tối đa 3 dòng, thật thu hút.', 'opening')}>
                 <AtSign /> Hook
               </button>
-              <button type="button" disabled={chatBusy} onClick={() => quickAi('Viết kết bài có CTA tự nhiên, ngắn gọn.', 'ending')}>
+              <button type="button" disabled={chatBusy} onClick={() => quickAi('Viết CTA tự nhiên, ngắn gọn.', 'ending')}>
                 <MessageSquare /> CTA
               </button>
             </div>
