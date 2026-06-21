@@ -994,6 +994,10 @@
   border-radius: 6px;
 }
 .manage-dashboard .md-settings-wrap .profile-field textarea { min-height: 48px; }
+.manage-dashboard .md-settings-wrap .content-setup-grid { grid-template-columns: 1fr; gap: 6px; }
+.manage-dashboard .md-settings-wrap .content-setup-card { padding: 8px; border-radius: 8px; }
+.manage-dashboard .md-settings-wrap .content-setup-card-head { margin-bottom: 6px; }
+.manage-dashboard .md-settings-wrap .content-setup-card textarea { min-height: 42px; max-height: 78px; }
 
 .md-error-banner {
   background: #fef2f2;

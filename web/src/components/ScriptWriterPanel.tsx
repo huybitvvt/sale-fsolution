@@ -6,6 +6,7 @@ import {
   AlignJustify,
   AlignLeft,
   AlignRight,
+  AtSign,
   Bot,
   Bold,
   Check,
@@ -13,20 +14,26 @@ import {
   ChevronUp,
   Clipboard,
   Copy,
+  Database,
+  Eye,
   FileDown,
   GripVertical,
   Italic,
+  MessageSquare,
   Plus,
   Printer,
   Pencil,
+  RefreshCw,
   Save,
   Send,
+  SendHorizontal,
   Sparkles,
   Trash2,
   Underline,
+  Wand2,
   X,
 } from 'lucide-react';
-import { api } from '@/lib/api';
+import { AI_TIMEOUT_MS, api } from '@/lib/api';
 import './script-writer-panel.css';
 
 type ScriptStatus = 'draft' | 'pending' | 'approved';
@@ -50,6 +57,35 @@ type ScriptDocument = {
   blocks: ScriptBlock[];
 };
 
+type SectionKey = 'opening' | 'body' | 'ending';
+
+type ScriptSection = {
+  id: SectionKey;
+  label: string;
+  blockType: BlockType;
+  emptyText: string;
+};
+
+type ContentTechnique = {
+  id: string;
+  name: string;
+  content: string;
+  system?: boolean;
+};
+
+type ChatMessage = {
+  id: string;
+  role: 'user' | 'ai';
+  text: string;
+};
+
+type ScriptAiResult = {
+  reply?: string;
+  target_section?: SectionKey | 'all' | 'none';
+  action?: 'replace' | 'append' | 'none';
+  sections?: Partial<Record<SectionKey, string>>;
+};
+
 const BLOCK_TYPES: Array<{ id: BlockType; label: string; icon: string; placeholder: string }> = [
   { id: 'text', label: 'TEXT', icon: '📝', placeholder: 'Nhập nội dung...' },
   { id: 'h1', label: 'H1', icon: '🔠', placeholder: 'Tiêu đề lớn...' },
@@ -60,6 +96,24 @@ const BLOCK_TYPES: Array<{ id: BlockType; label: string; icon: string; placehold
   { id: 'scene', label: 'SCENE', icon: '🎬', placeholder: '[Cảnh quay / góc máy]...' },
   { id: 'quote', label: 'QUOTE', icon: '💬', placeholder: 'Trích dẫn...' },
 ];
+
+const SCRIPT_SECTIONS: ScriptSection[] = [
+  { id: 'opening', label: 'Mở bài', blockType: 'hook', emptyText: 'Chưa có mở bài' },
+  { id: 'body', label: 'Thân bài', blockType: 'body', emptyText: 'Chưa có thân bài' },
+  { id: 'ending', label: 'Kết bài', blockType: 'cta', emptyText: 'Chưa có kết bài' },
+];
+
+const SECTION_BLOCK_TYPES: Record<SectionKey, BlockType[]> = {
+  opening: ['hook', 'h1', 'h2'],
+  body: ['body', 'text', 'scene', 'quote'],
+  ending: ['cta'],
+};
+
+const SECTION_LABELS: Record<SectionKey, string> = {
+  opening: 'Mở bài',
+  body: 'Thân bài',
+  ending: 'Kết bài',
+};
 
 const STATUS_LABELS: Record<ScriptStatus, string> = {
   draft: 'Nháp',
@@ -123,6 +177,38 @@ function htmlToPlain(text: string) {
   const div = document.createElement('div');
   div.innerHTML = text;
   return (div.textContent || div.innerText || '').replace(/\u00a0/g, ' ').trim();
+}
+
+function limitOpeningLines(text: string) {
+  return text.replace(/\r\n/g, '\n').split('\n').slice(0, 3).join('\n').trim();
+}
+
+function sectionForBlock(type: BlockType): SectionKey {
+  if (SECTION_BLOCK_TYPES.opening.includes(type)) return 'opening';
+  if (SECTION_BLOCK_TYPES.ending.includes(type)) return 'ending';
+  return 'body';
+}
+
+function sectionBlocks(script: ScriptDocument | null, section: SectionKey) {
+  if (!script) return [];
+  const allowed = SECTION_BLOCK_TYPES[section];
+  return script.blocks.filter((block) => allowed.includes(block.type));
+}
+
+function sectionText(script: ScriptDocument | null, section: SectionKey) {
+  return sectionBlocks(script, section)
+    .map((block) => htmlToPlain(block.text))
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+}
+
+function scriptSectionPayload(script: ScriptDocument | null): Record<SectionKey, string> {
+  return {
+    opening: sectionText(script, 'opening'),
+    body: sectionText(script, 'body'),
+    ending: sectionText(script, 'ending'),
+  };
 }
 
 function sanitizeInlineHtml(raw: string) {
@@ -267,11 +353,11 @@ function ScriptBlockEditor({ block, placeholder, onChange }: ScriptBlockEditorPr
   useEffect(() => {
     const node = editorRef.current;
     if (!node) return;
-    if (mountedBlockId.current !== block.id) {
+    if (mountedBlockId.current !== block.id || (document.activeElement !== node && node.innerHTML !== (block.text || ''))) {
       node.innerHTML = block.text || '';
       mountedBlockId.current = block.id;
     }
-  }, [block.id]);
+  }, [block.id, block.text]);
 
   function syncEditor() {
     const node = editorRef.current;
@@ -379,6 +465,23 @@ export function ScriptWriterPanel() {
   const [syncStatus, setSyncStatus] = useState('Đang tải từ Supabase...');
   const [syncError, setSyncError] = useState('');
   const [syncWarning, setSyncWarning] = useState('');
+  const [activeSection, setActiveSection] = useState<SectionKey>('opening');
+  const [techniques, setTechniques] = useState<ContentTechnique[]>([]);
+  const [techniqueName, setTechniqueName] = useState('');
+  const [techniqueContent, setTechniqueContent] = useState('');
+  const [techniqueStatus, setTechniqueStatus] = useState('');
+  const [techniqueBusy, setTechniqueBusy] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      id: 'welcome',
+      role: 'ai',
+      text: 'Chọn Mở bài, Thân bài hoặc Kết bài ở bên trái rồi nhập yêu cầu. Gõ @ để gọi kỹ thuật content đã lưu.',
+    },
+  ]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatBusy, setChatBusy] = useState(false);
+  const [aiDraft, setAiDraft] = useState<ScriptAiResult | null>(null);
+  const [selectedTechniqueIds, setSelectedTechniqueIds] = useState<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -421,6 +524,12 @@ export function ScriptWriterPanel() {
   }, []);
 
   useEffect(() => {
+    void loadTechniques();
+    // loadTechniques is stable enough for this mount-only fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     if (!loaded || syncError) return;
     const timer = window.setTimeout(() => {
       void saveScripts(scripts, false);
@@ -438,6 +547,7 @@ export function ScriptWriterPanel() {
 
   const selected = scripts.find((script) => script.id === selectedId) || null;
   const facebookPost = useMemo(() => (selected ? buildFacebookPost(selected) : null), [selected]);
+  const currentSections = useMemo(() => scriptSectionPayload(selected), [selected]);
   const visibleScripts = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase('vi');
     return scripts.filter((script) => {
@@ -450,6 +560,19 @@ export function ScriptWriterPanel() {
     const text = selected?.blocks.map((block) => htmlToPlain(block.text)).join(' ').trim() || '';
     return text ? text.split(/\s+/).length : 0;
   }, [selected]);
+
+  const mentionMatch = useMemo(() => {
+    const match = chatInput.match(/@([^\s@]*)$/);
+    return match ? match[1].toLocaleLowerCase('vi') : '';
+  }, [chatInput]);
+
+  const mentionOpen = /@([^\s@]*)$/.test(chatInput);
+  const mentionSuggestions = useMemo(() => {
+    if (!mentionOpen) return [];
+    return techniques
+      .filter((item) => item.name.toLocaleLowerCase('vi').includes(mentionMatch))
+      .slice(0, 6);
+  }, [mentionMatch, mentionOpen, techniques]);
 
   async function saveScripts(rows: ScriptDocument[], showNotice: boolean) {
     setSyncStatus('Đang lưu...');
@@ -478,6 +601,73 @@ export function ScriptWriterPanel() {
       setSyncStatus('Lưu Supabase thất bại');
       if (showNotice) setNotice(message);
     }
+  }
+
+  async function loadTechniques() {
+    setTechniqueStatus('Đang tải kỹ thuật...');
+    try {
+      const response = await api('/api/content-techniques', { timeoutMs: 30000 });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không tải được kỹ thuật content');
+      setTechniques(Array.isArray(payload.techniques) ? payload.techniques : []);
+      setTechniqueStatus(payload.warning || '');
+    } catch (error) {
+      setTechniqueStatus(error instanceof Error ? error.message : 'Không tải được kỹ thuật content');
+    }
+  }
+
+  async function addTechnique() {
+    const name = techniqueName.trim();
+    const content = techniqueContent.trim();
+    if (!name || !content) {
+      setTechniqueStatus('Nhập đủ Tên kỹ thuật và Nội dung.');
+      return;
+    }
+    setTechniqueBusy(true);
+    setTechniqueStatus('Đang lưu kỹ thuật...');
+    try {
+      const response = await api('/api/content-techniques', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, content }),
+        timeoutMs: 30000,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không lưu được kỹ thuật');
+      setTechniques(Array.isArray(payload.techniques) ? payload.techniques : []);
+      setTechniqueName('');
+      setTechniqueContent('');
+      setTechniqueStatus(payload.warning || 'Đã lưu kỹ thuật vào database.');
+    } catch (error) {
+      setTechniqueStatus(error instanceof Error ? error.message : 'Không lưu được kỹ thuật');
+    } finally {
+      setTechniqueBusy(false);
+    }
+  }
+
+  async function deleteTechnique(techniqueId: string) {
+    if (!window.confirm('Xóa kỹ thuật content này?')) return;
+    setTechniqueBusy(true);
+    try {
+      const response = await api(`/api/content-techniques/${encodeURIComponent(techniqueId)}`, {
+        method: 'DELETE',
+        timeoutMs: 30000,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không xóa được kỹ thuật');
+      setTechniques(Array.isArray(payload.techniques) ? payload.techniques : []);
+      setSelectedTechniqueIds((ids) => ids.filter((id) => id !== techniqueId));
+      setTechniqueStatus(payload.warning || 'Đã xóa kỹ thuật.');
+    } catch (error) {
+      setTechniqueStatus(error instanceof Error ? error.message : 'Không xóa được kỹ thuật');
+    } finally {
+      setTechniqueBusy(false);
+    }
+  }
+
+  function selectMentionTechnique(technique: ContentTechnique) {
+    setChatInput((value) => value.replace(/@([^\s@]*)$/, `@${technique.name} `));
+    setSelectedTechniqueIds((ids) => (ids.includes(technique.id) ? ids : [...ids, technique.id]));
   }
 
   function updateSelected(updater: (script: ScriptDocument) => ScriptDocument) {
@@ -530,6 +720,32 @@ export function ScriptWriterPanel() {
       blocks.splice(index, 0, { id: newId('block'), type, text });
       return { ...script, blocks };
     });
+  }
+
+  function viewSection(section: SectionKey) {
+    setActiveSection(section);
+    setNotice(`Đang xem ${SECTION_LABELS[section]}.`);
+  }
+
+  function editSection(section: SectionKey) {
+    if (!selected) return;
+    setActiveSection(section);
+    if (!sectionBlocks(selected, section).length) {
+      addBlock(SCRIPT_SECTIONS.find((item) => item.id === section)?.blockType || 'text');
+    }
+    setNotice(`Đang sửa ${SECTION_LABELS[section]}.`);
+  }
+
+  function removeSection(section: SectionKey) {
+    if (!selected) return;
+    if (!window.confirm(`Xóa nội dung ${SECTION_LABELS[section]}?`)) return;
+    const allowed = SECTION_BLOCK_TYPES[section];
+    updateSelected((script) => ({
+      ...script,
+      blocks: script.blocks.filter((block) => !allowed.includes(block.type)),
+    }));
+    setActiveSection(section);
+    setNotice(`Đã xóa ${SECTION_LABELS[section]}.`);
   }
 
   function updateBlock(id: string, patch: Partial<ScriptBlock>) {
@@ -697,6 +913,117 @@ export function ScriptWriterPanel() {
     setNotice('Đã chèn gợi ý vào kịch bản.');
   }
 
+  function mentionedTechniqueIds(message: string) {
+    const lower = message.toLocaleLowerCase('vi');
+    const ids = new Set(selectedTechniqueIds);
+    techniques.forEach((item) => {
+      const name = item.name.toLocaleLowerCase('vi');
+      if (lower.includes(`@${name}`) || lower.includes(name)) ids.add(item.id);
+    });
+    return [...ids];
+  }
+
+  async function sendAiChat(overrideMessage?: string, overrideSection?: SectionKey) {
+    const message = (overrideMessage ?? chatInput).trim();
+    const targetSection = overrideSection || activeSection;
+    if (!message) return;
+    if (!selected) {
+      setNotice('Chọn kịch bản trước khi chat AI.');
+      return;
+    }
+    const userMessage: ChatMessage = { id: newId('msg'), role: 'user', text: message };
+    setChatMessages((rows) => [...rows, userMessage]);
+    setChatInput('');
+    setAiDraft(null);
+    setChatBusy(true);
+    try {
+      const response = await api('/api/scripts/ai-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message,
+          script: selected,
+          active_section: targetSection,
+          selected_technique_ids: mentionedTechniqueIds(message),
+        }),
+        timeoutMs: AI_TIMEOUT_MS,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'AI chưa trả kết quả');
+      const result = payload.result as ScriptAiResult;
+      setAiDraft(result);
+      setChatMessages((rows) => [
+        ...rows,
+        { id: newId('msg'), role: 'ai', text: result.reply || 'AI đã tạo bản nháp. Bấm Add để đưa vào cấu trúc.' },
+      ]);
+      if (Array.isArray(payload.techniques) && payload.techniques.length) {
+        setTechniqueStatus(`Đã áp dụng kỹ thuật: ${payload.techniques.map((item: ContentTechnique) => item.name).join(', ')}`);
+      }
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : 'Không gọi được AI';
+      setChatMessages((rows) => [...rows, { id: newId('msg'), role: 'ai', text: messageText }]);
+      setNotice(messageText);
+    } finally {
+      setChatBusy(false);
+    }
+  }
+
+  function insertionIndexForSection(blocks: ScriptBlock[], section: SectionKey) {
+    if (section === 'opening') return 0;
+    if (section === 'ending') return blocks.length;
+    const firstEnding = blocks.findIndex((block) => sectionForBlock(block.type) === 'ending');
+    return firstEnding >= 0 ? firstEnding : blocks.length;
+  }
+
+  function applySectionContent(script: ScriptDocument, section: SectionKey, text: string, action: 'replace' | 'append' | 'none') {
+    const value = section === 'opening' ? limitOpeningLines(text) : text.trim();
+    if (!value || action === 'none') return script;
+    const sectionDef = SCRIPT_SECTIONS.find((item) => item.id === section) || SCRIPT_SECTIONS[1];
+    const allowed = SECTION_BLOCK_TYPES[section];
+    const nextBlock: ScriptBlock = { id: newId('block'), type: sectionDef.blockType, text: value };
+    const blocks = [...script.blocks];
+    if (action === 'append') {
+      const lastIndex = [...blocks].map((block, index) => ({ block, index })).reverse()
+        .find((item) => allowed.includes(item.block.type))?.index;
+      const insertAt = lastIndex === undefined ? insertionIndexForSection(blocks, section) : lastIndex + 1;
+      blocks.splice(insertAt, 0, nextBlock);
+      return { ...script, blocks };
+    }
+
+    const firstIndex = blocks.findIndex((block) => allowed.includes(block.type));
+    const kept = blocks.filter((block) => !allowed.includes(block.type));
+    const insertAt = firstIndex >= 0 ? Math.min(firstIndex, kept.length) : insertionIndexForSection(kept, section);
+    kept.splice(insertAt, 0, nextBlock);
+    return { ...script, blocks: kept };
+  }
+
+  function applyAiDraft() {
+    if (!aiDraft) return;
+    const sections = aiDraft.sections || {};
+    const target = aiDraft.target_section || activeSection;
+    const action = aiDraft.action === 'append' ? 'append' : 'replace';
+    updateSelected((script) => {
+      let next = script;
+      const keys: SectionKey[] = target === 'all'
+        ? ['opening', 'body', 'ending']
+        : target === 'opening' || target === 'body' || target === 'ending'
+          ? [target]
+          : [activeSection];
+      keys.forEach((key) => {
+        const value = sections[key];
+        if (value) next = applySectionContent(next, key, value, action);
+      });
+      return next;
+    });
+    setAiDraft(null);
+    setNotice('Đã Add nội dung AI vào cấu trúc bên trái.');
+  }
+
+  function quickAi(message: string, section: SectionKey = activeSection) {
+    setActiveSection(section);
+    void sendAiChat(message, section);
+  }
+
   return (
     <section className="script-studio" aria-label="Trình soạn kịch bản">
       {syncWarning ? (
@@ -721,6 +1048,29 @@ export function ScriptWriterPanel() {
             <option value="pending">Chờ duyệt</option>
             <option value="approved">Đã duyệt</option>
           </select>
+        </div>
+        <div className="script-section-results" aria-label="Kết quả AI theo cấu trúc">
+          <div className="script-section-results-head">
+            <span>Kết quả AI</span>
+            <strong>Cấu trúc bài</strong>
+          </div>
+          {SCRIPT_SECTIONS.map((section) => {
+            const text = currentSections[section.id];
+            const active = activeSection === section.id;
+            return (
+              <div className={`script-section-result${active ? ' active' : ''}`} key={section.id}>
+                <button type="button" className="script-section-main" onClick={() => viewSection(section.id)}>
+                  <strong>{section.label}</strong>
+                  <span>{text || section.emptyText}</span>
+                </button>
+                <div className="script-section-actions">
+                  <button type="button" title={`Xem ${section.label}`} onClick={() => viewSection(section.id)}><Eye /></button>
+                  <button type="button" title={`Sửa ${section.label}`} onClick={() => editSection(section.id)}><Pencil /></button>
+                  <button type="button" title={`Xóa ${section.label}`} onClick={() => removeSection(section.id)}><Trash2 /></button>
+                </div>
+              </div>
+            );
+          })}
         </div>
         <div className="script-library-list">
           {visibleScripts.map((script) => (
@@ -794,7 +1144,7 @@ export function ScriptWriterPanel() {
               {selected.blocks.map((block, index) => {
                 const definition = BLOCK_TYPES.find((item) => item.id === block.type) || BLOCK_TYPES[0];
                 return (
-                  <div className={`script-block block-${block.type}`} key={block.id}>
+                  <div className={`script-block block-${block.type}${sectionForBlock(block.type) === activeSection ? ' section-active' : ''}`} key={block.id}>
                     <GripVertical className="script-drag" />
                     <select className="script-block-type" value={block.type} onChange={(event) => updateBlock(block.id, { type: event.target.value as BlockType })}>
                       {BLOCK_TYPES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
@@ -864,14 +1214,128 @@ export function ScriptWriterPanel() {
         {showAi ? (
           <aside className="script-ai-panel script-ai-overlay">
             <div className="script-ai-head"><div><Bot /><strong>Trợ lý AI</strong></div><button type="button" onClick={() => setShowAi(false)}><X /></button></div>
-            <p>Chèn nhanh cấu trúc nội dung theo phong cách Content Studio v3.</p>
-            <div className="script-ai-templates">
-              <button type="button" onClick={() => addAiTemplate('hook')}>⚡ Viết Hook</button>
-              <button type="button" onClick={() => addAiTemplate('intro')}>🎬 Mở đầu</button>
-              <button type="button" onClick={() => addAiTemplate('full')}>📄 Dàn ý đầy đủ</button>
-              <button type="button" onClick={() => addAiTemplate('cta')}>🔔 Viết CTA</button>
+            <div className="script-ai-context">
+              <span>Đang xử lý</span>
+              <strong>{SECTION_LABELS[activeSection]}</strong>
             </div>
-            <div className="script-ai-message"><Sparkles /><span>Chọn một mẫu để tạo block mới dựa trên tiêu đề kịch bản hiện tại.</span></div>
+            <div className="script-ai-templates script-ai-quick-actions">
+              <button type="button" disabled={chatBusy} onClick={() => quickAi(`Viết lại ${SECTION_LABELS[activeSection]} cho "${selected?.title || 'kịch bản này'}", giữ đúng cấu trúc hiện tại.`)}>
+                <Wand2 /> Viết lại
+              </button>
+              <button type="button" disabled={chatBusy} onClick={() => quickAi('Cải thiện đoạn đang chọn, giữ nguyên ý chính và chỉ sửa phần này.')}>
+                <Sparkles /> Cải thiện
+              </button>
+              <button type="button" disabled={chatBusy} onClick={() => quickAi('Viết hook mở bài tối đa 3 dòng, thật thu hút.', 'opening')}>
+                <AtSign /> Hook
+              </button>
+              <button type="button" disabled={chatBusy} onClick={() => quickAi('Viết kết bài có CTA tự nhiên, ngắn gọn.', 'ending')}>
+                <MessageSquare /> CTA
+              </button>
+            </div>
+            <div className="script-ai-chat-log" aria-live="polite">
+              {chatMessages.map((message) => (
+                <div className={`script-ai-bubble ${message.role}`} key={message.id}>
+                  <span>{message.role === 'user' ? 'Bạn' : 'AI'}</span>
+                  <p>{message.text}</p>
+                </div>
+              ))}
+              {chatBusy ? <div className="script-ai-thinking"><RefreshCw /> AI đang đọc cấu trúc và rule...</div> : null}
+            </div>
+
+            {aiDraft && Object.values(aiDraft.sections || {}).some(Boolean) ? (
+              <div className="script-ai-draft">
+                <div className="script-ai-draft-head">
+                  <strong>Bản nháp AI</strong>
+                  <span>
+                    {aiDraft.action === 'append' ? 'Thêm vào' : 'Thay thế'} · {' '}
+                    {aiDraft.target_section === 'all'
+                      ? 'Toàn bài'
+                      : aiDraft.target_section === 'opening' || aiDraft.target_section === 'body' || aiDraft.target_section === 'ending'
+                        ? SECTION_LABELS[aiDraft.target_section]
+                        : SECTION_LABELS[activeSection]}
+                  </span>
+                </div>
+                {SCRIPT_SECTIONS.map((section) => {
+                  const text = aiDraft.sections?.[section.id];
+                  return text ? (
+                    <div className="script-ai-draft-section" key={section.id}>
+                      <b>{section.label}</b>
+                      <p>{text}</p>
+                    </div>
+                  ) : null;
+                })}
+                <div className="script-ai-draft-actions">
+                  <button type="button" className="script-primary compact" onClick={applyAiDraft}><Plus /> Add</button>
+                  <button type="button" onClick={() => setAiDraft(null)}><X /> Hủy</button>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="script-tech-manager">
+              <div className="script-tech-head">
+                <div><Database /><strong>Kỹ thuật content</strong></div>
+                <button type="button" title="Tải lại kỹ thuật" disabled={techniqueBusy} onClick={() => void loadTechniques()}><RefreshCw /></button>
+              </div>
+              <div className="script-tech-form">
+                <input
+                  value={techniqueName}
+                  onChange={(event) => setTechniqueName(event.target.value)}
+                  placeholder="Tên kỹ thuật, VD: AIDA"
+                />
+                <textarea
+                  value={techniqueContent}
+                  onChange={(event) => setTechniqueContent(event.target.value)}
+                  placeholder="Nội dung rule của kỹ thuật"
+                  rows={3}
+                />
+                <button type="button" className="script-primary compact" disabled={techniqueBusy} onClick={() => void addTechnique()}>
+                  <Plus /> Lưu kỹ thuật
+                </button>
+              </div>
+              {techniqueStatus ? <p className="script-tech-status">{techniqueStatus}</p> : null}
+              <div className="script-tech-list">
+                {techniques.map((technique) => (
+                  <button
+                    type="button"
+                    key={technique.id}
+                    className={selectedTechniqueIds.includes(technique.id) ? 'active' : ''}
+                    title={technique.content}
+                    onClick={() => setSelectedTechniqueIds((ids) => (ids.includes(technique.id) ? ids.filter((id) => id !== technique.id) : [...ids, technique.id]))}
+                  >
+                    <span>@{technique.name}</span>
+                    {!technique.system ? <i onClick={(event) => { event.stopPropagation(); void deleteTechnique(technique.id); }}><Trash2 /></i> : null}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="script-ai-composer">
+              {mentionSuggestions.length ? (
+                <div className="script-mention-menu">
+                  {mentionSuggestions.map((technique) => (
+                    <button type="button" key={technique.id} onClick={() => selectMentionTechnique(technique)}>
+                      <AtSign />
+                      <span>{technique.name}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <textarea
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                    event.preventDefault();
+                    void sendAiChat();
+                  }
+                }}
+                placeholder={`Nhập yêu cầu cho ${SECTION_LABELS[activeSection]}...`}
+                rows={2}
+              />
+              <button type="button" className="script-primary compact" disabled={chatBusy || !chatInput.trim()} onClick={() => void sendAiChat()}>
+                <SendHorizontal /> Gửi
+              </button>
+            </div>
           </aside>
         ) : null}
       </div>

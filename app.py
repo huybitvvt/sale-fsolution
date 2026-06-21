@@ -68,6 +68,8 @@ COMMENT_TAG_ASSIGNMENTS_FILE = os.path.join(DATA_DIR, 'comment_tag_assignments.j
 COMMENT_INBOX_WORKFLOW_FILE = os.path.join(DATA_DIR, 'comment_inbox_workflow.json')
 COMMENT_MANUAL_PHONES_FILE = os.path.join(DATA_DIR, 'comment_manual_phones.json')
 SCRIPTS_FILE = os.path.join(DATA_DIR, 'content_scripts.json')
+CONTENT_STUDIO_SETUP_FILE = os.path.join(DATA_DIR, 'content_studio_setup.json')
+CONTENT_TECHNIQUES_FILE = os.path.join(DATA_DIR, 'content_techniques.json')
 CONTENT_SCRIPTS_MISSING_HINT = (
     'Chưa có bảng content_scripts. Mở Supabase → SQL Editor → '
     'chạy file supabase_content_scripts.sql (không chạy toàn bộ supabase_schema.sql).'
@@ -254,6 +256,47 @@ def _default_content_pipeline() -> dict:
         'articles': [],
         'posts': [],
     }
+
+
+def _default_content_studio_setup() -> dict:
+    return {
+        'sections': {
+            'opening': {
+                'label': 'Mở bài',
+                'name': 'Hook',
+                'description': 'Tối đa 3 dòng',
+                'rule': 'Hook phải thu hút, rõ chủ đề và tối đa 3 dòng.',
+            },
+            'body': {
+                'label': 'Thân bài',
+                'name': 'Thân bài',
+                'description': 'Rõ ý chính',
+                'rule': 'Triển khai nội dung chính mạch lạc, dễ hiểu, bám đúng sản phẩm và khách hàng.',
+            },
+            'ending': {
+                'label': 'Kết bài',
+                'name': 'Kết bài',
+                'description': 'Chốt hành động',
+                'rule': 'Kết bài phải có CTA tự nhiên, không bịa ưu đãi hoặc cam kết.',
+            },
+        },
+    }
+
+
+def _default_content_techniques() -> list[dict]:
+    return [
+        {
+            'id': 'aida',
+            'name': 'AIDA',
+            'content': (
+                'Attention: mở đầu gây chú ý. Interest: nêu lợi ích/vấn đề liên quan. '
+                'Desire: làm rõ mong muốn và lý do nên chọn. Action: kêu gọi hành động cụ thể.'
+            ),
+            'created_at': 'system',
+            'updated_at': 'system',
+            'system': True,
+        },
+    ]
 
 
 def _default_comment_templates() -> list[dict]:
@@ -7917,6 +7960,371 @@ def settings_save():
     return jsonify({'ok': True, 'settings': _settings})
 
 
+CONTENT_STUDIO_SETUP_KV = 'content_studio_setup'
+CONTENT_TECHNIQUES_KV = 'content_techniques'
+CONTENT_SECTION_KEYS = ('opening', 'body', 'ending')
+CONTENT_SECTION_LABELS = {
+    'opening': 'Mở bài',
+    'body': 'Thân bài',
+    'ending': 'Kết bài',
+}
+CONTENT_SECTION_BLOCK_TYPES = {
+    'opening': {'hook', 'h1', 'h2'},
+    'body': {'body', 'text', 'scene', 'quote'},
+    'ending': {'cta'},
+}
+
+
+def _trim_words(text: str, limit: int = 3) -> str:
+    words = re.findall(r'\S+', str(text or '').strip())
+    return ' '.join(words[:limit])
+
+
+def _trim_lines(text: str, limit: int = 3) -> str:
+    lines = [line.rstrip() for line in str(text or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')]
+    return '\n'.join(lines[:limit]).strip()
+
+
+def _clean_content_studio_setup(raw) -> dict:
+    default = _default_content_studio_setup()
+    source = raw if isinstance(raw, dict) else {}
+    raw_sections = source.get('sections') if isinstance(source.get('sections'), dict) else source
+    sections: dict = {}
+    for key in CONTENT_SECTION_KEYS:
+        incoming = raw_sections.get(key) if isinstance(raw_sections, dict) else {}
+        if not isinstance(incoming, dict):
+            incoming = {}
+        base = default['sections'][key]
+        rule = str(incoming.get('rule') or base.get('rule') or '').strip()[:4000]
+        if key == 'opening':
+            rule = _trim_lines(rule, 3)
+        sections[key] = {
+            'label': CONTENT_SECTION_LABELS[key],
+            'name': str(incoming.get('name') or base.get('name') or '').strip()[:80],
+            'description': _trim_words(incoming.get('description') or base.get('description') or '', 3),
+            'rule': rule,
+        }
+    return {'sections': sections}
+
+
+def _load_content_studio_setup() -> tuple[dict, str, str]:
+    local = _clean_content_studio_setup(_read_json(CONTENT_STUDIO_SETUP_FILE, _default_content_studio_setup()))
+    if not USE_SUPABASE:
+        return local, 'local', ''
+    try:
+        remote = sb.kv_get(CONTENT_STUDIO_SETUP_KV, None)
+        if remote:
+            setup = _clean_content_studio_setup(remote)
+            _write_json(CONTENT_STUDIO_SETUP_FILE, setup)
+            return setup, 'supabase', ''
+    except Exception as e:
+        return local, 'local', str(e)[:300]
+    return local, 'local', ''
+
+
+def _save_content_studio_setup(setup: dict) -> tuple[str, str]:
+    cleaned = _clean_content_studio_setup(setup)
+    _write_json(CONTENT_STUDIO_SETUP_FILE, cleaned)
+    if USE_SUPABASE:
+        try:
+            sb.kv_set(CONTENT_STUDIO_SETUP_KV, cleaned)
+            return 'supabase', ''
+        except Exception as e:
+            return 'local', str(e)[:300]
+    return 'local', ''
+
+
+def _technique_id(name: str) -> str:
+    compact = re.sub(r'[^0-9a-zA-Z]+', '-', str(name or '').strip().lower()).strip('-')
+    return compact[:80] or f'tech-{uuid.uuid4().hex[:10]}'
+
+
+def _clean_content_techniques(rows) -> list[dict]:
+    if not isinstance(rows, list):
+        rows = []
+    cleaned: list[dict] = []
+    seen: set[str] = set()
+    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    for raw in rows[:300]:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get('name') or '').strip()[:120]
+        content = str(raw.get('content') or '').strip()[:12000]
+        if not name or not content:
+            continue
+        tech_id = str(raw.get('id') or _technique_id(name)).strip()[:120]
+        base_id = tech_id
+        suffix = 2
+        while tech_id in seen:
+            tech_id = f'{base_id}-{suffix}'
+            suffix += 1
+        seen.add(tech_id)
+        cleaned.append({
+            'id': tech_id,
+            'name': name,
+            'content': content,
+            'created_at': str(raw.get('created_at') or now)[:40],
+            'updated_at': str(raw.get('updated_at') or now)[:40],
+            'system': bool(raw.get('system')),
+        })
+    return cleaned
+
+
+def _load_content_techniques() -> tuple[list[dict], str, str]:
+    local_raw = _read_json(CONTENT_TECHNIQUES_FILE, None)
+    local = _clean_content_techniques(local_raw if isinstance(local_raw, list) else _default_content_techniques())
+    if not USE_SUPABASE:
+        return local, 'local', ''
+    try:
+        remote = sb.kv_get(CONTENT_TECHNIQUES_KV, None)
+        if isinstance(remote, list):
+            rows = _clean_content_techniques(remote)
+            _write_json(CONTENT_TECHNIQUES_FILE, rows)
+            return rows, 'supabase', ''
+    except Exception as e:
+        return local, 'local', str(e)[:300]
+    return local, 'local', ''
+
+
+def _save_content_techniques(rows: list[dict]) -> tuple[str, str]:
+    cleaned = _clean_content_techniques(rows)
+    _write_json(CONTENT_TECHNIQUES_FILE, cleaned)
+    if USE_SUPABASE:
+        try:
+            sb.kv_set(CONTENT_TECHNIQUES_KV, cleaned)
+            return 'supabase', ''
+        except Exception as e:
+            return 'local', str(e)[:300]
+    return 'local', ''
+
+
+def _strip_json_fence_local(text: str) -> str:
+    text = (text or '').strip()
+    if text.startswith('```'):
+        lines = text.split('\n')
+        end = len(lines) - 1 if lines and lines[-1].strip().startswith('```') else len(lines)
+        text = '\n'.join(lines[1:end]).strip()
+    return text
+
+
+def _load_json_payload_local(text: str):
+    text = _strip_json_fence_local(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def _plain_from_html(text: str) -> str:
+    text = re.sub(r'<br\s*/?>', '\n', str(text or ''), flags=re.I)
+    text = re.sub(r'</(p|div|li|h[1-6])>', '\n', text, flags=re.I)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = unescape(text).replace('\xa0', ' ')
+    return re.sub(r'[ \t]+\n', '\n', text).strip()
+
+
+def _script_sections(script: dict) -> dict:
+    sections = {key: [] for key in CONTENT_SECTION_KEYS}
+    blocks = script.get('blocks') if isinstance(script, dict) else []
+    if not isinstance(blocks, list):
+        blocks = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get('type') or 'text').strip().lower()
+        text = _plain_from_html(str(block.get('text') or ''))
+        if not text:
+            continue
+        target = ''
+        for key, types in CONTENT_SECTION_BLOCK_TYPES.items():
+            if block_type in types:
+                target = key
+                break
+        if not target:
+            target = 'body'
+        sections[target].append(text)
+    return {key: '\n\n'.join(parts).strip() for key, parts in sections.items()}
+
+
+def _normalize_mention_text(text: str) -> str:
+    return re.sub(r'[\s_@#.\-]+', '', str(text or '').lower())
+
+
+def _resolve_content_techniques(message: str, selected_ids: list[str] | None = None) -> list[dict]:
+    rows, _, _ = _load_content_techniques()
+    selected = {str(item or '').strip() for item in (selected_ids or []) if str(item or '').strip()}
+    normalized_message = _normalize_mention_text(message)
+    resolved: list[dict] = []
+    for row in rows:
+        tech_id = str(row.get('id') or '')
+        name = str(row.get('name') or '')
+        normalized_name = _normalize_mention_text(name)
+        if tech_id in selected or (normalized_name and normalized_name in normalized_message):
+            resolved.append(row)
+    return resolved[:8]
+
+
+def _build_script_ai_prompt(
+    message: str,
+    script: dict,
+    active_section: str,
+    setup: dict,
+    techniques: list[dict],
+) -> str:
+    sections = _script_sections(script)
+    setup_sections = setup.get('sections') if isinstance(setup, dict) else {}
+    setup_lines = []
+    for key in CONTENT_SECTION_KEYS:
+        conf = setup_sections.get(key, {}) if isinstance(setup_sections, dict) else {}
+        setup_lines.append(
+            f'- {CONTENT_SECTION_LABELS[key]} | Tên: {conf.get("name", "")} | '
+            f'Mô tả: {conf.get("description", "")} | Rule: {conf.get("rule", "")}'
+        )
+    technique_lines = []
+    for item in techniques:
+        technique_lines.append(f'- {item.get("name")}: {item.get("content")}')
+    technique_text = '\n'.join(technique_lines) if technique_lines else '- Không có kỹ thuật được gọi bằng @ hoặc tên kỹ thuật.'
+    active_label = CONTENT_SECTION_LABELS.get(active_section, 'Toàn bài')
+    current_json = json.dumps({
+        'opening': sections.get('opening', ''),
+        'body': sections.get('body', ''),
+        'ending': sections.get('ending', ''),
+    }, ensure_ascii=False)
+    return f"""Bạn là trợ lý Gemini viết content tiếng Việt cho Content Studio.
+
+NHIỆM VỤ:
+- Đọc nội dung hiện tại của thanh kết quả AI bên trái gồm 3 phần: Mở bài, Thân bài, Kết bài.
+- Đọc rule setup cố định và kỹ thuật content được gọi từ database.
+- Nếu người dùng đang chọn một phần cụ thể, chỉ xử lý phần đó, trừ khi câu lệnh yêu cầu rõ "toàn bài", "full", hoặc nêu nhiều phần.
+- Giữ nguyên cấu trúc cũ. Khi người dùng yêu cầu đổi một chi tiết nhỏ, chỉ thay đúng chi tiết đó trong phần được chọn.
+- Không bịa thông tin sản phẩm, giá, bảo hành, ưu đãi.
+- Hook/Mở bài bắt buộc tối đa 3 dòng.
+
+PHẦN ĐANG CHỌN: {active_section or 'all'} ({active_label})
+
+NỘI DUNG HIỆN TẠI Ở THANH BÊN TRÁI:
+{current_json}
+
+RULE SETUP:
+{chr(10).join(setup_lines)}
+
+KỸ THUẬT CONTENT TỪ DATABASE:
+{technique_text}
+
+CÂU LỆNH NGƯỜI DÙNG:
+{message}
+
+Trả về CHỈ JSON object, không markdown, đúng cấu trúc:
+{{
+  "reply": "giải thích ngắn cho người dùng",
+  "target_section": "opening|body|ending|all|none",
+  "action": "replace|append|none",
+  "sections": {{
+    "opening": "nội dung Mở bài mới nếu có",
+    "body": "nội dung Thân bài mới nếu có",
+    "ending": "nội dung Kết bài mới nếu có"
+  }}
+}}"""
+
+
+def _normalize_script_ai_result(payload, fallback_text: str, active_section: str) -> dict:
+    if not isinstance(payload, dict):
+        payload = {}
+    raw_sections = payload.get('sections') if isinstance(payload.get('sections'), dict) else {}
+    sections = {}
+    for key in CONTENT_SECTION_KEYS:
+        text = str(raw_sections.get(key) or payload.get(key) or '').strip()
+        if key == 'opening' and text:
+            text = _trim_lines(text, 3)
+        sections[key] = text[:50000]
+    target = str(payload.get('target_section') or active_section or 'none').strip().lower()
+    if target not in {'opening', 'body', 'ending', 'all', 'none'}:
+        target = active_section if active_section in CONTENT_SECTION_KEYS else 'none'
+    action = str(payload.get('action') or ('replace' if any(sections.values()) else 'none')).strip().lower()
+    if action not in {'replace', 'append', 'none'}:
+        action = 'replace'
+    return {
+        'reply': str(payload.get('reply') or fallback_text or '').strip()[:4000],
+        'target_section': target,
+        'action': action,
+        'sections': sections,
+    }
+
+
+def _fallback_gemini_models() -> list[dict]:
+    rows = [
+        ('gemini-3.1-pro-preview', 'Gemini 3.1 Pro Preview'),
+        ('gemini-2.5-pro', 'Gemini 2.5 Pro'),
+        ('gemini-3.5-flash', 'Gemini 3.5 Flash'),
+        ('gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite'),
+        ('gemini-2.5-flash', 'Gemini 2.5 Flash'),
+        ('gemini-flash-latest', 'Gemini Flash Latest'),
+    ]
+    return [
+        {
+            'id': model_id,
+            'name': f'models/{model_id}',
+            'display_name': label,
+            'description': '',
+            'supported_generation_methods': ['generateContent'],
+        }
+        for model_id, label in rows
+    ]
+
+
+def _list_gemini_models_from_api() -> tuple[list[dict], str]:
+    api_key = _get_ai_key('gemini')
+    if not api_key:
+        return _fallback_gemini_models(), 'Chưa có Gemini API key nên đang dùng danh sách model gợi ý.'
+    models: list[dict] = []
+    page_token = ''
+    try:
+        for _ in range(10):
+            params = {'key': api_key, 'pageSize': 1000}
+            if page_token:
+                params['pageToken'] = page_token
+            resp = _req.get('https://generativelanguage.googleapis.com/v1beta/models', params=params, timeout=30)
+            data = resp.json()
+            if 'error' in data:
+                raise RuntimeError(data['error'].get('message') or 'Gemini models API error')
+            for item in data.get('models') or []:
+                name = str(item.get('name') or '')
+                model_id = name.replace('models/', '', 1)
+                if 'gemini' not in model_id.lower():
+                    continue
+                methods = item.get('supportedGenerationMethods') or item.get('supported_actions') or []
+                if methods and 'generateContent' not in methods:
+                    continue
+                models.append({
+                    'id': model_id,
+                    'name': name,
+                    'display_name': item.get('displayName') or item.get('display_name') or model_id,
+                    'description': item.get('description') or '',
+                    'version': item.get('version') or '',
+                    'input_token_limit': item.get('inputTokenLimit') or item.get('input_token_limit'),
+                    'output_token_limit': item.get('outputTokenLimit') or item.get('output_token_limit'),
+                    'supported_generation_methods': methods,
+                })
+            page_token = str(data.get('nextPageToken') or '')
+            if not page_token:
+                break
+    except Exception as e:
+        return _fallback_gemini_models(), f'Không tải được danh sách model từ Gemini API, đang dùng fallback: {str(e)[:180]}'
+    models.sort(key=lambda item: (
+        0 if 'pro' in item['id'].lower() else 1,
+        0 if 'preview' not in item['id'].lower() else 1,
+        item['id'],
+    ))
+    return models or _fallback_gemini_models(), ''
+
+
 def _is_missing_supabase_table_error(message: str) -> bool:
     text = str(message or '')
     return 'Could not find the table' in text or 'PGRST205' in text
@@ -8074,6 +8482,157 @@ def scripts_save():
         return jsonify({'ok': False, 'error': f'Không lưu được kịch bản lên Supabase: {message}'}), 500
 
 
+@app.route('/api/content-studio/setup', methods=['GET'])
+def content_studio_setup_get():
+    setup, storage, warning = _load_content_studio_setup()
+    payload = {'ok': True, 'setup': setup, 'storage': storage}
+    if warning:
+        payload['warning'] = f'Đã dùng local, Supabase chưa đọc được: {warning}'
+    return jsonify(payload)
+
+
+@app.route('/api/content-studio/setup', methods=['POST'])
+def content_studio_setup_save():
+    body = request.get_json(silent=True) or {}
+    setup = _clean_content_studio_setup(body.get('setup') if 'setup' in body else body)
+    storage, warning = _save_content_studio_setup(setup)
+    payload = {'ok': True, 'setup': setup, 'storage': storage}
+    if warning:
+        payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {warning}'
+    return jsonify(payload)
+
+
+@app.route('/api/content-techniques', methods=['GET'])
+def content_techniques_get():
+    rows, storage, warning = _load_content_techniques()
+    payload = {'ok': True, 'techniques': rows, 'storage': storage}
+    if warning:
+        payload['warning'] = f'Đã dùng local, Supabase chưa đọc được: {warning}'
+    return jsonify(payload)
+
+
+@app.route('/api/content-techniques', methods=['POST'])
+def content_techniques_create():
+    body = request.get_json(silent=True) or {}
+    name = str(body.get('name') or '').strip()
+    content = str(body.get('content') or '').strip()
+    if not name or not content:
+        return jsonify({'ok': False, 'error': 'Nhập đủ Tên kỹ thuật và Nội dung'}), 400
+    rows, _, _ = _load_content_techniques()
+    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    base_id = _technique_id(name)
+    tech_id = base_id
+    existing = {str(row.get('id') or '') for row in rows}
+    suffix = 2
+    while tech_id in existing:
+        tech_id = f'{base_id}-{suffix}'
+        suffix += 1
+    row = {
+        'id': tech_id,
+        'name': name,
+        'content': content,
+        'created_at': now,
+        'updated_at': now,
+    }
+    rows = _clean_content_techniques([row, *rows])
+    storage, warning = _save_content_techniques(rows)
+    payload = {'ok': True, 'technique': row, 'techniques': rows, 'storage': storage}
+    if warning:
+        payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {warning}'
+    return jsonify(payload)
+
+
+@app.route('/api/content-techniques/<tech_id>', methods=['PUT'])
+def content_techniques_update(tech_id):
+    body = request.get_json(silent=True) or {}
+    rows, _, _ = _load_content_techniques()
+    target = None
+    for row in rows:
+        if str(row.get('id') or '') == str(tech_id):
+            target = row
+            break
+    if not target:
+        return jsonify({'ok': False, 'error': 'Không tìm thấy kỹ thuật'}), 404
+    if target.get('system'):
+        target = dict(target)
+    name = str(body.get('name') or target.get('name') or '').strip()
+    content = str(body.get('content') or target.get('content') or '').strip()
+    if not name or not content:
+        return jsonify({'ok': False, 'error': 'Nhập đủ Tên kỹ thuật và Nội dung'}), 400
+    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    next_rows = []
+    updated = None
+    for row in rows:
+        if str(row.get('id') or '') == str(tech_id):
+            updated = {
+                **row,
+                'name': name,
+                'content': content,
+                'updated_at': now,
+                'system': bool(row.get('system')),
+            }
+            next_rows.append(updated)
+        else:
+            next_rows.append(row)
+    next_rows = _clean_content_techniques(next_rows)
+    storage, warning = _save_content_techniques(next_rows)
+    payload = {'ok': True, 'technique': updated, 'techniques': next_rows, 'storage': storage}
+    if warning:
+        payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {warning}'
+    return jsonify(payload)
+
+
+@app.route('/api/content-techniques/<tech_id>', methods=['DELETE'])
+def content_techniques_delete(tech_id):
+    rows, _, _ = _load_content_techniques()
+    before = len(rows)
+    rows = [row for row in rows if str(row.get('id') or '') != str(tech_id)]
+    if len(rows) == before:
+        return jsonify({'ok': False, 'error': 'Không tìm thấy kỹ thuật'}), 404
+    storage, warning = _save_content_techniques(rows)
+    payload = {'ok': True, 'techniques': rows, 'deleted': before - len(rows), 'storage': storage}
+    if warning:
+        payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {warning}'
+    return jsonify(payload)
+
+
+@app.route('/api/scripts/ai-chat', methods=['POST'])
+def scripts_ai_chat():
+    body = request.get_json(silent=True) or {}
+    message = str(body.get('message') or '').strip()
+    script = body.get('script') if isinstance(body.get('script'), dict) else {}
+    active_section = str(body.get('active_section') or '').strip().lower()
+    if active_section not in CONTENT_SECTION_KEYS:
+        active_section = ''
+    if not message:
+        return jsonify({'ok': False, 'error': 'Nhập yêu cầu cho AI'}), 400
+
+    setup, _, _ = _load_content_studio_setup()
+    selected_ids = body.get('selected_technique_ids') if isinstance(body.get('selected_technique_ids'), list) else []
+    techniques = _resolve_content_techniques(message, selected_ids)
+    classifier = _get_classifier()
+    if classifier.provider != 'gemini':
+        model = _ai_config.get('model') or DEFAULT_MODEL
+        classifier = AIClassifier('gemini', model, _get_ai_key('gemini'), _ai_config.get('categories', DEFAULT_CATEGORIES))
+    if not classifier.api_key:
+        return jsonify({'ok': False, 'error': 'Chưa cấu hình Gemini API key — vào Setup để lưu key trước'}), 400
+
+    prompt = _build_script_ai_prompt(message, script, active_section, setup, techniques)
+    try:
+        raw = classifier._call_api(prompt)
+        parsed = _load_json_payload_local(raw)
+        result = _normalize_script_ai_result(parsed, raw, active_section)
+        return jsonify({
+            'ok': True,
+            'result': result,
+            'raw': raw,
+            'model': classifier.model,
+            'techniques': techniques,
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)[:500]}), 502
+
+
 @app.route('/api/business-profile', methods=['GET'])
 def business_profile_get():
     global _business_profile
@@ -8161,6 +8720,15 @@ def tg_test(chat_id):
 @app.route('/api/ai/providers')
 def ai_providers():
     return jsonify(PROVIDERS)
+
+
+@app.route('/api/ai/models')
+def ai_models():
+    models, warning = _list_gemini_models_from_api()
+    payload = {'ok': True, 'provider': 'gemini', 'models': models}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
 
 
 @app.route('/api/ai/config', methods=['GET'])

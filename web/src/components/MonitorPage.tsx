@@ -42,6 +42,12 @@ import {
 } from '@/lib/utils';
 
 type AiProviders = Record<string, { default_model?: string }>;
+type AiModelOption = {
+  id: string;
+  name?: string;
+  display_name?: string;
+  description?: string;
+};
 type AiConfig = {
   provider?: string;
   model?: string;
@@ -124,6 +130,10 @@ export function MonitorPage() {
   const [aiProviders, setAiProviders] = useState<AiProviders>({});
   const [aiConfig, setAiConfig] = useState<AiConfig>({});
   const [aiProvider, setAiProvider] = useState('gemini');
+  const [aiModel, setAiModel] = useState('gemini-3.1-pro-preview');
+  const [aiModels, setAiModels] = useState<AiModelOption[]>([]);
+  const [aiModelStatus, setAiModelStatus] = useState('');
+  const [aiModelsLoading, setAiModelsLoading] = useState(false);
   const [aiAutoClassify, setAiAutoClassify] = useState(false);
   const [aiKeyInput, setAiKeyInput] = useState('');
   const [aiKeyEdit, setAiKeyEdit] = useState(false);
@@ -1094,15 +1104,34 @@ export function MonitorPage() {
 
   const catOptions = [...new Set(Object.values(classifications))].sort();
 
+  const loadAiModels = useCallback(async () => {
+    setAiModelsLoading(true);
+    try {
+      const r = await api('/api/ai/models', { timeoutMs: 45000 });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && d.ok) {
+        setAiModels(Array.isArray(d.models) ? d.models : []);
+        setAiModelStatus(d.warning || '');
+      } else {
+        setAiModelStatus(d.error || `Không tải được model Gemini (${r.status})`);
+      }
+    } catch {
+      setAiModelStatus('Không kết nối được backend khi tải model Gemini');
+    } finally {
+      setAiModelsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!authChecked || !authenticated) return;
     let cancelled = false;
 
     const loadAiBundle = async (): Promise<boolean> => {
       try {
-        const [pRes, cRes, clRes, lRes, csRes] = await Promise.all([
+        const [pRes, cRes, modelsRes, clRes, lRes, csRes] = await Promise.all([
           api('/api/ai/providers'),
           api('/api/ai/config'),
+          api('/api/ai/models', { timeoutMs: 45000 }),
           api('/api/ai/classifications'),
           api('/api/ai/leads'),
           api('/api/ai/comment-summaries'),
@@ -1111,7 +1140,13 @@ export function MonitorPage() {
         setAiProviders(await pRes.json());
         const cfg = await cRes.json();
         setAiConfig(cfg);
-        setAiProvider(cfg.provider || 'gemini');
+        setAiProvider('gemini');
+        setAiModel(cfg.model || 'gemini-3.1-pro-preview');
+        const modelsPayload = await modelsRes.json().catch(() => ({}));
+        if (modelsPayload.ok) {
+          setAiModels(Array.isArray(modelsPayload.models) ? modelsPayload.models : []);
+          setAiModelStatus(modelsPayload.warning || '');
+        }
         const autoClassify = !!cfg.auto_classify;
         setAiAutoClassify(autoClassify);
         setClassifications(await clRes.json());
@@ -2112,20 +2147,44 @@ export function MonitorPage() {
   }
 
   async function onProviderChange(next: string) {
-    setAiProvider(next);
+    const provider = next || 'gemini';
+    setAiProvider(provider);
     setAiStatus('');
     try {
       await api('/api/ai/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          provider: next,
-          model: (aiProviders[next] || {}).default_model || '',
+          provider,
+          model: aiModel || (aiProviders[provider] || {}).default_model || '',
         }),
       });
     } catch {
       setAiStatus('❌ Không kết nối được backend khi đổi AI');
     }
+  }
+
+  async function saveAiModel(next: string) {
+    setAiModel(next);
+    setAiStatus('⏳ Đang lưu model...');
+    try {
+      const r = await api('/api/ai/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'gemini', model: next }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && d.ok) {
+        const cRes = await api('/api/ai/config');
+        setAiConfig(await cRes.json());
+        setAiStatus('✅ Đã lưu model Gemini');
+      } else {
+        setAiStatus('❌ ' + (d.error || 'Không lưu được model'));
+      }
+    } catch {
+      setAiStatus('❌ Không kết nối được backend khi lưu model');
+    }
+    setTimeout(() => setAiStatus(''), 3000);
   }
 
   async function saveAiKey() {
@@ -2134,12 +2193,11 @@ export function MonitorPage() {
       return;
     }
     setAiStatus('⏳ Đang lưu...');
-    const model = (aiProviders[aiProvider] || {}).default_model || '';
     try {
       const r = await api('/api/ai/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: aiProvider, model, key: aiKeyInput.trim() }),
+        body: JSON.stringify({ provider: 'gemini', model: aiModel, key: aiKeyInput.trim() }),
       });
       const d = await r.json();
       if (d.ok) {
@@ -2148,6 +2206,7 @@ export function MonitorPage() {
         setAiConfig(await cRes.json());
         setAiKeyEdit(false);
         setAiKeyInput('');
+        void loadAiModels();
       } else setAiStatus('❌ ' + (d.error || 'Lỗi lưu key'));
     } catch {
       setAiStatus('❌ Không kết nối được backend. Kiểm tra Flask port 5000 và refresh lại trang.');
@@ -2179,7 +2238,7 @@ export function MonitorPage() {
       await api('/api/ai/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: aiProvider, auto_classify: next }),
+        body: JSON.stringify({ provider: 'gemini', model: aiModel, auto_classify: next }),
       });
     } catch {
       setAiStatus('❌ Không kết nối được backend khi lưu tự động AI');
@@ -2809,6 +2868,12 @@ export function MonitorPage() {
           saleSetupProps={{
             aiProvider,
             onProviderChange: (v) => { setAiProvider(v); void onProviderChange(v); },
+            aiModel,
+            aiModels,
+            aiModelStatus,
+            aiModelsLoading,
+            onModelChange: (v) => void saveAiModel(v),
+            onRefreshModels: () => void loadAiModels(),
             aiAutoClassify,
             onAutoClassifyChange: (v) => void saveAiAuto(v),
             aiStatus,

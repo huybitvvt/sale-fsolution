@@ -3,11 +3,11 @@ import re
 import requests
 from typing import Optional, Dict, List
 
-DEFAULT_MODEL = 'gemini-flash-latest'
+DEFAULT_MODEL = 'gemini-3.1-pro-preview'
 DEFAULT_API_KEY = ''
 
 PROVIDERS = {
-    'gemini': { 'name': 'Google Gemini', 'default_model': 'gemini-flash-latest' },
+    'gemini': { 'name': 'Google Gemini', 'default_model': DEFAULT_MODEL },
     'openai': { 'name': 'OpenAI',        'default_model': 'gpt-4o-mini' },
     'claude': { 'name': 'Claude',        'default_model': 'claude-3-haiku-20240307' },
 }
@@ -734,7 +734,9 @@ class AIClassifier:
         raise ValueError(f'Unknown provider: {self.provider}')
 
     def _call_gemini(self, prompt: str) -> str:
-        url = f'https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent'
+        model = (self.model or DEFAULT_MODEL).strip()
+        model_name = model if model.startswith('models/') else f'models/{model}'
+        url = f'https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent'
         resp = requests.post(url,
             headers={
                 'Content-Type': 'application/json',
