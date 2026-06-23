@@ -9,6 +9,7 @@ import { HistoryPanel } from '@/components/HistoryPanel';
 import { LeadManagerPanel } from '@/components/LeadManagerPanel';
 import { LeadProcessedModal } from '@/components/LeadProcessedModal';
 import { ManageDashboardPanel } from '@/components/ManageDashboardPanel';
+import { ContentPlanPanel } from '@/components/ContentPlanPanel';
 import { MarketingPipelinePanel } from '@/components/MarketingPipelinePanel';
 import { ScriptWriterPanel } from '@/components/ScriptWriterPanel';
 import '@/components/standard-post-panel.css';
@@ -253,8 +254,29 @@ export function MonitorPage() {
   const [facebookCookieBusy, setFacebookCookieBusy] = useState(false);
   const [facebookCookieLoading, setFacebookCookieLoading] = useState(false);
   const [activeView, setActiveView] = useState<ViewKey>('home');
+  const [railCollapsed, setRailCollapsed] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
+
+  useEffect(() => {
+    try {
+      setRailCollapsed(window.localStorage.getItem('console-rail-collapsed') === '1');
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const toggleRailCollapsed = useCallback(() => {
+    setRailCollapsed((value) => {
+      const next = !value;
+      try {
+        window.localStorage.setItem('console-rail-collapsed', next ? '1' : '0');
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
 
   const openView = useCallback((view: ViewKey) => {
     const nextPath = viewToPath(view);
@@ -2821,8 +2843,13 @@ export function MonitorPage() {
 
   return (
     <>
-      <div className="console-shell">
-        <ConsoleRail activeView={activeView} onNavigate={openView} />
+      <div className={`console-shell${railCollapsed ? ' rail-collapsed' : ''}`}>
+        <ConsoleRail
+          activeView={activeView}
+          onNavigate={openView}
+          collapsed={railCollapsed}
+          onToggleCollapse={toggleRailCollapsed}
+        />
 
         <main
           className={`console-content${
@@ -2831,7 +2858,7 @@ export function MonitorPage() {
         >
           {activeView !== 'manage' && activeView !== 'marketing' ? (
           <div className="console-topbar">
-            <button type="button" className="rail-collapse" title="Menu">
+            <button type="button" className="rail-collapse" title={railCollapsed ? 'Mở rộng menu' : 'Thu gọn menu'} onClick={toggleRailCollapsed}>
               ☰
             </button>
             <div>
@@ -2893,6 +2920,7 @@ export function MonitorPage() {
             />
           ) : null}
           {activeView === 'scripts' ? <ScriptWriterPanel /> : null}
+          {activeView === 'plan' ? <ContentPlanPanel /> : null}
           {activeView === 'marketing' ? (
             <MarketingPipelinePanel
               data={pipelineData}

@@ -1,5 +1,6 @@
 import {
   ChartColumn,
+  ClipboardList,
   Columns3,
   History,
   Home,
@@ -21,5 +22,6 @@ export const CONSOLE_MODULE_ICONS: Record<ViewKey, LucideIcon> = {
   history: History,
   leads: Target,
   scripts: ScrollText,
+  plan: ClipboardList,
   marketing: PenLine,
 };

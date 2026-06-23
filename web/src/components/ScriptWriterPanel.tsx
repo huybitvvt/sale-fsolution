@@ -15,7 +15,6 @@ import {
   Clipboard,
   Copy,
   Database,
-  Eye,
   FileDown,
   GripVertical,
   Italic,
@@ -25,7 +24,6 @@ import {
   Pencil,
   RefreshCw,
   Save,
-  Send,
   SendHorizontal,
   Sparkles,
   Trash2,
@@ -34,8 +32,8 @@ import {
   X,
 } from 'lucide-react';
 import { AI_TIMEOUT_MS, api } from '@/lib/api';
-import { BusinessProfilePanel } from '@/components/BusinessProfilePanel';
 import './script-writer-panel.css';
+import './script-writer-panel-v3.css';
 
 type ScriptStatus = 'draft' | 'pending' | 'approved';
 type BlockType = 'text' | 'h1' | 'h2' | 'hook' | 'body' | 'cta' | 'scene' | 'quote';
@@ -104,14 +102,33 @@ type AiConfig = {
 };
 
 const BLOCK_TYPES: Array<{ id: BlockType; label: string; icon: string; placeholder: string }> = [
-  { id: 'text', label: 'TEXT', icon: '📝', placeholder: 'Nhập nội dung...' },
-  { id: 'h1', label: 'H1', icon: '🔠', placeholder: 'Tiêu đề lớn...' },
-  { id: 'h2', label: 'H2', icon: '🔡', placeholder: 'Đề mục...' },
-  { id: 'hook', label: 'HOOK', icon: '⚡', placeholder: 'Hook bắt đầu...' },
-  { id: 'body', label: 'BODY', icon: '📄', placeholder: 'Nội dung chính...' },
+  { id: 'text', label: 'TỰ VIẾT', icon: '📝', placeholder: 'Nhập nội dung của bạn tại đây...' },
+  { id: 'h1', label: 'MỞ ĐẦU', icon: '🔠', placeholder: 'Mở đầu / tiêu đề lớn...' },
+  { id: 'h2', label: 'MỞ ĐẦU', icon: '🔡', placeholder: 'Mở đầu / đề mục...' },
+  { id: 'hook', label: 'HOOK', icon: '⚡', placeholder: 'Hook thu hút 3 giây đầu...' },
+  { id: 'body', label: 'MỞ ĐẦU', icon: '📄', placeholder: 'Nội dung chính...' },
   { id: 'cta', label: 'CTA', icon: '🔔', placeholder: 'Kêu gọi hành động...' },
-  { id: 'scene', label: 'SCENE', icon: '🎬', placeholder: '[Cảnh quay / góc máy]...' },
-  { id: 'quote', label: 'QUOTE', icon: '💬', placeholder: 'Trích dẫn...' },
+  { id: 'scene', label: 'MỞ ĐẦU', icon: '🎬', placeholder: '[Cảnh quay / góc máy]...' },
+  { id: 'quote', label: 'TỰ VIẾT', icon: '💬', placeholder: 'Trích dẫn...' },
+];
+
+const BLOCK_V3_META: Record<BlockType, { label: string; tone: 'hook' | 'intro' | 'cta' | 'custom' }> = {
+  hook: { label: 'HOOK', tone: 'hook' },
+  h1: { label: 'MỞ ĐẦU', tone: 'intro' },
+  h2: { label: 'MỞ ĐẦU', tone: 'intro' },
+  body: { label: 'MỞ ĐẦU', tone: 'intro' },
+  scene: { label: 'MỞ ĐẦU', tone: 'intro' },
+  cta: { label: 'CTA', tone: 'cta' },
+  text: { label: 'TỰ VIẾT', tone: 'custom' },
+  quote: { label: 'TỰ VIẾT', tone: 'custom' },
+};
+
+type AiStudioTab = 'quick' | 'hook' | 'chat';
+
+const AI_STUDIO_TABS: Array<{ id: AiStudioTab; label: string }> = [
+  { id: 'quick', label: 'Viết nhanh' },
+  { id: 'hook', label: 'Hook/Ý tưởng' },
+  { id: 'chat', label: 'Chat' },
 ];
 
 const SCRIPT_SECTIONS: ScriptSection[] = [
@@ -392,9 +409,10 @@ type ScriptBlockEditorProps = {
   block: ScriptBlock;
   placeholder: string;
   onChange: (patch: Partial<ScriptBlock>) => void;
+  minimal?: boolean;
 };
 
-function ScriptBlockEditor({ block, placeholder, onChange }: ScriptBlockEditorProps) {
+function ScriptBlockEditor({ block, placeholder, onChange, minimal = false }: ScriptBlockEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const mountedBlockId = useRef('');
 
@@ -457,31 +475,33 @@ function ScriptBlockEditor({ block, placeholder, onChange }: ScriptBlockEditorPr
   }
 
   return (
-    <div className="script-block-editor">
-      <div className="script-block-toolbar" role="toolbar" aria-label="Định dạng văn bản">
-        <button type="button" title="In đậm" onMouseDown={(event) => handleFormatMouseDown(event, 'bold')}>
-          <Bold />
-        </button>
-        <button type="button" title="In nghiêng" onMouseDown={(event) => handleFormatMouseDown(event, 'italic')}>
-          <Italic />
-        </button>
-        <button type="button" title="Gạch chân" onMouseDown={(event) => handleFormatMouseDown(event, 'underline')}>
-          <Underline />
-        </button>
-        <span className="script-block-toolbar-divider" aria-hidden="true" />
-        <button type="button" className={block.align === 'left' || !block.align ? 'active' : ''} title="Căn trái" onMouseDown={(event) => handleAlignMouseDown(event, 'left')}>
-          <AlignLeft />
-        </button>
-        <button type="button" className={block.align === 'center' ? 'active' : ''} title="Căn giữa" onMouseDown={(event) => handleAlignMouseDown(event, 'center')}>
-          <AlignCenter />
-        </button>
-        <button type="button" className={block.align === 'right' ? 'active' : ''} title="Căn phải" onMouseDown={(event) => handleAlignMouseDown(event, 'right')}>
-          <AlignRight />
-        </button>
-        <button type="button" className={block.align === 'justify' ? 'active' : ''} title="Căn đều" onMouseDown={(event) => handleAlignMouseDown(event, 'justify')}>
-          <AlignJustify />
-        </button>
-      </div>
+    <div className={`script-block-editor${minimal ? ' minimal' : ''}`}>
+      {!minimal ? (
+        <div className="script-block-toolbar" role="toolbar" aria-label="Định dạng văn bản">
+          <button type="button" title="In đậm" onMouseDown={(event) => handleFormatMouseDown(event, 'bold')}>
+            <Bold />
+          </button>
+          <button type="button" title="In nghiêng" onMouseDown={(event) => handleFormatMouseDown(event, 'italic')}>
+            <Italic />
+          </button>
+          <button type="button" title="Gạch chân" onMouseDown={(event) => handleFormatMouseDown(event, 'underline')}>
+            <Underline />
+          </button>
+          <span className="script-block-toolbar-divider" aria-hidden="true" />
+          <button type="button" className={block.align === 'left' || !block.align ? 'active' : ''} title="Căn trái" onMouseDown={(event) => handleAlignMouseDown(event, 'left')}>
+            <AlignLeft />
+          </button>
+          <button type="button" className={block.align === 'center' ? 'active' : ''} title="Căn giữa" onMouseDown={(event) => handleAlignMouseDown(event, 'center')}>
+            <AlignCenter />
+          </button>
+          <button type="button" className={block.align === 'right' ? 'active' : ''} title="Căn phải" onMouseDown={(event) => handleAlignMouseDown(event, 'right')}>
+            <AlignRight />
+          </button>
+          <button type="button" className={block.align === 'justify' ? 'active' : ''} title="Căn đều" onMouseDown={(event) => handleAlignMouseDown(event, 'justify')}>
+            <AlignJustify />
+          </button>
+        </div>
+      ) : null}
       <div
         ref={editorRef}
         className="script-rich-editor"
@@ -504,7 +524,9 @@ export function ScriptWriterPanel() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ScriptStatus | ''>('');
   const [showCreate, setShowCreate] = useState(false);
-  const [showAi, setShowAi] = useState(false);
+  const [showAi, setShowAi] = useState(true);
+  const [showFbPreview, setShowFbPreview] = useState(false);
+  const [aiTab, setAiTab] = useState<AiStudioTab>('quick');
   const [newTitle, setNewTitle] = useState('');
   const [newPlatform, setNewPlatform] = useState('TikTok');
   const [newWriter, setNewWriter] = useState('An');
@@ -580,6 +602,15 @@ export function ScriptWriterPanel() {
   }, []);
 
   useEffect(() => {
+    if (!loaded || typeof window === 'undefined') return;
+    const scriptId = new URLSearchParams(window.location.search).get('script')?.trim();
+    if (!scriptId) return;
+    if (scripts.some((script) => script.id === scriptId)) {
+      setSelectedId(scriptId);
+    }
+  }, [loaded, scripts]);
+
+  useEffect(() => {
     void loadTechniques();
     // loadTechniques is stable enough for this mount-only fetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -609,7 +640,6 @@ export function ScriptWriterPanel() {
 
   const selected = scripts.find((script) => script.id === selectedId) || null;
   const facebookPost = useMemo(() => (selected ? buildFacebookPost(selected) : null), [selected]);
-  const currentSections = useMemo(() => scriptSectionPayload(selected), [selected]);
   const visibleScripts = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase('vi');
     return scripts.filter((script) => {
@@ -1180,6 +1210,11 @@ export function ScriptWriterPanel() {
     void sendAiChat(message, section);
   }
 
+  const aiModelLabel = useMemo(() => {
+    const found = aiModels.find((item) => item.id === aiModel);
+    return found?.display_name || aiModel || 'Gemini';
+  }, [aiModel, aiModels]);
+
   return (
     <section className="script-studio" aria-label="Trình soạn kịch bản">
       {syncWarning ? (
@@ -1189,44 +1224,20 @@ export function ScriptWriterPanel() {
       <aside className="script-library">
         <div className="script-library-head">
           <div>
-            <span>Content Studio v3</span>
-            <h2>Kịch bản</h2>
+            <h2>Scripts</h2>
           </div>
           <button type="button" className="script-primary compact" onClick={() => setShowCreate(true)}>
             <Plus /> Mới
           </button>
         </div>
         <div className="script-library-filters">
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm kịch bản..." />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm..." />
           <select value={filter} onChange={(event) => setFilter(event.target.value as ScriptStatus | '')}>
-            <option value="">Tất cả trạng thái</option>
+            <option value="">Tất cả</option>
             <option value="draft">Nháp</option>
-            <option value="pending">Chờ duyệt</option>
-            <option value="approved">Đã duyệt</option>
+            <option value="pending">Chờ</option>
+            <option value="approved">OK</option>
           </select>
-        </div>
-        <div className="script-section-results" aria-label="Kết quả AI theo cấu trúc">
-          <div className="script-section-results-head">
-            <span>Kết quả AI</span>
-            <strong>Cấu trúc bài</strong>
-          </div>
-          {SCRIPT_SECTIONS.map((section) => {
-            const text = currentSections[section.id];
-            const active = activeSection === section.id;
-            return (
-              <div className={`script-section-result${active ? ' active' : ''}`} key={section.id}>
-                <button type="button" className="script-section-main" onClick={() => viewSection(section.id)}>
-                  <strong>{section.label}</strong>
-                  <span>{text || section.emptyText}</span>
-                </button>
-                <div className="script-section-actions">
-                  <button type="button" title={`Xem ${section.label}`} onClick={() => viewSection(section.id)}><Eye /></button>
-                  <button type="button" title={`Sửa ${section.label}`} onClick={() => editSection(section.id)}><Pencil /></button>
-                  <button type="button" title={`Xóa ${section.label}`} onClick={() => removeSection(section.id)}><Trash2 /></button>
-                </div>
-              </div>
-            );
-          })}
         </div>
         <div className="script-library-list">
           {visibleScripts.map((script) => (
@@ -1276,54 +1287,78 @@ export function ScriptWriterPanel() {
                 <option>Reels</option>
                 <option>Facebook</option>
               </select>
-              <select value={selected.status} onChange={(event) => updateSelected((script) => ({ ...script, status: event.target.value as ScriptStatus }))}>
+              <span className={`script-status-badge ${selected.status}`}>
+                {selected.status === 'approved' ? <Check /> : null}
+                {STATUS_LABELS[selected.status]}
+              </span>
+              <select className="script-status-select" value={selected.status} onChange={(event) => updateSelected((script) => ({ ...script, status: event.target.value as ScriptStatus }))} aria-label="Trạng thái">
                 <option value="draft">Nháp</option>
                 <option value="pending">Chờ duyệt</option>
                 <option value="approved">Đã duyệt</option>
               </select>
               <button type="button" className="script-save" onClick={() => void saveScripts(scripts, true)}><Save /> Lưu</button>
-              <button type="button" className="script-icon-button" title="Gửi duyệt" onClick={() => { updateSelected((script) => ({ ...script, status: 'pending' })); setNotice('Đã chuyển sang chờ duyệt.'); }}><Send /></button>
-              <button type="button" className="script-icon-button" title="In kịch bản" onClick={printCompleteVersion}><Printer /></button>
+              <button type="button" className="script-icon-button" title="Xuất file" onClick={exportScript}><FileDown /></button>
+              <button type="button" className="script-icon-button" title="Copy" onClick={() => void copyCompleteVersion()}><Clipboard /></button>
+              <button type="button" className="script-icon-button" title="Xóa kịch bản" onClick={() => { setScripts((rows) => rows.filter((script) => script.id !== selected.id)); setSelectedId(scripts.find((script) => script.id !== selected.id)?.id || ''); }}><Trash2 /></button>
               <button type="button" className={`script-icon-button${showAi ? ' active' : ''}`} title="Trợ lý AI" onClick={() => setShowAi((value) => !value)}><Bot /></button>
             </div>
-            <div className="script-editor-meta">
+            <div className="script-editor-meta script-doc-hint">
               <span>{wordCount} từ</span>
               <span>{selected.blocks.length} blocks</span>
-              <span className={syncError ? 'script-sync-error' : ''} title={syncError || syncWarning}>{syncError || syncStatus}</span>
+              <span className="script-doc-hint-muted">kéo / đổi loại</span>
+              <span className="script-doc-hint-muted">đổi text → định dạng</span>
+              <span className={syncError ? 'script-sync-error' : 'script-doc-hint-muted'} title={syncError || syncWarning}>{syncError || syncStatus}</span>
               <div className="script-editor-copy">
-                <button type="button" onClick={() => void copyScript()}><Clipboard /> Copy</button>
-                <button type="button" onClick={() => { setScripts((rows) => rows.filter((script) => script.id !== selected.id)); setSelectedId(scripts.find((script) => script.id !== selected.id)?.id || ''); }}><Trash2 /> Xóa</button>
+                <button type="button" onClick={() => setShowFbPreview((v) => !v)}>{showFbPreview ? 'Ẩn FB' : 'Xem FB'}</button>
+                <button type="button" onClick={printCompleteVersion}><Printer /> In</button>
               </div>
             </div>
 
-            <div className="script-block-list">
+            {showFbPreview && facebookPost ? (
+              <div className="script-fb-inline-preview">
+                <ScriptFacebookPreview script={selected} postHtml={facebookPost.html} hasContent={facebookPost.hasContent} />
+                <div className="script-preview-actions">
+                  <button type="button" className="script-primary compact" onClick={() => void copyFacebookPost()} disabled={!facebookPost.hasContent}>
+                    <Clipboard /> Copy FB
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="script-block-list script-block-list-v3">
               {selected.blocks.map((block, index) => {
                 const definition = BLOCK_TYPES.find((item) => item.id === block.type) || BLOCK_TYPES[0];
+                const v3 = BLOCK_V3_META[block.type] || BLOCK_V3_META.text;
                 return (
-                  <div className={`script-block block-${block.type}${sectionForBlock(block.type) === activeSection ? ' section-active' : ''}`} key={block.id}>
-                    <GripVertical className="script-drag" />
-                    <select className="script-block-type" value={block.type} onChange={(event) => updateBlock(block.id, { type: event.target.value as BlockType })}>
-                      {BLOCK_TYPES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-                    </select>
-                    <ScriptBlockEditor
-                      block={block}
-                      placeholder={definition.placeholder}
-                      onChange={(patch) => updateBlock(block.id, patch)}
-                    />
-                    <div className="script-block-actions">
-                      <button type="button" title="Lên" disabled={index === 0} onClick={() => moveBlock(index, -1)}><ChevronUp /></button>
-                      <button type="button" title="Xuống" disabled={index === selected.blocks.length - 1} onClick={() => moveBlock(index, 1)}><ChevronDown /></button>
-                      <button type="button" title="Nhân bản" onClick={() => duplicateBlock(block, index)}><Copy /></button>
-                      <button type="button" title="Xóa block" onClick={() => removeBlock(block.id)}><X /></button>
+                  <div className={`script-block-card tone-${v3.tone} block-${block.type}`} key={block.id}>
+                    <div className="script-block-accent" aria-hidden="true" />
+                    <div className="script-block-card-inner">
+                      <div className="script-block-card-head">
+                        <GripVertical className="script-drag" />
+                        <span className="script-block-label">{v3.label}</span>
+                        <select className="script-block-type-mini" value={block.type} onChange={(event) => updateBlock(block.id, { type: event.target.value as BlockType })} aria-label="Loại block">
+                          {BLOCK_TYPES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                        </select>
+                        <div className="script-block-actions">
+                          <button type="button" title="Lên" disabled={index === 0} onClick={() => moveBlock(index, -1)}><ChevronUp /></button>
+                          <button type="button" title="Xuống" disabled={index === selected.blocks.length - 1} onClick={() => moveBlock(index, 1)}><ChevronDown /></button>
+                          <button type="button" title="Nhân bản" onClick={() => duplicateBlock(block, index)}><Copy /></button>
+                          <button type="button" title="Xóa block" onClick={() => removeBlock(block.id)}><X /></button>
+                        </div>
+                      </div>
+                      <ScriptBlockEditor
+                        block={block}
+                        placeholder={definition.placeholder}
+                        onChange={(patch) => updateBlock(block.id, patch)}
+                        minimal
+                      />
                     </div>
                   </div>
                 );
               })}
-              <div className="script-add-row">
-                <span />
-                <button type="button" onClick={() => addBlock('text')}><Plus /> Thêm block</button>
-                <span />
-              </div>
+              <button type="button" className="script-add-block-v3" onClick={() => addBlock('text')}>
+                <Plus /> Thêm block (tự viết tay)
+              </button>
               {!selected.blocks.length ? (
                 <div className="script-empty-editor">
                   <Sparkles />
@@ -1340,209 +1375,191 @@ export function ScriptWriterPanel() {
       </div>
 
       <div className="script-right-rail">
-        <aside className="script-preview-panel" aria-label="Xem trước bài Facebook">
-          <div className="script-preview-head">
-            <div>
-              <span>Review</span>
-              <strong>Bài Facebook</strong>
-            </div>
-          </div>
-          {selected && facebookPost ? (
-            <>
-              <div className="script-preview-actions">
-                <button type="button" className="script-primary compact" onClick={() => void copyFacebookPost()} disabled={!facebookPost.hasContent}>
-                  <Clipboard /> Copy FB
-                </button>
-                <button type="button" onClick={printCompleteVersion} title="In kịch bản"><Printer /></button>
-                <button type="button" onClick={() => void copyCompleteVersion()} disabled={!facebookPost.hasContent} title="Copy text"><Copy /></button>
-                <button type="button" onClick={exportScript} title="Xuất .txt"><FileDown /></button>
-              </div>
-              <ScriptFacebookPreview script={selected} postHtml={facebookPost.html} hasContent={facebookPost.hasContent} />
-            </>
-          ) : (
-            <div className="script-preview-empty">
-              <Sparkles />
-              <p>Chọn kịch bản để xem trước bài đăng Facebook.</p>
-            </div>
-          )}
-        </aside>
-
         {showAi ? (
-          <aside className="script-ai-panel script-ai-overlay">
-            <div className="script-ai-head"><div><Bot /><strong>Trợ lý AI</strong></div><button type="button" onClick={() => setShowAi(false)}><X /></button></div>
-            <div className="script-ai-context">
-              <span>Đang xử lý</span>
-              <strong>{SECTION_LABELS[activeSection]}</strong>
+          <aside className="script-ai-panel script-ai-panel-v3">
+            <div className="script-ai-head">
+              <div><Bot /><strong>AI {aiModelLabel}</strong></div>
+              <button type="button" title="Ẩn panel AI" onClick={() => setShowAi(false)}><X /></button>
             </div>
-            <div className="script-ai-templates script-ai-quick-actions">
-              <button type="button" disabled={chatBusy} onClick={() => quickAi(`Viết lại ${SECTION_LABELS[activeSection]} cho "${selected?.title || 'kịch bản này'}", giữ đúng cấu trúc hiện tại.`)}>
-                <Wand2 /> Viết lại
-              </button>
-              <button type="button" disabled={chatBusy} onClick={() => quickAi('Cải thiện đoạn đang chọn, giữ nguyên ý chính và chỉ sửa phần này.')}>
-                <Sparkles /> Cải thiện
-              </button>
-              <button type="button" disabled={chatBusy} onClick={() => quickAi('Viết HOOK tối đa 3 dòng, thật thu hút.', 'opening')}>
-                <AtSign /> Hook
-              </button>
-              <button type="button" disabled={chatBusy} onClick={() => quickAi('Viết CTA tự nhiên, ngắn gọn.', 'ending')}>
-                <MessageSquare /> CTA
-              </button>
-            </div>
-            <div className="script-ai-config-card">
-              <div className="script-tech-head">
-                <div><Bot /><strong>Cấu hình AI theo khách</strong></div>
-                <button type="button" title="Tải lại cấu hình AI" disabled={aiConfigBusy} onClick={() => void loadAiConfig()}><RefreshCw /></button>
-              </div>
-              <div className="script-ai-config-grid">
-                <input
-                  value={aiCustomerName}
-                  onChange={(event) => setAiCustomerName(event.target.value)}
-                  placeholder="Tên khách / thương hiệu"
-                />
-                <select
-                  value={aiProvider}
-                  onChange={(event) => {
-                    const provider = event.target.value;
-                    setAiProvider(provider);
-                    setAiModel(DEFAULT_MODELS[provider] || DEFAULT_MODELS.gemini);
-                    setAiModels(fallbackModels(provider));
-                    setAiKeyMasked('');
-                    void loadAiModels(provider);
-                  }}
+            <div className="script-ai-tabs" role="tablist">
+              {AI_STUDIO_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={aiTab === tab.id}
+                  className={aiTab === tab.id ? 'active' : ''}
+                  onClick={() => setAiTab(tab.id)}
                 >
-                  <option value="gemini">Google Gemini</option>
-                  <option value="openai">OpenAI / ChatGPT</option>
-                  <option value="groq">Groq</option>
-                </select>
-                <select value={aiModel} onChange={(event) => setAiModel(event.target.value)}>
-                  {aiModels.map((item) => (
-                    <option key={item.id} value={item.id}>{item.display_name || item.id}</option>
-                  ))}
-                </select>
-                <input
-                  value={aiKeyInput}
-                  onChange={(event) => setAiKeyInput(event.target.value)}
-                  placeholder={aiKeyMasked ? `Đã lưu ${aiKeyMasked}` : 'Nhập API key một lần'}
-                />
-              </div>
-              <div className="script-ai-config-actions">
-                <button type="button" className="script-primary compact" disabled={aiConfigBusy} onClick={() => void saveAiConfig()}>
-                  <Save /> Lưu AI
+                  {tab.label}
                 </button>
-                <button type="button" disabled={aiConfigBusy} onClick={() => void testAiConfig()}>
-                  <Sparkles /> Test AI
-                </button>
-              </div>
-              {aiConfigStatus ? <p className="script-tech-status">{aiConfigStatus}</p> : null}
-            </div>
-            <div className="script-ai-chat-log" aria-live="polite">
-              {chatMessages.map((message) => (
-                <div className={`script-ai-bubble ${message.role}`} key={message.id}>
-                  <span>{message.role === 'user' ? 'Bạn' : 'AI'}</span>
-                  <p>{message.text}</p>
-                </div>
               ))}
-              {chatBusy ? <div className="script-ai-thinking"><RefreshCw /> AI đang đọc cấu trúc và rule...</div> : null}
             </div>
 
-            {aiDraft && Object.values(aiDraft.sections || {}).some(Boolean) ? (
-              <div className="script-ai-draft">
-                <div className="script-ai-draft-head">
-                  <strong>Bản nháp AI</strong>
-                  <span>
-                    {aiDraft.action === 'append' ? 'Thêm vào' : 'Thay thế'} · {' '}
-                    {aiDraft.target_section === 'all'
-                      ? 'Toàn bài'
-                      : aiDraft.target_section === 'opening' || aiDraft.target_section === 'body' || aiDraft.target_section === 'ending'
-                        ? SECTION_LABELS[aiDraft.target_section]
-                        : SECTION_LABELS[activeSection]}
-                  </span>
+            <div className="script-ai-tab-body">
+              {aiTab === 'quick' ? (
+                <div className="script-ai-tab-panel">
+                  <p className="script-ai-tab-hint">Viết nhanh theo cấu trúc kịch bản hiện tại.</p>
+                  <div className="script-ai-templates script-ai-quick-actions">
+                    <button type="button" disabled={chatBusy} onClick={() => { setAiTab('chat'); quickAi(`Viết toàn bộ kịch bản cho "${selected?.title || 'chủ đề này'}", chia HOOK / BODY / CTA rõ ràng.`); }}>
+                      <Wand2 /> Viết toàn bài
+                    </button>
+                    <button type="button" disabled={chatBusy} onClick={() => addAiTemplate('hook')}>
+                      <AtSign /> Thêm Hook mẫu
+                    </button>
+                    <button type="button" disabled={chatBusy} onClick={() => addAiTemplate('cta')}>
+                      <MessageSquare /> Thêm CTA mẫu
+                    </button>
+                  </div>
                 </div>
-                {SCRIPT_SECTIONS.map((section) => {
-                  const text = aiDraft.sections?.[section.id];
-                  return text ? (
-                    <div className="script-ai-draft-section" key={section.id}>
-                      <b>{section.label}</b>
-                      <p>{text}</p>
+              ) : null}
+
+              {aiTab === 'hook' ? (
+                <div className="script-ai-tab-panel">
+                  <p className="script-ai-tab-hint">Gợi ý hook và ý tưởng cho chủ đề đang soạn.</p>
+                  <div className="script-ai-templates script-ai-quick-actions">
+                    <button type="button" disabled={chatBusy} onClick={() => { setAiTab('chat'); quickAi('Đề xuất 5 hook khác nhau, mỗi hook tối đa 2 câu.', 'opening'); }}>
+                      <Sparkles /> 5 hook
+                    </button>
+                    <button type="button" disabled={chatBusy} onClick={() => { setAiTab('chat'); quickAi('Đề xuất 3 góc nội dung khác nhau cho cùng chủ đề.', 'body'); }}>
+                      <Wand2 /> 3 góc ý tưởng
+                    </button>
+                    <button type="button" disabled={chatBusy} onClick={() => addAiTemplate('hook')}>
+                      <Plus /> Chèn hook mẫu
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {aiTab === 'chat' ? (
+                <>
+                  <div className="script-ai-chat-log" aria-live="polite">
+                    {chatMessages.map((message) => (
+                      <div className={`script-ai-bubble ${message.role}`} key={message.id}>
+                        <span>{message.role === 'user' ? 'Bạn' : 'AI'}</span>
+                        <p>{message.text}</p>
+                      </div>
+                    ))}
+                    {chatBusy ? <div className="script-ai-thinking"><RefreshCw /> AI đang xử lý...</div> : null}
+                  </div>
+
+                  {aiDraft && Object.values(aiDraft.sections || {}).some(Boolean) ? (
+                    <div className="script-ai-draft">
+                      <div className="script-ai-draft-head">
+                        <strong>Bản nháp AI</strong>
+                        <span>
+                          {aiDraft.action === 'append' ? 'Thêm vào' : 'Thay thế'} · {' '}
+                          {aiDraft.target_section === 'all'
+                            ? 'Toàn bài'
+                            : aiDraft.target_section === 'opening' || aiDraft.target_section === 'body' || aiDraft.target_section === 'ending'
+                              ? SECTION_LABELS[aiDraft.target_section]
+                              : SECTION_LABELS[activeSection]}
+                        </span>
+                      </div>
+                      {SCRIPT_SECTIONS.map((section) => {
+                        const text = aiDraft.sections?.[section.id];
+                        return text ? (
+                          <div className="script-ai-draft-section" key={section.id}>
+                            <b>{section.label}</b>
+                            <p>{text}</p>
+                          </div>
+                        ) : null;
+                      })}
+                      <div className="script-ai-draft-actions">
+                        <button type="button" className="script-primary compact" onClick={applyAiDraft}><Plus /> Add</button>
+                        <button type="button" onClick={() => setAiDraft(null)}><X /> Hủy</button>
+                      </div>
                     </div>
-                  ) : null;
-                })}
-                <div className="script-ai-draft-actions">
-                  <button type="button" className="script-primary compact" onClick={applyAiDraft}><Plus /> Add</button>
-                  <button type="button" onClick={() => setAiDraft(null)}><X /> Hủy</button>
+                  ) : null}
+
+                  <div className="script-ai-composer">
+                    {mentionSuggestions.length ? (
+                      <div className="script-mention-menu">
+                        {mentionSuggestions.map((technique) => (
+                          <button type="button" key={technique.id} onClick={() => selectMentionTechnique(technique)}>
+                            <AtSign />
+                            <span>{technique.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    <textarea
+                      value={chatInput}
+                      onChange={(event) => setChatInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                          event.preventDefault();
+                          void sendAiChat();
+                        }
+                      }}
+                      placeholder="Nhập yêu cầu cho AI..."
+                      rows={2}
+                    />
+                    <button type="button" className="script-primary compact" disabled={chatBusy || !chatInput.trim()} onClick={() => void sendAiChat()}>
+                      <SendHorizontal /> Gửi
+                    </button>
+                  </div>
+                </>
+              ) : null}
+            </div>
+
+            <details className="script-ai-advanced">
+              <summary>Cấu hình AI & kỹ thuật</summary>
+              <div className="script-ai-config-card">
+                <div className="script-tech-head">
+                  <div><Bot /><strong>Cấu hình AI</strong></div>
+                  <button type="button" title="Tải lại" disabled={aiConfigBusy} onClick={() => void loadAiConfig()}><RefreshCw /></button>
                 </div>
-              </div>
-            ) : null}
-
-            <div className="script-tech-manager">
-              <div className="script-tech-head">
-                <div><Database /><strong>Kỹ thuật content</strong></div>
-                <button type="button" title="Tải lại kỹ thuật" disabled={techniqueBusy} onClick={() => void loadTechniques()}><RefreshCw /></button>
-              </div>
-              <div className="script-tech-form">
-                <input
-                  value={techniqueName}
-                  onChange={(event) => setTechniqueName(event.target.value)}
-                  placeholder="Tên kỹ thuật, VD: AIDA"
-                />
-                <textarea
-                  value={techniqueContent}
-                  onChange={(event) => setTechniqueContent(event.target.value)}
-                  placeholder="Nội dung rule của kỹ thuật"
-                  rows={3}
-                />
-                <button type="button" className="script-primary compact" disabled={techniqueBusy} onClick={() => void addTechnique()}>
-                  <Plus /> Lưu kỹ thuật
-                </button>
-              </div>
-              {techniqueStatus ? <p className="script-tech-status">{techniqueStatus}</p> : null}
-              <div className="script-tech-list">
-                {techniques.map((technique) => (
-                  <button
-                    type="button"
-                    key={technique.id}
-                    className={selectedTechniqueIds.includes(technique.id) ? 'active' : ''}
-                    title={technique.content}
-                    onClick={() => setSelectedTechniqueIds((ids) => (ids.includes(technique.id) ? ids.filter((id) => id !== technique.id) : [...ids, technique.id]))}
+                <div className="script-ai-config-grid">
+                  <input value={aiCustomerName} onChange={(event) => setAiCustomerName(event.target.value)} placeholder="Tên khách / thương hiệu" />
+                  <select
+                    value={aiProvider}
+                    onChange={(event) => {
+                      const provider = event.target.value;
+                      setAiProvider(provider);
+                      setAiModel(DEFAULT_MODELS[provider] || DEFAULT_MODELS.gemini);
+                      setAiModels(fallbackModels(provider));
+                      setAiKeyMasked('');
+                      void loadAiModels(provider);
+                    }}
                   >
-                    <span>@{technique.name}</span>
-                    {!technique.system ? <i onClick={(event) => { event.stopPropagation(); void deleteTechnique(technique.id); }}><Trash2 /></i> : null}
-                  </button>
-                ))}
+                    <option value="gemini">Google Gemini</option>
+                    <option value="openai">OpenAI / ChatGPT</option>
+                    <option value="groq">Groq</option>
+                  </select>
+                  <select value={aiModel} onChange={(event) => setAiModel(event.target.value)}>
+                    {aiModels.map((item) => (
+                      <option key={item.id} value={item.id}>{item.display_name || item.id}</option>
+                    ))}
+                  </select>
+                  <input value={aiKeyInput} onChange={(event) => setAiKeyInput(event.target.value)} placeholder={aiKeyMasked ? `Đã lưu ${aiKeyMasked}` : 'Nhập API key'} />
+                </div>
+                <div className="script-ai-config-actions">
+                  <button type="button" className="script-primary compact" disabled={aiConfigBusy} onClick={() => void saveAiConfig()}><Save /> Lưu AI</button>
+                  <button type="button" disabled={aiConfigBusy} onClick={() => void testAiConfig()}><Sparkles /> Test</button>
+                </div>
+                {aiConfigStatus ? <p className="script-tech-status">{aiConfigStatus}</p> : null}
               </div>
-            </div>
-
-            <div className="script-business-profile-card">
-              <BusinessProfilePanel embedded />
-            </div>
-
-            <div className="script-ai-composer">
-              {mentionSuggestions.length ? (
-                <div className="script-mention-menu">
-                  {mentionSuggestions.map((technique) => (
-                    <button type="button" key={technique.id} onClick={() => selectMentionTechnique(technique)}>
-                      <AtSign />
-                      <span>{technique.name}</span>
+              <div className="script-tech-manager">
+                <div className="script-tech-head">
+                  <div><Database /><strong>Kỹ thuật content</strong></div>
+                  <button type="button" title="Tải lại" disabled={techniqueBusy} onClick={() => void loadTechniques()}><RefreshCw /></button>
+                </div>
+                <div className="script-tech-list">
+                  {techniques.map((technique) => (
+                    <button
+                      type="button"
+                      key={technique.id}
+                      className={selectedTechniqueIds.includes(technique.id) ? 'active' : ''}
+                      title={technique.content}
+                      onClick={() => setSelectedTechniqueIds((ids) => (ids.includes(technique.id) ? ids.filter((id) => id !== technique.id) : [...ids, technique.id]))}
+                    >
+                      <span>@{technique.name}</span>
                     </button>
                   ))}
                 </div>
-              ) : null}
-              <textarea
-                value={chatInput}
-                onChange={(event) => setChatInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-                    event.preventDefault();
-                    void sendAiChat();
-                  }
-                }}
-                placeholder={`Nhập yêu cầu cho ${SECTION_LABELS[activeSection]}...`}
-                rows={2}
-              />
-              <button type="button" className="script-primary compact" disabled={chatBusy || !chatInput.trim()} onClick={() => void sendAiChat()}>
-                <SendHorizontal /> Gửi
-              </button>
-            </div>
+              </div>
+            </details>
           </aside>
         ) : null}
       </div>

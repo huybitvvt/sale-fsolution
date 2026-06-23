@@ -1,5 +1,6 @@
 'use client';
 
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { CONSOLE_MODULE_ICONS } from '@/lib/console-nav-icons';
 import { CONSOLE_NAV_ITEMS } from '@/lib/console-nav';
 import type { ViewKey } from '@/lib/app-routes';
@@ -7,11 +8,13 @@ import type { ViewKey } from '@/lib/app-routes';
 type ConsoleRailProps = {
   activeView: ViewKey;
   onNavigate: (view: ViewKey) => void;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 };
 
-export function ConsoleRail({ activeView, onNavigate }: ConsoleRailProps) {
+export function ConsoleRail({ activeView, onNavigate, collapsed = false, onToggleCollapse }: ConsoleRailProps) {
   return (
-    <aside className="console-rail">
+    <aside className={`console-rail${collapsed ? ' collapsed' : ''}`}>
       <div className="console-rail-brand">
         <img className="console-logo" src="/st-real-logo.jpg" alt="Seeding Fsolution" />
         <div className="console-rail-title">
@@ -42,6 +45,19 @@ export function ConsoleRail({ activeView, onNavigate }: ConsoleRailProps) {
           );
         })}
       </nav>
+
+      {onToggleCollapse ? (
+        <button
+          type="button"
+          className="rail-toggle"
+          title={collapsed ? 'Mở rộng menu' : 'Thu gọn menu'}
+          aria-expanded={!collapsed}
+          onClick={onToggleCollapse}
+        >
+          {collapsed ? <ChevronRight /> : <ChevronLeft />}
+          {!collapsed ? <span>Thu gọn</span> : null}
+        </button>
+      ) : null}
     </aside>
   );
 }

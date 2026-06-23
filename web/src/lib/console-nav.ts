@@ -28,5 +28,6 @@ export const CONSOLE_NAV_ITEMS: ConsoleNavItem[] = [
   { key: 'history', label: 'Lịch thử thao tác', shortLabel: 'Lịch sử', tone: 'slate' },
   { key: 'leads', label: 'Lead', shortLabel: 'Lead', tone: 'emerald' },
   { key: 'scripts', label: 'Kịch bản', shortLabel: 'Kịch bản', tone: 'violet' },
+  { key: 'plan', label: 'Kế hoạch', shortLabel: 'Kế hoạch', tone: 'amber' },
   { key: 'marketing', label: 'Bài viết', shortLabel: 'Bài viết', tone: 'rose' },
 ];
