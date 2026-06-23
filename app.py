@@ -2,6 +2,7 @@ import os
 import json
 import threading
 import time as time_module
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import uuid
@@ -5014,6 +5015,105 @@ def _upload_post_media_to_supabase(file_storage) -> tuple[str, str, str]:
         return '', '', str(e)[:300]
 
 
+def _upload_post_media_bytes_to_supabase(content: bytes, filename: str, content_type: str) -> tuple[str, str, str]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return '', '', 'Chưa cấu hình Supabase'
+    content_type = (content_type or '').lower()
+    if content_type not in ALLOWED_POST_MEDIA_TYPES:
+        return '', '', 'Chỉ hỗ trợ JPG, PNG, WEBP, GIF, MP4 hoặc MOV'
+    if not content:
+        return '', '', 'File rỗng'
+    if len(content) > MAX_POST_MEDIA_BYTES:
+        return '', '', f'File quá lớn, tối đa {MAX_POST_MEDIA_BYTES // (1024 * 1024)}MB'
+
+    original = secure_filename(filename or 'post-media.png')
+    _, original_ext = os.path.splitext(original)
+    valid_exts = set(ALLOWED_POST_MEDIA_TYPES.values()) | {'.jpeg'}
+    ext = original_ext.lower() if original_ext.lower() in valid_exts else ALLOWED_POST_MEDIA_TYPES[content_type]
+    if ext == '.jpeg':
+        ext = '.jpg'
+
+    staff_id = _current_staff_id() or 'anonymous'
+    try:
+        tz = ZoneInfo(APP_TIMEZONE)
+    except Exception:
+        tz = ZoneInfo('Asia/Ho_Chi_Minh')
+    today = datetime.now(tz).strftime('%Y/%m/%d')
+    object_path = f'posts/{today}/{staff_id}/{uuid.uuid4().hex}{ext}'
+    upload_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{SUPABASE_POST_MEDIA_BUCKET}/{object_path}"
+    try:
+        resp = _req.post(
+            upload_url,
+            headers={
+                'apikey': SUPABASE_KEY,
+                'Authorization': f'Bearer {SUPABASE_KEY}',
+                'Content-Type': content_type,
+                'x-upsert': 'false',
+            },
+            data=content,
+            timeout=90,
+        )
+        if resp.status_code not in (200, 201):
+            message = resp.text[:300]
+            if resp.headers.get('content-type', '').startswith('application/json'):
+                try:
+                    message = resp.json().get('message') or message
+                except Exception:
+                    pass
+            return '', '', message
+        public_path = quote(object_path, safe='/')
+        public_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{SUPABASE_POST_MEDIA_BUCKET}/{public_path}"
+        return public_url, content_type, ''
+    except Exception as e:
+        return '', '', str(e)[:300]
+
+
+def _generate_openai_image_bytes(prompt: str, model: str = '', size: str = '1024x1024') -> tuple[bytes, str]:
+    prompt = str(prompt or '').strip()
+    if not prompt:
+        raise RuntimeError('Thiếu mô tả ảnh')
+    api_key = _get_ai_key('openai')
+    if not api_key:
+        raise RuntimeError('Chưa có OpenAI/ChatGPT API key để tạo ảnh. Vào Cài đặt → Cấu hình AI theo khách, chọn OpenAI và lưu key.')
+    model = str(model or os.environ.get('OPENAI_IMAGE_MODEL') or 'gpt-image-1').strip() or 'gpt-image-1'
+    size = str(size or '1024x1024').strip()
+    if size not in {'1024x1024', '1536x1024', '1024x1536'}:
+        size = '1024x1024'
+    try:
+        resp = _req.post(
+            'https://api.openai.com/v1/images/generations',
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'model': model,
+                'prompt': prompt[:8000],
+                'size': size,
+                'n': 1,
+            },
+            timeout=180,
+        )
+    except Exception as e:
+        raise RuntimeError(f'Không gọi được OpenAI Images API: {str(e)[:300]}') from e
+    data = resp.json() if resp.headers.get('content-type', '').startswith('application/json') else {}
+    if resp.status_code >= 400:
+        error = data.get('error') if isinstance(data, dict) else {}
+        message = error.get('message') if isinstance(error, dict) else ''
+        raise RuntimeError((message or resp.text or 'OpenAI Images API lỗi')[:500])
+    rows = data.get('data') if isinstance(data, dict) else []
+    item = rows[0] if isinstance(rows, list) and rows else {}
+    b64 = str(item.get('b64_json') or '').strip() if isinstance(item, dict) else ''
+    if b64:
+        return base64.b64decode(b64), model
+    image_url = str(item.get('url') or '').strip() if isinstance(item, dict) else ''
+    if image_url:
+        img_resp = _req.get(image_url, timeout=120)
+        if img_resp.status_code < 400 and img_resp.content:
+            return img_resp.content, model
+    raise RuntimeError('OpenAI không trả dữ liệu ảnh')
+
+
 def _staff_processed_post_ids(staff_id: str) -> set:
     staff_id = str(staff_id or '').strip()
     if not staff_id:
@@ -5806,6 +5906,42 @@ def upload_post_media():
         'image_urls': [item['url'] for item in uploaded if item['type'] == 'image'],
         'image_url': media_urls[0] if len(media_urls) == 1 else '',
     })
+
+
+@app.route('/api/scripts/generate-image', methods=['POST'])
+def scripts_generate_image():
+    body = request.get_json(silent=True) or {}
+    prompt = str(body.get('prompt') or '').strip()
+    title = str(body.get('title') or 'script-image').strip()[:120] or 'script-image'
+    model = str(body.get('model') or '').strip()
+    size = str(body.get('size') or '1024x1024').strip()
+    if not prompt:
+        return jsonify({'ok': False, 'error': 'Thiếu prompt ảnh'}), 400
+    try:
+        image_bytes, used_model = _generate_openai_image_bytes(prompt, model=model, size=size)
+        filename_base = re.sub(r'[^0-9a-zA-Z_-]+', '-', title).strip('-')[:80] or 'script-image'
+        image_url, content_type, upload_error = _upload_post_media_bytes_to_supabase(
+            image_bytes,
+            f'{filename_base}.png',
+            'image/png',
+        )
+        if not image_url:
+            return jsonify({
+                'ok': False,
+                'error': f'Đã tạo ảnh nhưng chưa upload được Supabase Storage: {upload_error}',
+                'model': used_model,
+            }), 502
+        return jsonify({
+            'ok': True,
+            'image_url': image_url,
+            'media_url': image_url,
+            'content_type': content_type,
+            'prompt': prompt,
+            'model': used_model,
+            'storage': 'supabase',
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)[:500]}), 502
 
 
 @app.route('/api/comment', methods=['POST'])
@@ -8127,9 +8263,12 @@ APP_KV_RLS_FIX_HINT = (
 CUSTOMER_AI_CONTENT_SETUP_HINT = (
     f'Chạy lại file supabase_customer_ai_settings.sql để thêm cột content_setup cho bảng {SUPABASE_CUSTOMER_AI_TABLE}.'
 )
+CUSTOMER_AI_CONTENT_TECHNIQUES_HINT = (
+    f'Chạy lại file supabase_customer_ai_settings.sql để thêm cột content_techniques cho bảng {SUPABASE_CUSTOMER_AI_TABLE}.'
+)
 CONTENT_SECTION_BLOCK_TYPES = {
     'opening': {'hook', 'h1', 'h2'},
-    'body': {'body', 'text', 'scene', 'quote'},
+    'body': {'body', 'text', 'scene', 'quote', 'image'},
     'ending': {'cta'},
 }
 
@@ -8269,6 +8408,16 @@ def _clean_content_techniques(rows) -> list[dict]:
 def _load_content_techniques() -> tuple[list[dict], str, str]:
     local_raw = _read_json(CONTENT_TECHNIQUES_FILE, None)
     local = _clean_content_techniques(local_raw if isinstance(local_raw, list) else _default_content_techniques())
+    staff_key = _current_staff_ai_key()
+    if USE_SUPABASE and staff_key:
+        try:
+            row = sb.get_customer_ai_settings(staff_key, SUPABASE_CUSTOMER_AI_TABLE)
+            if row and isinstance(row.get('content_techniques'), list):
+                rows = _clean_content_techniques(row.get('content_techniques'))
+                _write_json(CONTENT_TECHNIQUES_FILE, rows)
+                return rows, 'supabase', ''
+        except Exception as e:
+            return local, 'local', f'Supabase chưa đọc được kỹ thuật content theo user. {str(e)[:300]} ({_supabase_debug_context(SUPABASE_CUSTOMER_AI_TABLE)})'
     if not USE_SUPABASE:
         return local, 'local', ''
     try:
@@ -8285,6 +8434,23 @@ def _load_content_techniques() -> tuple[list[dict], str, str]:
 def _save_content_techniques(rows: list[dict]) -> tuple[str, str]:
     cleaned = _clean_content_techniques(rows)
     _write_json(CONTENT_TECHNIQUES_FILE, cleaned)
+    staff_key = _current_staff_ai_key()
+    if USE_SUPABASE and staff_key:
+        staff = _current_staff()
+        try:
+            sb.upsert_customer_ai_settings({
+                'staff_key': staff_key,
+                'staff_id': str(staff.get('id') or ''),
+                'username': str(staff.get('username') or ''),
+                'customer_name': str(staff.get('name') or staff.get('username') or ''),
+                'content_techniques': cleaned,
+            }, SUPABASE_CUSTOMER_AI_TABLE)
+            return 'supabase', ''
+        except Exception as e:
+            message = str(e)[:300]
+            if 'PGRST204' in message or 'content_techniques' in message:
+                return 'local', f'{CUSTOMER_AI_CONTENT_TECHNIQUES_HINT} Chi tiết: {message} ({_supabase_debug_context(SUPABASE_CUSTOMER_AI_TABLE)})'
+            return 'local', f'Supabase chưa ghi được kỹ thuật content theo user: {message} ({_supabase_debug_context(SUPABASE_CUSTOMER_AI_TABLE)})'
     if USE_SUPABASE:
         try:
             sb.kv_set(CONTENT_TECHNIQUES_KV, cleaned)
@@ -8611,7 +8777,7 @@ def _clean_script_library(rows) -> list[dict]:
     if not isinstance(rows, list):
         return []
     allowed_statuses = {'draft', 'pending', 'approved'}
-    allowed_block_types = {'text', 'h1', 'h2', 'hook', 'body', 'cta', 'scene', 'quote'}
+    allowed_block_types = {'text', 'h1', 'h2', 'hook', 'body', 'cta', 'scene', 'quote', 'image'}
     cleaned = []
     for raw in rows[:500]:
         if not isinstance(raw, dict):

@@ -17,6 +17,7 @@ import {
   Database,
   FileDown,
   GripVertical,
+  Image as ImageIcon,
   Italic,
   Maximize2,
   MessageSquare,
@@ -38,7 +39,7 @@ import './script-writer-panel.css';
 import './script-writer-panel-v3.css';
 
 type ScriptStatus = 'draft' | 'pending' | 'approved';
-type BlockType = 'text' | 'h1' | 'h2' | 'hook' | 'body' | 'cta' | 'scene' | 'quote';
+type BlockType = 'text' | 'h1' | 'h2' | 'hook' | 'body' | 'cta' | 'scene' | 'quote' | 'image';
 type BlockAlign = 'left' | 'center' | 'right' | 'justify';
 
 type ScriptBlock = {
@@ -113,6 +114,7 @@ const BLOCK_TYPES: Array<{ id: BlockType; label: string; icon: string; placehold
   { id: 'cta', label: 'CTA', icon: '🔔', placeholder: 'Kêu gọi hành động...' },
   { id: 'scene', label: 'SCREEN', icon: '🎬', placeholder: '[Cảnh quay / góc máy]...' },
   { id: 'quote', label: 'TRÍCH DẪN', icon: '💬', placeholder: 'Trích dẫn...' },
+  { id: 'image', label: 'ẢNH', icon: '🖼️', placeholder: 'URL ảnh đã tạo/đính kèm...' },
 ];
 
 const BLOCK_V3_META: Record<BlockType, { label: string; tone: 'hook' | 'intro' | 'cta' | 'custom' }> = {
@@ -122,6 +124,7 @@ const BLOCK_V3_META: Record<BlockType, { label: string; tone: 'hook' | 'intro' |
   body: { label: 'BODY', tone: 'intro' },
   scene: { label: 'SCREEN', tone: 'intro' },
   cta: { label: 'CTA', tone: 'cta' },
+  image: { label: 'ẢNH', tone: 'custom' },
   text: { label: 'TỰ VIẾT', tone: 'custom' },
   quote: { label: 'TRÍCH DẪN', tone: 'custom' },
 };
@@ -153,7 +156,7 @@ const SCRIPT_SECTIONS: ScriptSection[] = [
 
 const SECTION_BLOCK_TYPES: Record<SectionKey, BlockType[]> = {
   opening: ['hook', 'h1', 'h2'],
-  body: ['body', 'text', 'scene', 'quote'],
+  body: ['body', 'text', 'scene', 'quote', 'image'],
   ending: ['cta'],
 };
 
@@ -365,6 +368,10 @@ function buildCompleteScriptText(script: ScriptDocument) {
     const text = htmlToPlain(block.text).trim();
     if (!text) return;
     const type = BLOCK_TYPES.find((item) => item.id === block.type);
+    if (block.type === 'image') {
+      lines.push(`【${type?.label || 'ẢNH'}】`, text, '');
+      return;
+    }
     if (block.type !== 'text') lines.push(`【${type?.label || block.type.toUpperCase()}】`);
     lines.push(text, '');
   });
@@ -385,10 +392,15 @@ const FB_BLOCK_STYLES: Partial<Record<BlockType, string>> = {
 function buildFacebookPost(script: ScriptDocument) {
   const htmlParts: string[] = [];
   const plainParts: string[] = [];
+  const mediaUrls: string[] = [];
 
   script.blocks.forEach((block) => {
     const plain = htmlToPlain(block.text).trim();
     if (!plain) return;
+    if (block.type === 'image') {
+      mediaUrls.push(plain);
+      return;
+    }
     plainParts.push(plain);
     const inner = blockContentHtml(block.text);
     const style = `${FB_BLOCK_STYLES[block.type] || FB_BLOCK_STYLES.text || ''}${blockAlignStyle(block.align)}`;
@@ -398,6 +410,7 @@ function buildFacebookPost(script: ScriptDocument) {
   return {
     html: htmlParts.join(''),
     plain: plainParts.join('\n\n').trim(),
+    mediaUrls,
     hasContent: plainParts.length > 0,
   };
 }
@@ -406,9 +419,10 @@ type ScriptFacebookPreviewProps = {
   script: ScriptDocument;
   postHtml: string;
   hasContent: boolean;
+  mediaUrls?: string[];
 };
 
-function ScriptFacebookPreview({ script, postHtml, hasContent }: ScriptFacebookPreviewProps) {
+function ScriptFacebookPreview({ script, postHtml, hasContent, mediaUrls = [] }: ScriptFacebookPreviewProps) {
   const pageName = script.writer?.trim() || 'Seeding Fsolution';
   const avatar = pageName.slice(0, 1).toUpperCase();
 
@@ -437,12 +451,19 @@ function ScriptFacebookPreview({ script, postHtml, hasContent }: ScriptFacebookP
               Thêm nội dung block để xem bài đăng hoàn chỉnh…
             </div>
           )}
+          {mediaUrls.length ? (
+            <div className="script-fb-media-grid">
+              {mediaUrls.slice(0, 4).map((url) => (
+                <img key={url} src={url} alt="Ảnh đính kèm bài viết" />
+              ))}
+            </div>
+          ) : null}
           <div className="script-fb-post-foot">
             <div className="script-fb-reactions" aria-hidden="true">
               <span>👍</span><span>❤️</span><span>😮</span>
               <small>Thích · Bình luận · Chia sẻ</small>
             </div>
-            <p className="script-fb-post-note">Khi đăng lên Facebook, thêm ảnh/video phù hợp với kịch bản.</p>
+            <p className="script-fb-post-note">{mediaUrls.length ? `${mediaUrls.length} ảnh đã sẵn sàng đính kèm.` : 'Khi đăng lên Facebook, thêm ảnh/video phù hợp với kịch bản.'}</p>
           </div>
         </article>
       </div>
@@ -517,6 +538,23 @@ function ScriptBlockEditor({ block, placeholder, onChange, minimal = false }: Sc
   function handleAlignMouseDown(event: MouseEvent, align: BlockAlign) {
     event.preventDefault();
     setAlign(align);
+  }
+
+  if (block.type === 'image') {
+    const imageUrl = htmlToPlain(block.text).trim();
+    return (
+      <div className={`script-block-editor${minimal ? ' minimal' : ''}`}>
+        <div className="script-image-block-preview">
+          {imageUrl ? <img src={imageUrl} alt="Ảnh đính kèm" /> : <div>Chưa có URL ảnh</div>}
+        </div>
+        <input
+          className="script-image-url-input"
+          value={imageUrl}
+          onChange={(event) => onChange({ text: event.target.value })}
+          placeholder={placeholder}
+        />
+      </div>
+    );
   }
 
   return (
@@ -609,6 +647,10 @@ export function ScriptWriterPanel() {
   const [studioSetup, setStudioSetup] = useState<ContentStudioSetup>(defaultContentStudioSetup);
   const [setupStatus, setSetupStatus] = useState('');
   const [setupBusy, setSetupBusy] = useState(false);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [publishTargetType, setPublishTargetType] = useState<'group' | 'page'>('group');
+  const [publishTargetId, setPublishTargetId] = useState('');
+  const [publishBusy, setPublishBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1180,6 +1222,77 @@ export function ScriptWriterPanel() {
     setNotice('Đã copy text thuần.');
   }
 
+  async function generateAndAttachImage(prompt?: string) {
+    const finalPrompt = (prompt || aiDraft?.image_prompt || '').trim();
+    if (!selected) {
+      setNotice('Chọn kịch bản trước khi tạo ảnh.');
+      return;
+    }
+    if (!finalPrompt) {
+      setNotice('Chưa có prompt ảnh. Bấm Prompt ảnh hoặc nhập yêu cầu ảnh trước.');
+      return;
+    }
+    setImageBusy(true);
+    setNotice('AI đang tạo ảnh...');
+    try {
+      const response = await api('/api/scripts/generate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: finalPrompt,
+          title: selected.title,
+          script_id: selected.id,
+          size: '1024x1024',
+        }),
+        timeoutMs: 180000,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không tạo được ảnh');
+      const imageUrl = String(payload.image_url || payload.media_url || '').trim();
+      if (!imageUrl) throw new Error('AI đã tạo ảnh nhưng không có URL ảnh');
+      addBlock('image', undefined, imageUrl);
+      setShowFbPreview(true);
+      setNotice('Đã tạo ảnh và đính vào bài viết.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Không tạo được ảnh');
+    } finally {
+      setImageBusy(false);
+    }
+  }
+
+  async function publishFacebookPost() {
+    if (!selected || !facebookPost?.hasContent) {
+      setNotice('Bài chưa có nội dung để đăng.');
+      return;
+    }
+    const targetId = publishTargetId.trim();
+    if (!targetId) {
+      setNotice('Nhập Page ID hoặc Group ID trước khi đăng.');
+      return;
+    }
+    setPublishBusy(true);
+    setNotice('Đang đăng Facebook...');
+    try {
+      const response = await api('/api/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: facebookPost.plain,
+          media_urls: facebookPost.mediaUrls,
+          targets: [{ type: publishTargetType, id: targetId }],
+        }),
+        timeoutMs: 120000,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Facebook chưa nhận bài đăng');
+      setNotice(`Đã gửi đăng Facebook${facebookPost.mediaUrls.length ? ` kèm ${facebookPost.mediaUrls.length} ảnh` : ''}.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Không đăng được Facebook');
+    } finally {
+      setPublishBusy(false);
+    }
+  }
+
   function exportScript() {
     if (!selected) return;
     const text = buildCompleteScriptText(selected);
@@ -1378,6 +1491,9 @@ export function ScriptWriterPanel() {
             <div className="script-ai-draft-actions">
               <button type="button" className="script-primary compact" onClick={() => { void navigator.clipboard.writeText(aiDraft.image_prompt || ''); setNotice('Đã copy mô tả ảnh.'); }}>
                 <Clipboard /> Copy prompt ảnh
+              </button>
+              <button type="button" className="script-primary compact" disabled={imageBusy} onClick={() => void generateAndAttachImage(aiDraft.image_prompt || '')}>
+                <ImageIcon /> {imageBusy ? 'Đang tạo...' : 'Tạo & đính ảnh'}
               </button>
             </div>
           </div>
@@ -1630,10 +1746,20 @@ export function ScriptWriterPanel() {
 
             {showFbPreview && facebookPost ? (
               <div className="script-fb-inline-preview">
-                <ScriptFacebookPreview script={selected} postHtml={facebookPost.html} hasContent={facebookPost.hasContent} />
+                <ScriptFacebookPreview script={selected} postHtml={facebookPost.html} hasContent={facebookPost.hasContent} mediaUrls={facebookPost.mediaUrls} />
                 <div className="script-preview-actions">
                   <button type="button" className="script-primary compact" onClick={() => void copyFacebookPost()} disabled={!facebookPost.hasContent}>
                     <Clipboard /> Copy FB
+                  </button>
+                </div>
+                <div className="script-publish-row">
+                  <select value={publishTargetType} onChange={(event) => setPublishTargetType(event.target.value as 'group' | 'page')}>
+                    <option value="group">Group</option>
+                    <option value="page">Page</option>
+                  </select>
+                  <input value={publishTargetId} onChange={(event) => setPublishTargetId(event.target.value)} placeholder="Group ID / Page ID" />
+                  <button type="button" className="script-primary compact" disabled={publishBusy || !facebookPost.hasContent} onClick={() => void publishFacebookPost()}>
+                    <SendHorizontal /> {publishBusy ? 'Đang đăng...' : `Đăng FB${facebookPost.mediaUrls.length ? ` + ${facebookPost.mediaUrls.length} ảnh` : ''}`}
                   </button>
                 </div>
               </div>

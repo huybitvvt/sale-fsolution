@@ -14,12 +14,16 @@ create table if not exists public.customer_ai_settings (
     api_key       text,
     api_keys      jsonb not null default '{}'::jsonb,
     content_setup jsonb not null default '{}'::jsonb,
+    content_techniques jsonb not null default '[]'::jsonb,
     created_at    timestamptz not null default now(),
     updated_at    timestamptz not null default now()
 );
 
 alter table public.customer_ai_settings
 add column if not exists content_setup jsonb not null default '{}'::jsonb;
+
+alter table public.customer_ai_settings
+add column if not exists content_techniques jsonb not null default '[]'::jsonb;
 
 create or replace function public.set_customer_ai_settings_updated_at()
 returns trigger
