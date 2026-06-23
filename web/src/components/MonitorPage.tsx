@@ -10,6 +10,7 @@ import { LeadManagerPanel } from '@/components/LeadManagerPanel';
 import { LeadProcessedModal } from '@/components/LeadProcessedModal';
 import { ManageDashboardPanel } from '@/components/ManageDashboardPanel';
 import { ContentPlanPanel } from '@/components/ContentPlanPanel';
+import { ApprovedScriptsPanel } from '@/components/ApprovedScriptsPanel';
 import { MarketingPipelinePanel } from '@/components/MarketingPipelinePanel';
 import { ScriptWriterPanel } from '@/components/ScriptWriterPanel';
 import '@/components/standard-post-panel.css';
@@ -2921,6 +2922,7 @@ export function MonitorPage() {
           ) : null}
           {activeView === 'scripts' ? <ScriptWriterPanel /> : null}
           {activeView === 'plan' ? <ContentPlanPanel /> : null}
+          {activeView === 'approved' ? <ApprovedScriptsPanel /> : null}
           {activeView === 'marketing' ? (
             <MarketingPipelinePanel
               data={pipelineData}

@@ -12,6 +12,7 @@ const MODULE_DESCS: Partial<Record<ViewKey, string>> = {
   history: 'Xem lịch sử comment và trạng thái thao tác.',
   leads: 'Theo dõi khách hàng tiềm năng và nhu cầu.',
   plan: 'Kanban kế hoạch content, deadline và hiệu suất team.',
+  approved: 'Xem lại và copy các bài đã được duyệt.',
   marketing: 'Soạn bài viết chuẩn, lên lịch và chọn nơi đăng.',
 };
 

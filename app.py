@@ -68,6 +68,7 @@ COMMENT_TAG_ASSIGNMENTS_FILE = os.path.join(DATA_DIR, 'comment_tag_assignments.j
 COMMENT_INBOX_WORKFLOW_FILE = os.path.join(DATA_DIR, 'comment_inbox_workflow.json')
 COMMENT_MANUAL_PHONES_FILE = os.path.join(DATA_DIR, 'comment_manual_phones.json')
 SCRIPTS_FILE = os.path.join(DATA_DIR, 'content_scripts.json')
+CONTENT_TASKS_FILE = os.path.join(DATA_DIR, 'content_tasks.json')
 CONTENT_STUDIO_SETUP_FILE = os.path.join(DATA_DIR, 'content_studio_setup.json')
 CONTENT_TECHNIQUES_FILE = os.path.join(DATA_DIR, 'content_techniques.json')
 CONTENT_SCRIPTS_MISSING_HINT = (
@@ -84,6 +85,14 @@ CONTENT_SCRIPTS_RLS_HINT = (
     'Bảng content_scripts đang bật RLS và chặn ghi. '
     'Chạy file supabase_content_scripts_rls_fix.sql trong Supabase SQL Editor, '
     'đợi 10 giây rồi F5 trang Kịch bản.'
+)
+CONTENT_WORKFLOW_MISSING_HINT = (
+    'Chưa có bảng content_tasks/content_script_blocks. Mở Supabase → SQL Editor → '
+    'chạy file supabase_content_workflow.sql rồi reload trang.'
+)
+CONTENT_WORKFLOW_RLS_HINT = (
+    'Bảng workflow content đang bị RLS chặn ghi. Chạy lại file supabase_content_workflow.sql '
+    'trong Supabase SQL Editor, đợi 10 giây rồi F5.'
 )
 
 BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '')
@@ -108,6 +117,8 @@ SUPABASE_STAFF_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 SUPABASE_CHANNEL_TABLE = os.environ.get('SUPABASE_CHANNEL_TABLE', 'managed_channels')
 SUPABASE_SCRIPT_TABLE = os.environ.get('SUPABASE_SCRIPT_TABLE', 'content_scripts')
 SUPABASE_CUSTOMER_AI_TABLE = os.environ.get('SUPABASE_CUSTOMER_AI_TABLE', 'customer_ai_settings')
+SUPABASE_CONTENT_TASK_TABLE = os.environ.get('SUPABASE_CONTENT_TASK_TABLE', 'content_tasks')
+SUPABASE_CONTENT_SCRIPT_BLOCK_TABLE = os.environ.get('SUPABASE_CONTENT_SCRIPT_BLOCK_TABLE', 'content_script_blocks')
 SUPABASE_COMMENT_IMAGE_BUCKET = os.environ.get('SUPABASE_COMMENT_IMAGE_BUCKET', 'comment-images')
 SUPABASE_POST_MEDIA_BUCKET = os.environ.get('SUPABASE_POST_MEDIA_BUCKET', SUPABASE_COMMENT_IMAGE_BUCKET)
 APP_TIMEZONE = os.environ.get('APP_TIMEZONE', 'Asia/Ho_Chi_Minh')
@@ -8381,6 +8392,7 @@ Trả về CHỈ JSON object, không markdown, đúng cấu trúc:
   "reply": "giải thích ngắn cho người dùng",
   "target_section": "opening|body|ending|all|none",
   "action": "replace|append|none",
+  "image_prompt": "mô tả ảnh minh họa nếu người dùng yêu cầu ảnh; không yêu cầu thì để rỗng",
   "sections": {{
     "opening": "nội dung HOOK mới nếu có",
     "body": "nội dung BODY mới nếu có",
@@ -8409,6 +8421,7 @@ def _normalize_script_ai_result(payload, fallback_text: str, active_section: str
         'reply': str(payload.get('reply') or fallback_text or '').strip()[:4000],
         'target_section': target,
         'action': action,
+        'image_prompt': str(payload.get('image_prompt') or '').strip()[:4000],
         'sections': sections,
     }
 
@@ -8603,14 +8616,365 @@ def _clean_script_library(rows) -> list[dict]:
     return cleaned
 
 
+WORKFLOW_STATUSES = {'todo', 'doing', 'pending', 'approved', 'archived'}
+WORKFLOW_TO_SCRIPT_STATUS = {
+    'todo': 'draft',
+    'doing': 'draft',
+    'pending': 'pending',
+    'approved': 'approved',
+    'archived': 'approved',
+}
+SCRIPT_TO_WORKFLOW_STATUS = {
+    'draft': 'doing',
+    'pending': 'pending',
+    'approved': 'approved',
+}
+PLAN_COL_TO_WORKFLOW_STATUS = {
+    0: 'todo',
+    1: 'doing',
+    2: 'pending',
+    3: 'approved',
+}
+WORKFLOW_STATUS_TO_PLAN_COL = {
+    'todo': 0,
+    'doing': 1,
+    'pending': 2,
+    'approved': 3,
+    'archived': 3,
+}
+PRIORITY_TO_BADGE = {
+    'high': '🔴',
+    'medium': '🟡',
+    'low': '🟢',
+}
+BADGE_TO_PRIORITY = {
+    '🔴': 'high',
+    '🟡': 'medium',
+    '🟢': 'low',
+}
+
+
+def _workflow_now() -> str:
+    return datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+
+
+def _safe_json_list(value) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _workflow_event(kind: str, label: str = '', staff: dict | None = None) -> dict:
+    actor = staff or _current_staff()
+    return {
+        'id': uuid.uuid4().hex[:12],
+        'kind': kind,
+        'label': label or kind,
+        'at': _workflow_now(),
+        'staff_id': str(actor.get('id') or ''),
+        'staff_name': str(actor.get('name') or actor.get('username') or ''),
+    }
+
+
+def _workflow_status_from_task(raw: dict) -> str:
+    status = str(raw.get('status') or '').strip().lower()
+    if status in WORKFLOW_STATUSES:
+        return status
+    try:
+        col = int(raw.get('col'))
+    except (TypeError, ValueError):
+        col = 0
+    return PLAN_COL_TO_WORKFLOW_STATUS.get(col, 'todo')
+
+
+def _workflow_status_from_script(status: str, existing: dict | None = None) -> str:
+    current = str((existing or {}).get('status') or '').strip().lower()
+    if status == 'draft' and current in {'todo', 'doing'}:
+        return current
+    return SCRIPT_TO_WORKFLOW_STATUS.get(status, 'doing')
+
+
+def _clean_content_tasks(rows) -> list[dict]:
+    if not isinstance(rows, list):
+        return []
+    cleaned = []
+    for raw in rows[:1000]:
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get('title') or '').strip()[:300]
+        task_id = str(raw.get('id') or '').strip()[:160]
+        if not title:
+            continue
+        if not task_id:
+            task_id = f'task-{uuid.uuid4().hex[:10]}'
+        assignee = str(raw.get('assignee') or raw.get('assignee_name') or raw.get('writer') or '').strip()[:160]
+        status = _workflow_status_from_task(raw)
+        priority = str(raw.get('priority') or BADGE_TO_PRIORITY.get(str(raw.get('pri') or ''), '') or 'medium').strip().lower()
+        if priority not in PRIORITY_TO_BADGE:
+            priority = 'medium'
+        timeline = _safe_json_list(raw.get('timeline'))
+        notes = _safe_json_list(raw.get('notes'))
+        cleaned.append({
+            'id': task_id,
+            'title': title,
+            'assignee_id': str(raw.get('assignee_id') or '').strip()[:160],
+            'assignee_name': assignee,
+            'assignee_username': str(raw.get('assignee_username') or '').strip()[:160],
+            'status': status,
+            'priority': priority,
+            'due_date': str(raw.get('due_date') or raw.get('dl') or '').strip()[:40],
+            'script_id': str(raw.get('script_id') or '').strip()[:160] or None,
+            'platform': str(raw.get('platform') or 'TikTok').strip()[:80],
+            'notes': notes,
+            'timeline': timeline,
+            'color': str(raw.get('color') or '').strip()[:40],
+            'created_by_staff_id': str(raw.get('created_by_staff_id') or '').strip()[:160] or None,
+            'created_by_staff_name': str(raw.get('created_by_staff_name') or '').strip()[:160] or None,
+            'approved_by_staff_id': str(raw.get('approved_by_staff_id') or '').strip()[:160] or None,
+            'approved_by_staff_name': str(raw.get('approved_by_staff_name') or '').strip()[:160] or None,
+            'started_at': raw.get('started_at') or None,
+            'submitted_at': raw.get('submitted_at') or None,
+            'approved_at': raw.get('approved_at') or None,
+            'completed_at': raw.get('completed_at') or None,
+            'archived_at': raw.get('archived_at') or None,
+            'created_at': raw.get('created_at') or None,
+            'updated_at': raw.get('updated_at') or None,
+        })
+    return cleaned
+
+
+def _public_content_task(row: dict) -> dict:
+    status = str(row.get('status') or 'todo').strip().lower()
+    if status not in WORKFLOW_STATUSES:
+        status = 'todo'
+    priority = str(row.get('priority') or 'medium').strip().lower()
+    if priority not in PRIORITY_TO_BADGE:
+        priority = 'medium'
+    assignee = str(row.get('assignee_name') or '').strip()
+    color_seed = abs(hash(assignee or row.get('id') or 'task')) % 5
+    colors = ['#7C6CF0', '#3B82F6', '#10B981', '#F59E0B', '#EF4444']
+    return {
+        'id': row.get('id'),
+        'col': WORKFLOW_STATUS_TO_PLAN_COL.get(status, 0),
+        'status': status,
+        'title': row.get('title') or '',
+        'assignee': assignee or 'Chưa gán',
+        'assignee_id': row.get('assignee_id') or '',
+        'assignee_username': row.get('assignee_username') or '',
+        'dl': row.get('due_date') or '--',
+        'due_date': row.get('due_date') or '',
+        'pri': PRIORITY_TO_BADGE.get(priority, '🟡'),
+        'priority': priority,
+        'color': row.get('color') or colors[color_seed],
+        'script_id': row.get('script_id') or '',
+        'platform': row.get('platform') or 'TikTok',
+        'notes': _safe_json_list(row.get('notes')),
+        'timeline': _safe_json_list(row.get('timeline')),
+        'created_at': row.get('created_at') or '',
+        'updated_at': row.get('updated_at') or '',
+        'started_at': row.get('started_at') or '',
+        'submitted_at': row.get('submitted_at') or '',
+        'approved_at': row.get('approved_at') or '',
+        'completed_at': row.get('completed_at') or '',
+    }
+
+
+def _filter_content_tasks_for_current_staff(rows: list[dict]) -> list[dict]:
+    if _is_admin():
+        return rows
+    staff = _current_staff()
+    staff_id = str(staff.get('id') or '').strip()
+    username = str(staff.get('username') or '').strip().lower()
+    name = str(staff.get('name') or '').strip().lower()
+    if not staff_id and not username and not name:
+        return rows
+    visible = []
+    for row in rows:
+        assignee_id = str(row.get('assignee_id') or '').strip()
+        assignee_user = str(row.get('assignee_username') or '').strip().lower()
+        assignee_name = str(row.get('assignee_name') or '').strip().lower()
+        creator_id = str(row.get('created_by_staff_id') or '').strip()
+        if (
+            (staff_id and staff_id in {assignee_id, creator_id})
+            or (username and username == assignee_user)
+            or (name and name == assignee_name)
+        ):
+            visible.append(row)
+    return visible
+
+
+def _task_db_payload(task: dict, existing: dict | None = None) -> dict:
+    existing = existing or {}
+    status = _workflow_status_from_task(task)
+    now = _workflow_now()
+    staff = _current_staff()
+    timeline = _safe_json_list(task.get('timeline') or existing.get('timeline'))
+    if not timeline:
+        timeline = [_workflow_event('received', 'Nhận task', staff)]
+    payload = {
+        'id': task['id'],
+        'title': task['title'],
+        'assignee_id': task.get('assignee_id') or existing.get('assignee_id') or None,
+        'assignee_name': task.get('assignee_name') or task.get('assignee') or existing.get('assignee_name') or '',
+        'assignee_username': task.get('assignee_username') or existing.get('assignee_username') or None,
+        'status': status,
+        'priority': task.get('priority') or existing.get('priority') or 'medium',
+        'due_date': task.get('due_date') or task.get('dl') or existing.get('due_date') or None,
+        'script_id': task.get('script_id') or existing.get('script_id') or None,
+        'platform': task.get('platform') or existing.get('platform') or 'TikTok',
+        'notes': _safe_json_list(task.get('notes') or existing.get('notes')),
+        'timeline': timeline,
+        'created_by_staff_id': existing.get('created_by_staff_id') or staff.get('id') or None,
+        'created_by_staff_name': existing.get('created_by_staff_name') or staff.get('name') or staff.get('username') or None,
+        'created_at': existing.get('created_at') or now,
+        'updated_at': now,
+    }
+    for field in ('started_at', 'submitted_at', 'approved_at', 'completed_at', 'archived_at', 'approved_by_staff_id', 'approved_by_staff_name'):
+        if task.get(field) or existing.get(field):
+            payload[field] = task.get(field) or existing.get(field)
+    return payload
+
+
+def _script_db_payload_from_script(script: dict, existing_task: dict | None = None) -> tuple[dict, list[dict]]:
+    now = _workflow_now()
+    staff = _current_staff()
+    script_id = script['id']
+    task_id = str((existing_task or {}).get('id') or f'task-{script_id}')[:160]
+    status = _workflow_status_from_script(script.get('status', 'draft'), existing_task)
+    timeline = _safe_json_list((existing_task or {}).get('timeline'))
+    if not timeline:
+        timeline = [_workflow_event('received', 'Nhận task', staff)]
+    if status == 'doing' and not (existing_task or {}).get('started_at'):
+        timeline.append(_workflow_event('started', 'Bắt đầu làm', staff))
+    if status == 'pending' and (existing_task or {}).get('status') != 'pending':
+        timeline.append(_workflow_event('submitted', 'Gửi duyệt', staff))
+    if status == 'approved' and (existing_task or {}).get('status') != 'approved':
+        timeline.append(_workflow_event('approved', 'Duyệt bài', staff))
+    task = {
+        'id': task_id,
+        'title': script['title'],
+        'assignee_id': (existing_task or {}).get('assignee_id') or staff.get('id') or None,
+        'assignee_name': script.get('writer') or (existing_task or {}).get('assignee_name') or staff.get('name') or staff.get('username') or '',
+        'assignee_username': (existing_task or {}).get('assignee_username') or staff.get('username') or None,
+        'status': status,
+        'priority': (existing_task or {}).get('priority') or 'medium',
+        'due_date': (existing_task or {}).get('due_date') or script.get('date') or None,
+        'script_id': script_id,
+        'platform': script.get('platform') or 'TikTok',
+        'notes': _safe_json_list((existing_task or {}).get('notes')),
+        'timeline': timeline[-100:],
+        'created_by_staff_id': (existing_task or {}).get('created_by_staff_id') or staff.get('id') or None,
+        'created_by_staff_name': (existing_task or {}).get('created_by_staff_name') or staff.get('name') or staff.get('username') or None,
+        'created_at': (existing_task or {}).get('created_at') or now,
+        'updated_at': now,
+    }
+    if status == 'doing':
+        task['started_at'] = (existing_task or {}).get('started_at') or now
+    if status == 'pending':
+        task['started_at'] = (existing_task or {}).get('started_at') or now
+        task['submitted_at'] = (existing_task or {}).get('submitted_at') or now
+    if status == 'approved':
+        task['started_at'] = (existing_task or {}).get('started_at') or now
+        task['submitted_at'] = (existing_task or {}).get('submitted_at') or now
+        task['approved_at'] = (existing_task or {}).get('approved_at') or now
+        task['completed_at'] = (existing_task or {}).get('completed_at') or now
+        task['approved_by_staff_id'] = staff.get('id') or None
+        task['approved_by_staff_name'] = staff.get('name') or staff.get('username') or None
+    blocks = []
+    for index, block in enumerate(script.get('blocks') or []):
+        blocks.append({
+            'id': str(block.get('id') or f'{script_id}-block-{index}')[:160],
+            'task_id': task_id,
+            'script_id': script_id,
+            'block_order': index,
+            'content_type': str(block.get('type') or 'text')[:40],
+            'content': str(block.get('text') or '')[:50000],
+            'metadata': {
+                'align': block.get('align') or '',
+            },
+        })
+    return task, blocks
+
+
+def _scripts_from_workflow_rows(tasks: list[dict], blocks: list[dict]) -> list[dict]:
+    by_script: dict[str, list[dict]] = {}
+    for block in blocks or []:
+        script_id = str(block.get('script_id') or '').strip()
+        if not script_id:
+            continue
+        by_script.setdefault(script_id, []).append(block)
+    scripts = []
+    for task in tasks or []:
+        script_id = str(task.get('script_id') or '').strip()
+        if not script_id:
+            continue
+        rows = sorted(by_script.get(script_id, []), key=lambda item: int(item.get('block_order') or 0))
+        scripts.append({
+            'id': script_id,
+            'title': task.get('title') or '',
+            'platform': task.get('platform') or 'TikTok',
+            'status': WORKFLOW_TO_SCRIPT_STATUS.get(str(task.get('status') or 'todo'), 'draft'),
+            'writer': task.get('assignee_name') or '',
+            'date': task.get('due_date') or '',
+            'blocks': [{
+                'id': row.get('id') or f'{script_id}-block-{idx}',
+                'type': row.get('content_type') or 'text',
+                'text': row.get('content') or '',
+                **({'align': (row.get('metadata') or {}).get('align')} if isinstance(row.get('metadata'), dict) and (row.get('metadata') or {}).get('align') else {}),
+            } for idx, row in enumerate(rows)],
+        })
+    return _clean_script_library(scripts)
+
+
+def _content_workflow_supabase_warning(exc: Exception) -> str:
+    text = str(exc)
+    if 'PGRST205' in text or 'schema cache' in text.lower() or 'Could not find the table' in text:
+        return f'{CONTENT_WORKFLOW_MISSING_HINT} Chi tiết: {text[:220]}'
+    if '42501' in text or 'row-level security' in text.lower():
+        return f'{CONTENT_WORKFLOW_RLS_HINT} Chi tiết: {text[:220]}'
+    return text[:500]
+
+
+def _load_scripts_from_workflow_supabase() -> list[dict]:
+    tasks = _filter_content_tasks_for_current_staff(sb.list_content_tasks(SUPABASE_CONTENT_TASK_TABLE))
+    blocks = sb.list_content_script_blocks(SUPABASE_CONTENT_SCRIPT_BLOCK_TABLE)
+    return _scripts_from_workflow_rows(tasks, blocks)
+
+
+def _save_scripts_to_workflow_supabase(rows: list[dict]) -> None:
+    existing_tasks = sb.list_content_tasks(SUPABASE_CONTENT_TASK_TABLE)
+    by_script = {str(row.get('script_id') or ''): row for row in existing_tasks if row.get('script_id')}
+    by_id = {str(row.get('id') or ''): row for row in existing_tasks if row.get('id')}
+    task_rows = []
+    block_rows = []
+    script_ids = []
+    next_task_ids = set()
+    for script in rows:
+        existing = by_script.get(script['id']) or by_id.get(f'task-{script["id"]}') or {}
+        task, blocks = _script_db_payload_from_script(script, existing)
+        task_rows.append(task)
+        block_rows.extend(blocks)
+        script_ids.append(script['id'])
+        next_task_ids.add(task['id'])
+    preserved_tasks = [
+        row for row in existing_tasks
+        if str(row.get('script_id') or '') not in {script['id'] for script in rows}
+        and str(row.get('id') or '') not in next_task_ids
+    ]
+    sb.sync_content_tasks([*preserved_tasks, *task_rows], SUPABASE_CONTENT_TASK_TABLE)
+    sb.sync_content_script_blocks(block_rows, script_ids, SUPABASE_CONTENT_SCRIPT_BLOCK_TABLE)
+
+
 @app.route('/api/scripts', methods=['GET'])
 def scripts_get():
     if not USE_SUPABASE:
         rows = _clean_script_library(_load_scripts_local())
         return jsonify({'ok': True, 'scripts': rows, 'storage': 'local'})
     try:
-        rows = _clean_script_library(sb.list_content_scripts(SUPABASE_SCRIPT_TABLE))
-        return jsonify({'ok': True, 'scripts': rows, 'storage': 'supabase'})
+        rows = _load_scripts_from_workflow_supabase()
+        if rows:
+            return jsonify({'ok': True, 'scripts': rows, 'storage': 'supabase_workflow'})
+        legacy_rows = _clean_script_library(sb.list_content_scripts(SUPABASE_SCRIPT_TABLE))
+        warning = 'Đang đọc dữ liệu bảng content_scripts cũ. Bấm Lưu bài một lần để migrate sang content_tasks/content_script_blocks.'
+        return jsonify({'ok': True, 'scripts': legacy_rows, 'storage': 'supabase_legacy', 'warning': warning if legacy_rows else ''})
     except Exception as e:
         message = str(e)
         if _content_scripts_should_fallback_local(e):
@@ -8640,6 +9004,17 @@ def scripts_save():
             'updated_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
         })
     try:
+        _save_scripts_to_workflow_supabase(rows)
+        return jsonify({
+            'ok': True,
+            'scripts': rows,
+            'count': len(rows),
+            'storage': 'supabase_workflow',
+            'updated_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+        })
+    except Exception as workflow_exc:
+        workflow_warning = _content_workflow_supabase_warning(workflow_exc)
+    try:
         existing = sb.list_content_scripts(SUPABASE_SCRIPT_TABLE)
         existing_by_id = {str(row.get('id') or ''): row for row in existing}
         now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
@@ -8666,6 +9041,7 @@ def scripts_save():
             'scripts': rows,
             'count': len(rows),
             'storage': 'supabase',
+            'warning': f'Đã lưu bảng cũ content_scripts. Chạy supabase_content_workflow.sql để dùng schema task/block. {workflow_warning}',
             'updated_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
         })
     except Exception as e:
@@ -8677,10 +9053,205 @@ def scripts_save():
                 'scripts': rows,
                 'count': len(rows),
                 'storage': 'local',
-                'warning': _content_scripts_supabase_warning(e),
+                'warning': f'{_content_scripts_supabase_warning(e)} | Workflow mới: {workflow_warning}',
                 'updated_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
             })
         return jsonify({'ok': False, 'error': f'Không lưu được kịch bản lên Supabase: {message}'}), 500
+
+
+def _load_tasks_local() -> list:
+    return _clean_content_tasks(_read_json(CONTENT_TASKS_FILE, []))
+
+
+def _save_tasks_local(rows: list) -> None:
+    _write_json(CONTENT_TASKS_FILE, rows)
+
+
+def _tasks_payload(rows: list[dict], storage: str, warning: str = '') -> dict:
+    public_rows = [_public_content_task(row) for row in _clean_content_tasks(rows)]
+    payload = {'ok': True, 'tasks': public_rows, 'storage': storage}
+    if warning:
+        payload['warning'] = warning
+    return payload
+
+
+def _load_tasks_any(include_all: bool = False) -> tuple[list[dict], str, str]:
+    if USE_SUPABASE:
+        try:
+            rows = _clean_content_tasks(sb.list_content_tasks(SUPABASE_CONTENT_TASK_TABLE))
+            return (rows if include_all else _filter_content_tasks_for_current_staff(rows)), 'supabase', ''
+        except Exception as exc:
+            rows = _load_tasks_local()
+            return (rows if include_all else _filter_content_tasks_for_current_staff(rows)), 'local', _content_workflow_supabase_warning(exc)
+    rows = _load_tasks_local()
+    return (rows if include_all else _filter_content_tasks_for_current_staff(rows)), 'local', ''
+
+
+def _save_tasks_any(rows: list[dict]) -> tuple[list[dict], str, str]:
+    cleaned = _clean_content_tasks(rows)
+    if USE_SUPABASE:
+        try:
+            current = sb.list_content_tasks(SUPABASE_CONTENT_TASK_TABLE)
+            by_id = {str(row.get('id') or ''): row for row in current}
+            payloads = [_task_db_payload(row, by_id.get(str(row.get('id') or ''))) for row in cleaned]
+            sb.sync_content_tasks(payloads, SUPABASE_CONTENT_TASK_TABLE)
+            _save_tasks_local(cleaned)
+            return cleaned, 'supabase', ''
+        except Exception as exc:
+            _save_tasks_local(cleaned)
+            return cleaned, 'local', _content_workflow_supabase_warning(exc)
+    _save_tasks_local(cleaned)
+    return cleaned, 'local', ''
+
+
+@app.route('/api/content-tasks', methods=['GET'])
+def content_tasks_get():
+    rows, storage, warning = _load_tasks_any()
+    return jsonify(_tasks_payload(rows, storage, warning))
+
+
+@app.route('/api/content-tasks', methods=['POST'])
+def content_tasks_create():
+    body = request.get_json(silent=True) or {}
+    rows, _, _ = _load_tasks_any(include_all=True)
+    staff = _current_staff()
+    title = str(body.get('title') or '').strip()
+    if not title:
+        return jsonify({'ok': False, 'error': 'Nhập tên task'}), 400
+    task_id = str(body.get('id') or f'task-{uuid.uuid4().hex[:12]}')[:160]
+    task = {
+        'id': task_id,
+        'title': title,
+        'assignee_name': str(body.get('assignee') or body.get('assignee_name') or staff.get('name') or staff.get('username') or '').strip(),
+        'assignee_id': str(body.get('assignee_id') or staff.get('id') or '').strip(),
+        'assignee_username': str(body.get('assignee_username') or staff.get('username') or '').strip(),
+        'status': _workflow_status_from_task(body),
+        'priority': str(body.get('priority') or BADGE_TO_PRIORITY.get(str(body.get('pri') or ''), '') or 'medium'),
+        'due_date': str(body.get('due_date') or body.get('dl') or '').strip(),
+        'script_id': str(body.get('script_id') or '').strip(),
+        'platform': str(body.get('platform') or 'TikTok').strip(),
+        'notes': _safe_json_list(body.get('notes')),
+        'timeline': [_workflow_event('received', 'Nhận task', staff)],
+        'created_by_staff_id': staff.get('id') or None,
+        'created_by_staff_name': staff.get('name') or staff.get('username') or None,
+    }
+    rows = [task, *[row for row in rows if str(row.get('id') or '') != task_id]]
+    saved, storage, warning = _save_tasks_any(rows)
+    payload = _tasks_payload(_filter_content_tasks_for_current_staff(saved), storage, warning)
+    payload['task'] = _public_content_task(task)
+    return jsonify(payload)
+
+
+@app.route('/api/content-tasks', methods=['PUT'])
+def content_tasks_sync():
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body.get('tasks'), list):
+        return jsonify({'ok': False, 'error': 'Dữ liệu tasks không hợp lệ'}), 400
+    incoming = _clean_content_tasks(body.get('tasks') or [])
+    if _is_admin():
+        rows_to_save = incoming
+    else:
+        current_all, _, _ = _load_tasks_any(include_all=True)
+        incoming_ids = {str(row.get('id') or '') for row in incoming}
+        rows_to_save = [row for row in current_all if str(row.get('id') or '') not in incoming_ids]
+        rows_to_save.extend(incoming)
+    saved, storage, warning = _save_tasks_any(rows_to_save)
+    saved = _filter_content_tasks_for_current_staff(saved)
+    return jsonify(_tasks_payload(saved, storage, warning))
+
+
+@app.route('/api/content-tasks/<task_id>', methods=['PATCH'])
+def content_tasks_patch(task_id):
+    body = request.get_json(silent=True) or {}
+    rows, _, _ = _load_tasks_any(include_all=True)
+    task_id = str(task_id or '').strip()
+    found = None
+    staff = _current_staff()
+    for row in rows:
+        if str(row.get('id') or '') == task_id:
+            found = row
+            break
+    if not found:
+        return jsonify({'ok': False, 'error': 'Không tìm thấy task'}), 404
+    before_status = str(found.get('status') or 'todo')
+    updated = {**found, **body, 'id': task_id}
+    updated['status'] = _workflow_status_from_task(updated)
+    timeline = _safe_json_list(updated.get('timeline') or found.get('timeline'))
+    status = updated['status']
+    now = _workflow_now()
+    if status != before_status:
+        labels = {
+            'todo': 'Chuyển về chưa làm',
+            'doing': 'Bắt đầu làm',
+            'pending': 'Gửi duyệt',
+            'approved': 'Duyệt bài',
+            'archived': 'Lưu trữ',
+        }
+        timeline.append(_workflow_event(status, labels.get(status, status), staff))
+        if status == 'doing':
+            updated['started_at'] = updated.get('started_at') or now
+        if status == 'pending':
+            updated['submitted_at'] = now
+        if status == 'approved':
+            updated['approved_at'] = now
+            updated['completed_at'] = now
+            updated['approved_by_staff_id'] = staff.get('id') or None
+            updated['approved_by_staff_name'] = staff.get('name') or staff.get('username') or None
+    updated['timeline'] = timeline[-100:]
+    next_rows = [updated if str(row.get('id') or '') == task_id else row for row in rows]
+    saved, storage, warning = _save_tasks_any(next_rows)
+    public_rows = [_public_content_task(row) for row in _filter_content_tasks_for_current_staff(saved)]
+    payload = {'ok': True, 'task': next((row for row in public_rows if row.get('id') == task_id), _public_content_task(updated)), 'tasks': public_rows, 'storage': storage}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
+
+
+@app.route('/api/content-tasks/<task_id>/notes', methods=['POST'])
+def content_tasks_add_note(task_id):
+    body = request.get_json(silent=True) or {}
+    text = str(body.get('text') or '').strip()
+    if not text:
+        return jsonify({'ok': False, 'error': 'Nhập ghi chú'}), 400
+    rows, _, _ = _load_tasks_any(include_all=True)
+    task_id = str(task_id or '').strip()
+    staff = _current_staff()
+    updated = None
+    for row in rows:
+        if str(row.get('id') or '') == task_id:
+            notes = _safe_json_list(row.get('notes'))
+            notes.append({
+                'id': uuid.uuid4().hex[:12],
+                'text': text[:3000],
+                'at': _workflow_now(),
+                'staff_id': staff.get('id') or '',
+                'staff_name': staff.get('name') or staff.get('username') or 'Nhân sự',
+            })
+            updated = {**row, 'notes': notes[-200:]}
+            break
+    if not updated:
+        return jsonify({'ok': False, 'error': 'Không tìm thấy task'}), 404
+    next_rows = [updated if str(row.get('id') or '') == task_id else row for row in rows]
+    saved, storage, warning = _save_tasks_any(next_rows)
+    payload = _tasks_payload(_filter_content_tasks_for_current_staff(saved), storage, warning)
+    payload['task'] = _public_content_task(updated)
+    return jsonify(payload)
+
+
+@app.route('/api/content-tasks/<task_id>', methods=['DELETE'])
+def content_tasks_delete(task_id):
+    task_id = str(task_id or '').strip()
+    rows, _, _ = _load_tasks_any(include_all=True)
+    next_rows = [row for row in rows if str(row.get('id') or '') != task_id]
+    if len(next_rows) == len(rows):
+        return jsonify({'ok': False, 'error': 'Không tìm thấy task'}), 404
+    saved, storage, warning = _save_tasks_any(next_rows)
+    if USE_SUPABASE:
+        try:
+            sb.delete_content_task(task_id, SUPABASE_CONTENT_TASK_TABLE)
+        except Exception:
+            pass
+    return jsonify(_tasks_payload(_filter_content_tasks_for_current_staff(saved), storage, warning))
 
 
 @app.route('/api/content-studio/setup', methods=['GET'])

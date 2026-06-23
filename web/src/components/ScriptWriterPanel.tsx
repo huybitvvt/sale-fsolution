@@ -18,6 +18,7 @@ import {
   FileDown,
   GripVertical,
   Italic,
+  Maximize2,
   MessageSquare,
   Plus,
   Printer,
@@ -32,6 +33,7 @@ import {
   X,
 } from 'lucide-react';
 import { AI_TIMEOUT_MS, api } from '@/lib/api';
+import { BusinessProfilePanel } from '@/components/BusinessProfilePanel';
 import './script-writer-panel.css';
 import './script-writer-panel-v3.css';
 
@@ -82,6 +84,7 @@ type ScriptAiResult = {
   reply?: string;
   target_section?: SectionKey | 'all' | 'none';
   action?: 'replace' | 'append' | 'none';
+  image_prompt?: string;
   sections?: Partial<Record<SectionKey, string>>;
 };
 
@@ -123,12 +126,23 @@ const BLOCK_V3_META: Record<BlockType, { label: string; tone: 'hook' | 'intro' |
   quote: { label: 'TỰ VIẾT', tone: 'custom' },
 };
 
-type AiStudioTab = 'quick' | 'hook' | 'chat';
+type AiStudioTab = 'quick' | 'hook' | 'chat' | 'settings';
+type SetupSectionKey = SectionKey;
+
+type ContentStudioSetup = {
+  sections: Record<SetupSectionKey, {
+    label: string;
+    name: string;
+    description: string;
+    rule: string;
+  }>;
+};
 
 const AI_STUDIO_TABS: Array<{ id: AiStudioTab; label: string }> = [
   { id: 'quick', label: 'Viết nhanh' },
   { id: 'hook', label: 'Hook/Ý tưởng' },
   { id: 'chat', label: 'Chat' },
+  { id: 'settings', label: 'Cài đặt' },
 ];
 
 const SCRIPT_SECTIONS: ScriptSection[] = [
@@ -148,6 +162,37 @@ const SECTION_LABELS: Record<SectionKey, string> = {
   body: 'BODY',
   ending: 'CTA',
 };
+
+const SECTION_ORDER: SetupSectionKey[] = ['opening', 'body', 'ending'];
+
+function defaultContentStudioSetup(): ContentStudioSetup {
+  return {
+    sections: {
+      opening: {
+        label: 'HOOK',
+        name: 'Hook',
+        description: 'Tối đa 3 dòng',
+        rule: 'Hook phải thu hút, rõ chủ đề và tối đa 3 dòng.',
+      },
+      body: {
+        label: 'BODY',
+        name: 'Body',
+        description: 'Rõ ý chính',
+        rule: 'Triển khai nội dung chính mạch lạc, dễ hiểu, bám đúng sản phẩm và khách hàng.',
+      },
+      ending: {
+        label: 'CTA',
+        name: 'CTA',
+        description: 'Chốt hành động',
+        rule: 'CTA phải tự nhiên, không bịa ưu đãi hoặc cam kết.',
+      },
+    },
+  };
+}
+
+function limitWords(value: string, maxWords: number) {
+  return value.trim().split(/\s+/).filter(Boolean).slice(0, maxWords).join(' ');
+}
 
 const STATUS_LABELS: Record<ScriptStatus, string> = {
   draft: 'Nháp',
@@ -560,6 +605,10 @@ export function ScriptWriterPanel() {
   const [aiKeyMasked, setAiKeyMasked] = useState('');
   const [aiConfigStatus, setAiConfigStatus] = useState('');
   const [aiConfigBusy, setAiConfigBusy] = useState(false);
+  const [chatFullscreen, setChatFullscreen] = useState(false);
+  const [studioSetup, setStudioSetup] = useState<ContentStudioSetup>(defaultContentStudioSetup);
+  const [setupStatus, setSetupStatus] = useState('');
+  const [setupBusy, setSetupBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -619,6 +668,11 @@ export function ScriptWriterPanel() {
   useEffect(() => {
     void loadAiConfig();
     // loadAiConfig is a mount-only bootstrap for the content AI panel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    void loadStudioSetup();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -784,6 +838,66 @@ export function ScriptWriterPanel() {
       setAiConfigStatus('Không gọi được backend để test AI.');
     } finally {
       setAiConfigBusy(false);
+    }
+  }
+
+  async function saveCurrentWithStatus(status: ScriptStatus, message: string) {
+    if (!selected) return;
+    const nextRows = scripts.map((script) => (script.id === selected.id ? { ...script, status } : script));
+    setScripts(nextRows);
+    await saveScripts(nextRows, false);
+    setNotice(message);
+  }
+
+  async function loadStudioSetup() {
+    setSetupStatus('Đang tải cài đặt...');
+    try {
+      const response = await api('/api/content-studio/setup', { timeoutMs: 30000 });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không tải được cài đặt');
+      setStudioSetup({ ...defaultContentStudioSetup(), ...(payload.setup || {}) });
+      setSetupStatus(payload.warning || (payload.storage === 'supabase' ? 'Đã nạp cài đặt từ Supabase.' : ''));
+    } catch (error) {
+      setSetupStatus(error instanceof Error ? error.message : 'Không tải được cài đặt');
+    }
+  }
+
+  function updateSetupSection(section: SetupSectionKey, field: 'name' | 'description' | 'rule', value: string) {
+    const nextValue =
+      field === 'description'
+        ? limitWords(value, 3)
+        : field === 'rule' && section === 'opening'
+          ? limitOpeningLines(value)
+          : value;
+    setStudioSetup((current) => ({
+      sections: {
+        ...current.sections,
+        [section]: {
+          ...current.sections[section],
+          [field]: nextValue,
+        },
+      },
+    }));
+  }
+
+  async function saveStudioSetup() {
+    setSetupBusy(true);
+    setSetupStatus('Đang lưu cài đặt...');
+    try {
+      const response = await api('/api/content-studio/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ setup: studioSetup }),
+        timeoutMs: 30000,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không lưu được cài đặt');
+      setStudioSetup({ ...defaultContentStudioSetup(), ...(payload.setup || studioSetup) });
+      setSetupStatus(payload.warning || (payload.storage === 'supabase' ? 'Đã lưu cài đặt vào Supabase.' : 'Đã lưu cài đặt.'));
+    } catch (error) {
+      setSetupStatus(error instanceof Error ? error.message : 'Không lưu được cài đặt');
+    } finally {
+      setSetupBusy(false);
     }
   }
 
@@ -1210,6 +1324,202 @@ export function ScriptWriterPanel() {
     void sendAiChat(message, section);
   }
 
+  function renderChatInterface(large = false) {
+    return (
+      <>
+        <div className={`script-ai-chat-log${large ? ' large' : ''}`} aria-live="polite">
+          {chatMessages.map((message) => (
+            <div className={`script-ai-bubble ${message.role}`} key={message.id}>
+              <span>{message.role === 'user' ? 'Bạn' : 'AI'}</span>
+              <p>{message.text}</p>
+            </div>
+          ))}
+          {chatBusy ? <div className="script-ai-thinking"><RefreshCw /> AI đang xử lý...</div> : null}
+        </div>
+
+        {aiDraft && Object.values(aiDraft.sections || {}).some(Boolean) ? (
+          <div className="script-ai-draft">
+            <div className="script-ai-draft-head">
+              <strong>Bản nháp AI</strong>
+              <span>
+                {aiDraft.action === 'append' ? 'Thêm vào' : 'Thay thế'} · {' '}
+                {aiDraft.target_section === 'all'
+                  ? 'Toàn bài'
+                  : aiDraft.target_section === 'opening' || aiDraft.target_section === 'body' || aiDraft.target_section === 'ending'
+                    ? SECTION_LABELS[aiDraft.target_section]
+                    : SECTION_LABELS[activeSection]}
+              </span>
+            </div>
+            {SCRIPT_SECTIONS.map((section) => {
+              const text = aiDraft.sections?.[section.id];
+              return text ? (
+                <div className="script-ai-draft-section" key={section.id}>
+                  <b>{section.label}</b>
+                  <p>{text}</p>
+                </div>
+              ) : null;
+            })}
+            <div className="script-ai-draft-actions">
+              <button type="button" className="script-primary compact" onClick={applyAiDraft}><Plus /> Add</button>
+              <button type="button" onClick={() => setAiDraft(null)}><X /> Hủy</button>
+            </div>
+          </div>
+        ) : null}
+
+        {aiDraft?.image_prompt ? (
+          <div className="script-ai-draft image-prompt">
+            <div className="script-ai-draft-head">
+              <strong>Mô tả ảnh AI</strong>
+              <span>Dùng để tạo/đính kèm ảnh</span>
+            </div>
+            <div className="script-ai-draft-section">
+              <p>{aiDraft.image_prompt}</p>
+            </div>
+            <div className="script-ai-draft-actions">
+              <button type="button" className="script-primary compact" onClick={() => { void navigator.clipboard.writeText(aiDraft.image_prompt || ''); setNotice('Đã copy mô tả ảnh.'); }}>
+                <Clipboard /> Copy prompt ảnh
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="script-ai-composer">
+          {mentionSuggestions.length ? (
+            <div className="script-mention-menu">
+              {mentionSuggestions.map((technique) => (
+                <button type="button" key={technique.id} onClick={() => selectMentionTechnique(technique)}>
+                  <AtSign />
+                  <span>{technique.name}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <textarea
+            value={chatInput}
+            onChange={(event) => setChatInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                void sendAiChat();
+              }
+            }}
+            placeholder={`Nhập yêu cầu cho ${SECTION_LABELS[activeSection]}...`}
+            rows={large ? 5 : 3}
+          />
+          <button type="button" className="script-primary compact" disabled={chatBusy || !chatInput.trim()} onClick={() => void sendAiChat()}>
+            <SendHorizontal /> Gửi
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  function renderSettingsPanel() {
+    return (
+      <div className="script-ai-settings-tab">
+        <BusinessProfilePanel embedded />
+
+        <div className="script-settings-card">
+          <div className="script-tech-head">
+            <div><Wand2 /><strong>Cài đặt Prompt</strong></div>
+            <button type="button" className="script-primary compact" disabled={setupBusy} onClick={() => void saveStudioSetup()}>
+              <Save /> Lưu rule
+            </button>
+          </div>
+          <div className="script-settings-grid">
+            {SECTION_ORDER.map((section) => {
+              const row = studioSetup.sections[section];
+              return (
+                <div className="content-setup-card compact" key={section}>
+                  <div className="content-setup-card-head">
+                    <strong>{row.label}</strong>
+                    {section === 'opening' ? <span>Hook tối đa 3 dòng</span> : null}
+                  </div>
+                  <div className="profile-field">
+                    <label>Tên</label>
+                    <input value={row.name} onChange={(event) => updateSetupSection(section, 'name', event.target.value)} />
+                  </div>
+                  <div className="profile-field">
+                    <label>Mô tả</label>
+                    <input value={row.description} onChange={(event) => updateSetupSection(section, 'description', event.target.value)} />
+                  </div>
+                  <div className="profile-field full">
+                    <label>Rule</label>
+                    <textarea rows={section === 'opening' ? 3 : 4} value={row.rule} onChange={(event) => updateSetupSection(section, 'rule', event.target.value)} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {setupStatus ? <p className="script-tech-status">{setupStatus}</p> : null}
+        </div>
+
+        <div className="script-ai-config-card">
+          <div className="script-tech-head">
+            <div><Bot /><strong>Cấu hình AI theo khách</strong></div>
+            <button type="button" title="Tải lại" disabled={aiConfigBusy} onClick={() => void loadAiConfig()}><RefreshCw /></button>
+          </div>
+          <div className="script-ai-config-grid">
+            <input value={aiCustomerName} onChange={(event) => setAiCustomerName(event.target.value)} placeholder="Tên khách / thương hiệu" />
+            <select
+              value={aiProvider}
+              onChange={(event) => {
+                const provider = event.target.value;
+                setAiProvider(provider);
+                setAiModel(DEFAULT_MODELS[provider] || DEFAULT_MODELS.gemini);
+                setAiModels(fallbackModels(provider));
+                setAiKeyMasked('');
+                void loadAiModels(provider);
+              }}
+            >
+              <option value="gemini">Google Gemini</option>
+              <option value="openai">OpenAI / ChatGPT API</option>
+              <option value="groq">Groq</option>
+            </select>
+            <select value={aiModel} onChange={(event) => setAiModel(event.target.value)}>
+              {aiModels.map((item) => (
+                <option key={item.id} value={item.id}>{item.display_name || item.id}</option>
+              ))}
+            </select>
+            <input value={aiKeyInput} onChange={(event) => setAiKeyInput(event.target.value)} placeholder={aiKeyMasked ? `Đã lưu ${aiKeyMasked}` : 'Nhập API key'} />
+          </div>
+          <div className="script-ai-config-actions">
+            <button type="button" className="script-primary compact" disabled={aiConfigBusy} onClick={() => void saveAiConfig()}><Save /> Lưu AI</button>
+            <button type="button" disabled={aiConfigBusy} onClick={() => void testAiConfig()}><Sparkles /> Test</button>
+          </div>
+          {aiConfigStatus ? <p className="script-tech-status">{aiConfigStatus}</p> : null}
+        </div>
+
+        <div className="script-tech-manager">
+          <div className="script-tech-head">
+            <div><Database /><strong>Kỹ thuật content</strong></div>
+            <button type="button" title="Tải lại" disabled={techniqueBusy} onClick={() => void loadTechniques()}><RefreshCw /></button>
+          </div>
+          <div className="script-tech-form">
+            <input value={techniqueName} onChange={(event) => setTechniqueName(event.target.value)} placeholder="Tên kỹ thuật, VD: AIDA" />
+            <textarea value={techniqueContent} onChange={(event) => setTechniqueContent(event.target.value)} placeholder="Nội dung rule của kỹ thuật" rows={3} />
+            <button type="button" className="script-primary compact" disabled={techniqueBusy} onClick={() => void addTechnique()}><Plus /> Lưu kỹ thuật</button>
+          </div>
+          <div className="script-tech-list">
+            {techniques.map((technique) => (
+              <button
+                type="button"
+                key={technique.id}
+                className={selectedTechniqueIds.includes(technique.id) ? 'active' : ''}
+                title={technique.content}
+                onClick={() => setSelectedTechniqueIds((ids) => (ids.includes(technique.id) ? ids.filter((id) => id !== technique.id) : [...ids, technique.id]))}
+              >
+                <span>@{technique.name}</span>
+                {!technique.system ? <em onClick={(event) => { event.stopPropagation(); void deleteTechnique(technique.id); }}>x</em> : null}
+              </button>
+            ))}
+          </div>
+          {techniqueStatus ? <p className="script-tech-status">{techniqueStatus}</p> : null}
+        </div>
+      </div>
+    );
+  }
+
   const aiModelLabel = useMemo(() => {
     const found = aiModels.find((item) => item.id === aiModel);
     return found?.display_name || aiModel || 'Gemini';
@@ -1296,7 +1606,11 @@ export function ScriptWriterPanel() {
                 <option value="pending">Chờ duyệt</option>
                 <option value="approved">Đã duyệt</option>
               </select>
-              <button type="button" className="script-save" onClick={() => void saveScripts(scripts, true)}><Save /> Lưu</button>
+              <button type="button" className="script-save" onClick={() => void saveScripts(scripts, true)}><Save /> Lưu bài</button>
+              <button type="button" className="script-save review" onClick={() => void saveCurrentWithStatus('pending', 'Đã gửi duyệt. Task đã chuyển sang Chờ duyệt.')}><SendHorizontal /> Gửi duyệt</button>
+              {selected.status === 'pending' ? (
+                <button type="button" className="script-save approve" onClick={() => void saveCurrentWithStatus('approved', 'Đã duyệt bài và lưu vào Bài đã duyệt.')}><Check /> Duyệt</button>
+              ) : null}
               <button type="button" className="script-icon-button" title="Xuất file" onClick={exportScript}><FileDown /></button>
               <button type="button" className="script-icon-button" title="Copy" onClick={() => void copyCompleteVersion()}><Clipboard /></button>
               <button type="button" className="script-icon-button" title="Xóa kịch bản" onClick={() => { setScripts((rows) => rows.filter((script) => script.id !== selected.id)); setSelectedId(scripts.find((script) => script.id !== selected.id)?.id || ''); }}><Trash2 /></button>
@@ -1379,6 +1693,7 @@ export function ScriptWriterPanel() {
           <aside className="script-ai-panel script-ai-panel-v3">
             <div className="script-ai-head">
               <div><Bot /><strong>AI {aiModelLabel}</strong></div>
+              <button type="button" title="Phóng to chat" onClick={() => { setAiTab('chat'); setChatFullscreen(true); }}><Maximize2 /></button>
               <button type="button" title="Ẩn panel AI" onClick={() => setShowAi(false)}><X /></button>
             </div>
             <div className="script-ai-tabs" role="tablist">
@@ -1410,6 +1725,9 @@ export function ScriptWriterPanel() {
                     <button type="button" disabled={chatBusy} onClick={() => addAiTemplate('cta')}>
                       <MessageSquare /> Thêm CTA mẫu
                     </button>
+                    <button type="button" disabled={chatBusy} onClick={() => { setAiTab('chat'); quickAi(`Chỉ tạo image_prompt mô tả ảnh minh họa cho bài "${selected?.title || 'nội dung này'}". Không sửa HOOK/BODY/CTA, action none, sections để rỗng.`); }}>
+                      <Sparkles /> Prompt ảnh
+                    </button>
                   </div>
                 </div>
               ) : null}
@@ -1432,134 +1750,11 @@ export function ScriptWriterPanel() {
               ) : null}
 
               {aiTab === 'chat' ? (
-                <>
-                  <div className="script-ai-chat-log" aria-live="polite">
-                    {chatMessages.map((message) => (
-                      <div className={`script-ai-bubble ${message.role}`} key={message.id}>
-                        <span>{message.role === 'user' ? 'Bạn' : 'AI'}</span>
-                        <p>{message.text}</p>
-                      </div>
-                    ))}
-                    {chatBusy ? <div className="script-ai-thinking"><RefreshCw /> AI đang xử lý...</div> : null}
-                  </div>
-
-                  {aiDraft && Object.values(aiDraft.sections || {}).some(Boolean) ? (
-                    <div className="script-ai-draft">
-                      <div className="script-ai-draft-head">
-                        <strong>Bản nháp AI</strong>
-                        <span>
-                          {aiDraft.action === 'append' ? 'Thêm vào' : 'Thay thế'} · {' '}
-                          {aiDraft.target_section === 'all'
-                            ? 'Toàn bài'
-                            : aiDraft.target_section === 'opening' || aiDraft.target_section === 'body' || aiDraft.target_section === 'ending'
-                              ? SECTION_LABELS[aiDraft.target_section]
-                              : SECTION_LABELS[activeSection]}
-                        </span>
-                      </div>
-                      {SCRIPT_SECTIONS.map((section) => {
-                        const text = aiDraft.sections?.[section.id];
-                        return text ? (
-                          <div className="script-ai-draft-section" key={section.id}>
-                            <b>{section.label}</b>
-                            <p>{text}</p>
-                          </div>
-                        ) : null;
-                      })}
-                      <div className="script-ai-draft-actions">
-                        <button type="button" className="script-primary compact" onClick={applyAiDraft}><Plus /> Add</button>
-                        <button type="button" onClick={() => setAiDraft(null)}><X /> Hủy</button>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <div className="script-ai-composer">
-                    {mentionSuggestions.length ? (
-                      <div className="script-mention-menu">
-                        {mentionSuggestions.map((technique) => (
-                          <button type="button" key={technique.id} onClick={() => selectMentionTechnique(technique)}>
-                            <AtSign />
-                            <span>{technique.name}</span>
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                    <textarea
-                      value={chatInput}
-                      onChange={(event) => setChatInput(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-                          event.preventDefault();
-                          void sendAiChat();
-                        }
-                      }}
-                      placeholder="Nhập yêu cầu cho AI..."
-                      rows={2}
-                    />
-                    <button type="button" className="script-primary compact" disabled={chatBusy || !chatInput.trim()} onClick={() => void sendAiChat()}>
-                      <SendHorizontal /> Gửi
-                    </button>
-                  </div>
-                </>
+                renderChatInterface()
               ) : null}
-            </div>
 
-            <details className="script-ai-advanced">
-              <summary>Cấu hình AI & kỹ thuật</summary>
-              <div className="script-ai-config-card">
-                <div className="script-tech-head">
-                  <div><Bot /><strong>Cấu hình AI</strong></div>
-                  <button type="button" title="Tải lại" disabled={aiConfigBusy} onClick={() => void loadAiConfig()}><RefreshCw /></button>
-                </div>
-                <div className="script-ai-config-grid">
-                  <input value={aiCustomerName} onChange={(event) => setAiCustomerName(event.target.value)} placeholder="Tên khách / thương hiệu" />
-                  <select
-                    value={aiProvider}
-                    onChange={(event) => {
-                      const provider = event.target.value;
-                      setAiProvider(provider);
-                      setAiModel(DEFAULT_MODELS[provider] || DEFAULT_MODELS.gemini);
-                      setAiModels(fallbackModels(provider));
-                      setAiKeyMasked('');
-                      void loadAiModels(provider);
-                    }}
-                  >
-                    <option value="gemini">Google Gemini</option>
-                    <option value="openai">OpenAI / ChatGPT</option>
-                    <option value="groq">Groq</option>
-                  </select>
-                  <select value={aiModel} onChange={(event) => setAiModel(event.target.value)}>
-                    {aiModels.map((item) => (
-                      <option key={item.id} value={item.id}>{item.display_name || item.id}</option>
-                    ))}
-                  </select>
-                  <input value={aiKeyInput} onChange={(event) => setAiKeyInput(event.target.value)} placeholder={aiKeyMasked ? `Đã lưu ${aiKeyMasked}` : 'Nhập API key'} />
-                </div>
-                <div className="script-ai-config-actions">
-                  <button type="button" className="script-primary compact" disabled={aiConfigBusy} onClick={() => void saveAiConfig()}><Save /> Lưu AI</button>
-                  <button type="button" disabled={aiConfigBusy} onClick={() => void testAiConfig()}><Sparkles /> Test</button>
-                </div>
-                {aiConfigStatus ? <p className="script-tech-status">{aiConfigStatus}</p> : null}
-              </div>
-              <div className="script-tech-manager">
-                <div className="script-tech-head">
-                  <div><Database /><strong>Kỹ thuật content</strong></div>
-                  <button type="button" title="Tải lại" disabled={techniqueBusy} onClick={() => void loadTechniques()}><RefreshCw /></button>
-                </div>
-                <div className="script-tech-list">
-                  {techniques.map((technique) => (
-                    <button
-                      type="button"
-                      key={technique.id}
-                      className={selectedTechniqueIds.includes(technique.id) ? 'active' : ''}
-                      title={technique.content}
-                      onClick={() => setSelectedTechniqueIds((ids) => (ids.includes(technique.id) ? ids.filter((id) => id !== technique.id) : [...ids, technique.id]))}
-                    >
-                      <span>@{technique.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </details>
+              {aiTab === 'settings' ? renderSettingsPanel() : null}
+            </div>
           </aside>
         ) : null}
       </div>
@@ -1575,6 +1770,18 @@ export function ScriptWriterPanel() {
               <label>Người viết<select value={newWriter} onChange={(event) => setNewWriter(event.target.value)}><option>An</option><option>Bình</option><option>Chi</option><option>Dung</option></select></label>
             </div>
             <div className="script-modal-actions"><button type="button" onClick={() => setShowCreate(false)}>Hủy</button><button type="button" className="script-primary" onClick={createScript}><Plus /> Tạo</button></div>
+          </div>
+        </div>
+      ) : null}
+
+      {chatFullscreen ? (
+        <div className="script-chat-modal-backdrop" role="presentation" onMouseDown={() => setChatFullscreen(false)}>
+          <div className="script-chat-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="script-chat-modal-head">
+              <div><Bot /><strong>Chat AI lớn</strong><span>{selected?.title || 'Chưa chọn kịch bản'}</span></div>
+              <button type="button" onClick={() => setChatFullscreen(false)}><X /></button>
+            </div>
+            {renderChatInterface(true)}
           </div>
         </div>
       ) : null}

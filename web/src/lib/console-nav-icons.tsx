@@ -1,5 +1,6 @@
 import {
   ChartColumn,
+  CheckCircle2,
   ClipboardList,
   Columns3,
   History,
@@ -23,5 +24,6 @@ export const CONSOLE_MODULE_ICONS: Record<ViewKey, LucideIcon> = {
   leads: Target,
   scripts: ScrollText,
   plan: ClipboardList,
+  approved: CheckCircle2,
   marketing: PenLine,
 };

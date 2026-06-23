@@ -280,6 +280,28 @@
 .content-plan-icon-btn:hover { background: #f3f4f6; color: #7c6cf0; }
 .content-plan-icon-btn.danger:hover { color: #be123c; }
 
+.content-plan-mini-action {
+  border: 1px solid #d9d2ff;
+  background: #f7f4ff;
+  color: #6d5bd6;
+  border-radius: 7px;
+  padding: 4px 7px;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.content-plan-mini-action:hover {
+  background: #ede8ff;
+  border-color: #b8a9ff;
+}
+.content-plan-mini-action.approve {
+  color: #047857;
+  border-color: #bbf7d0;
+  background: #ecfdf5;
+}
+.content-plan-mini-action.approve:hover { background: #d1fae5; }
+
 .content-plan-add {
   width: 100%;
   margin-top: 6px;

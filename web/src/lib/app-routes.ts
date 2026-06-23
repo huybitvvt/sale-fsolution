@@ -8,6 +8,7 @@ export type ViewKey =
   | 'leads'
   | 'scripts'
   | 'plan'
+  | 'approved'
   | 'marketing';
 
 export const VIEW_ROUTES: Record<ViewKey, string> = {
@@ -20,6 +21,7 @@ export const VIEW_ROUTES: Record<ViewKey, string> = {
   leads: '/lead',
   scripts: '/kich-ban',
   plan: '/ke-hoach',
+  approved: '/bai-da-duyet',
   marketing: '/bai-viet',
 };
 
@@ -33,6 +35,7 @@ export const VIEW_LABELS: Record<ViewKey, string> = {
   leads: 'Lead',
   scripts: 'Kịch bản',
   plan: 'Kế hoạch',
+  approved: 'Bài đã duyệt',
   marketing: 'Bài viết',
 };
 

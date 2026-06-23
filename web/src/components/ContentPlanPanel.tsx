@@ -8,6 +8,7 @@ import { viewToPath } from '@/lib/app-routes';
 import './content-plan-panel.css';
 
 type PlanColumn = 0 | 1 | 2 | 3;
+type PlanTaskStatus = 'todo' | 'doing' | 'pending' | 'approved' | 'archived';
 
 type PlanScriptStatus = 'draft' | 'pending' | 'approved';
 
@@ -22,12 +23,16 @@ type PlanScript = {
 type PlanTask = {
   id: string;
   col: PlanColumn;
+  status?: PlanTaskStatus;
   title: string;
   assignee: string;
   dl: string;
   pri: string;
   color: string;
   script_id?: string;
+  platform?: string;
+  notes?: Array<{ id: string; text: string; at: string; staff_name?: string }>;
+  timeline?: Array<{ id: string; kind: string; label: string; at: string; staff_name?: string }>;
 };
 
 type ArchivedTask = PlanTask & { archivedAt: string };
@@ -135,8 +140,15 @@ function normalizePlanTitle(value: string) {
 function planColFromScriptStatus(status: PlanScriptStatus): PlanColumn {
   if (status === 'approved') return 3;
   if (status === 'pending') return 2;
-  if (status === 'draft') return 0;
+  if (status === 'draft') return 1;
   return 1;
+}
+
+function statusFromCol(col: PlanColumn): PlanTaskStatus {
+  if (col === 3) return 'approved';
+  if (col === 2) return 'pending';
+  if (col === 1) return 'doing';
+  return 'todo';
 }
 
 function findScriptForTask(task: PlanTask, scripts: PlanScript[]) {
@@ -204,6 +216,20 @@ export function ContentPlanPanel() {
     } catch {
       /* ignore */
     }
+    void api('/api/content-tasks', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tasks: nextTasks }),
+      timeoutMs: 30000,
+    }).then(async (response) => {
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || 'Không lưu được task lên Supabase');
+      }
+      if (payload.warning) setScriptsStatus(payload.warning);
+    }).catch((error) => {
+      setScriptsStatus(error instanceof Error ? error.message : 'Không lưu được task lên Supabase');
+    });
   }, [members]);
 
   useEffect(() => {
@@ -211,6 +237,32 @@ export function ContentPlanPanel() {
     setTasks(stored.tasks);
     setArchived(stored.archived);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadTasks() {
+      try {
+        const response = await api('/api/content-tasks', { timeoutMs: 30000 });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không tải được task');
+        if (cancelled) return;
+        const rows = Array.isArray(payload.tasks) ? payload.tasks as PlanTask[] : [];
+        if (rows.length) {
+          setTasks(rows);
+          try {
+            window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ tasks: rows, archived, members }));
+          } catch {
+            /* ignore */
+          }
+        }
+        if (payload.warning) setScriptsStatus(payload.warning);
+      } catch (error) {
+        if (!cancelled) setScriptsStatus(error instanceof Error ? error.message : 'Không tải được task từ Supabase');
+      }
+    }
+    void loadTasks();
+    return () => { cancelled = true; };
+  }, [archived, members]);
 
   useEffect(() => {
     let cancelled = false;
@@ -244,7 +296,7 @@ export function ContentPlanPanel() {
         const col = planColFromScriptStatus(script.status);
         if (task.script_id === script.id && task.col === col) return task;
         changed = true;
-        return { ...task, script_id: script.id, col };
+        return { ...task, script_id: script.id, col, status: statusFromCol(col) };
       });
       if (changed) {
         try {
@@ -292,7 +344,7 @@ export function ContentPlanPanel() {
   }
 
   function moveTask(taskId: string, col: PlanColumn) {
-    const next = tasks.map((task) => (task.id === taskId ? { ...task, col } : task));
+    const next = tasks.map((task) => (task.id === taskId ? { ...task, col, status: statusFromCol(col) } : task));
     updateTasks(next);
   }
 
@@ -394,7 +446,7 @@ export function ContentPlanPanel() {
       if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không tạo được kịch bản');
       const rows = Array.isArray(payload.scripts) ? payload.scripts as PlanScript[] : [...scripts, newScript];
       setScripts(rows);
-      updateTasks(tasks.map((item) => (item.id === task.id ? { ...item, script_id: newScript.id, col: 0 } : item)));
+      updateTasks(tasks.map((item) => (item.id === task.id ? { ...item, script_id: newScript.id, col: 1, status: statusFromCol(1) } : item)));
       openScript(newScript.id);
       setNotice('Đã tạo và mở kịch bản.');
     } catch (error) {
@@ -411,6 +463,16 @@ export function ContentPlanPanel() {
     void createScriptForTask(task);
   }
 
+  function startTask(task: PlanTask) {
+    moveTask(task.id, 1);
+    handleTaskScriptAction({ ...task, col: 1, status: 'doing' });
+  }
+
+  function approveTask(task: PlanTask) {
+    moveTask(task.id, 3);
+    setNotice('Đã duyệt task.');
+  }
+
   function createTask() {
     const title = newTitle.trim();
     if (!title) {
@@ -421,6 +483,7 @@ export function ContentPlanPanel() {
     const next: PlanTask = {
       id: newId('task'),
       col: newCol,
+      status: statusFromCol(newCol),
       title,
       assignee: newAssignee,
       dl: newDl || '--',
@@ -620,6 +683,26 @@ export function ContentPlanPanel() {
                             <button type="button" className="content-plan-icon-btn inline" title="Lưu trữ" onClick={() => archiveTask(task.id)}>
                               <Archive />
                             </button>
+                          ) : null}
+                          {column.id === 0 ? (
+                            <button type="button" className="content-plan-mini-action" onClick={() => startTask(task)}>
+                              Đang làm
+                            </button>
+                          ) : null}
+                          {column.id === 1 ? (
+                            <button type="button" className="content-plan-mini-action" onClick={() => handleTaskScriptAction(task)}>
+                              Sửa
+                            </button>
+                          ) : null}
+                          {column.id === 2 ? (
+                            <>
+                              <button type="button" className="content-plan-mini-action" onClick={() => handleTaskScriptAction(task)}>
+                                Xem
+                              </button>
+                              <button type="button" className="content-plan-mini-action approve" onClick={() => approveTask(task)}>
+                                Duyệt
+                              </button>
+                            </>
                           ) : null}
                           <button type="button" className="content-plan-icon-btn inline" title="Xóa" onClick={() => deleteTask(task.id)}>
                             <X />

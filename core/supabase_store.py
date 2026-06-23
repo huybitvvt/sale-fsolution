@@ -36,6 +36,8 @@ STAFF_USERS_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 MANAGED_CHANNEL_TABLE = os.environ.get('SUPABASE_CHANNEL_TABLE', 'managed_channels')
 CONTENT_SCRIPT_TABLE = os.environ.get('SUPABASE_SCRIPT_TABLE', 'content_scripts')
 CUSTOMER_AI_TABLE = os.environ.get('SUPABASE_CUSTOMER_AI_TABLE', 'customer_ai_settings')
+CONTENT_TASK_TABLE = os.environ.get('SUPABASE_CONTENT_TASK_TABLE', 'content_tasks')
+CONTENT_SCRIPT_BLOCK_TABLE = os.environ.get('SUPABASE_CONTENT_SCRIPT_BLOCK_TABLE', 'content_script_blocks')
 
 _TIMEOUT = 30
 
@@ -473,6 +475,117 @@ def sync_content_scripts(rows: list[dict], table: Optional[str] = None) -> None:
                 'DELETE',
                 f'{table_name}?id=eq.{quote(script_id, safe="")}',
                 prefer='return=minimal',
+            )
+
+
+# ── content workflow: tasks + script blocks ───────────────────────
+def _request_workflow(method: str, path: str, **kwargs) -> requests.Response:
+    """PostgREST schema cache retry for the split content workflow tables."""
+    last_err: Optional[Exception] = None
+    for attempt in range(6):
+        try:
+            return _request(method, path, **kwargs)
+        except RuntimeError as exc:
+            last_err = exc
+            if _is_schema_cache_error(str(exc)) and attempt < 5:
+                time.sleep(2)
+                continue
+            raise
+    if last_err:
+        raise last_err
+    raise RuntimeError(f'Supabase {method} {path} failed')
+
+
+def list_content_tasks(table: Optional[str] = None) -> list:
+    table_name = table or CONTENT_TASK_TABLE
+    r = _request_workflow(
+        'GET',
+        f'{table_name}?select=*&order=updated_at.desc',
+    )
+    return r.json()
+
+
+def sync_content_tasks(rows: list[dict], table: Optional[str] = None) -> None:
+    table_name = table or CONTENT_TASK_TABLE
+    current = list_content_tasks(table_name)
+    next_ids = {str(row.get('id') or '') for row in rows if row.get('id')}
+    if rows:
+        _request_workflow(
+            'POST',
+            table_name,
+            json=rows,
+            prefer='resolution=merge-duplicates,return=minimal',
+        )
+    for row in current:
+        task_id = str(row.get('id') or '')
+        if task_id and task_id not in next_ids:
+            _request_workflow(
+                'DELETE',
+                f'{table_name}?id=eq.{quote(task_id, safe="")}',
+                prefer='return=minimal',
+            )
+
+
+def upsert_content_task(row: dict, table: Optional[str] = None) -> dict:
+    table_name = table or CONTENT_TASK_TABLE
+    r = _request_workflow(
+        'POST',
+        f'{table_name}?on_conflict=id',
+        json=[row],
+        prefer='resolution=merge-duplicates,return=representation',
+    )
+    rows = r.json()
+    return rows[0] if rows else {}
+
+
+def patch_content_task(task_id: str, row: dict, table: Optional[str] = None) -> dict:
+    table_name = table or CONTENT_TASK_TABLE
+    r = _request_workflow(
+        'PATCH',
+        f'{table_name}?id=eq.{quote(task_id or "", safe="")}',
+        json=row,
+        prefer='return=representation',
+    )
+    rows = r.json()
+    return rows[0] if rows else {}
+
+
+def delete_content_task(task_id: str, table: Optional[str] = None) -> None:
+    table_name = table or CONTENT_TASK_TABLE
+    _request_workflow(
+        'DELETE',
+        f'{table_name}?id=eq.{quote(task_id or "", safe="")}',
+        prefer='return=minimal',
+    )
+
+
+def list_content_script_blocks(table: Optional[str] = None) -> list:
+    table_name = table or CONTENT_SCRIPT_BLOCK_TABLE
+    r = _request_workflow(
+        'GET',
+        f'{table_name}?select=*&order=block_order.asc',
+    )
+    return r.json()
+
+
+def sync_content_script_blocks(rows: list[dict], script_ids: list[str] | None = None, table: Optional[str] = None) -> None:
+    table_name = table or CONTENT_SCRIPT_BLOCK_TABLE
+    ids = [str(item or '').strip() for item in (script_ids or []) if str(item or '').strip()]
+    if ids:
+        for script_id in ids:
+            _request_workflow(
+                'DELETE',
+                f'{table_name}?script_id=eq.{quote(script_id, safe="")}',
+                prefer='return=minimal',
+            )
+    if rows:
+        chunk = 200
+        for i in range(0, len(rows), chunk):
+            _request_workflow(
+                'POST',
+                table_name,
+                json=rows[i:i + chunk],
+                prefer='resolution=merge-duplicates,return=minimal',
             )
 
 
