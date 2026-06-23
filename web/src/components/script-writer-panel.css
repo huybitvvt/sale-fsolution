@@ -822,8 +822,8 @@
 }
 .script-tech-head svg { width: 14px; height: 14px; color: var(--script-primary); }
 .script-tech-head button {
-  width: 25px;
-  height: 25px;
+  min-width: 25px;
+  min-height: 25px;
   display: grid;
   place-items: center;
   border: 0;
@@ -831,6 +831,14 @@
   background: var(--script-soft);
   color: var(--script-primary-dark);
   cursor: pointer;
+}
+.script-tech-head button.script-primary {
+  display: inline-flex;
+  width: auto;
+  height: auto;
+  min-height: 28px;
+  padding-inline: 10px;
+  white-space: nowrap;
 }
 .script-tech-form {
   display: grid;
