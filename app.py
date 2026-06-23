@@ -9040,6 +9040,13 @@ def _script_db_payload_from_script(script: dict, existing_task: dict | None = No
         'created_by_staff_name': (existing_task or {}).get('created_by_staff_name') or staff.get('name') or staff.get('username') or None,
         'created_at': (existing_task or {}).get('created_at') or now,
         'updated_at': now,
+        'started_at': (existing_task or {}).get('started_at') or None,
+        'submitted_at': (existing_task or {}).get('submitted_at') or None,
+        'approved_at': (existing_task or {}).get('approved_at') or None,
+        'completed_at': (existing_task or {}).get('completed_at') or None,
+        'archived_at': (existing_task or {}).get('archived_at') or None,
+        'approved_by_staff_id': (existing_task or {}).get('approved_by_staff_id') or None,
+        'approved_by_staff_name': (existing_task or {}).get('approved_by_staff_name') or None,
     }
     if status == 'doing':
         task['started_at'] = (existing_task or {}).get('started_at') or now
