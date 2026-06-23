@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Archive, FileText, Plus, RotateCcw, Trash2, X } from 'lucide-react';
+import { Archive, Clock3, FileText, MessageSquare, Plus, RotateCcw, SendHorizontal, Trash2, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { viewToPath } from '@/lib/app-routes';
 import './content-plan-panel.css';
@@ -151,6 +151,19 @@ function statusFromCol(col: PlanColumn): PlanTaskStatus {
   return 'todo';
 }
 
+function formatLogTime(value: string) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('vi-VN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+}
+
 function findScriptForTask(task: PlanTask, scripts: PlanScript[]) {
   if (task.script_id) {
     const linked = scripts.find((item) => item.id === task.script_id);
@@ -209,6 +222,9 @@ export function ContentPlanPanel() {
   const [newPri, setNewPri] = useState('🟡');
   const [newScriptId, setNewScriptId] = useState('');
   const [notice, setNotice] = useState('');
+  const [notesTaskId, setNotesTaskId] = useState('');
+  const [noteText, setNoteText] = useState('');
+  const [noteBusy, setNoteBusy] = useState(false);
 
   const persist = useCallback((nextTasks: PlanTask[], nextArchived: ArchivedTask[]) => {
     try {
@@ -422,6 +438,49 @@ export function ContentPlanPanel() {
 
   function resolveTaskScript(task: PlanTask) {
     return findScriptForTask(task, scripts);
+  }
+
+  const notesTask = useMemo(() => tasks.find((task) => task.id === notesTaskId) || null, [notesTaskId, tasks]);
+
+  function openNotes(task: PlanTask) {
+    setNotesTaskId(task.id);
+    setNoteText('');
+  }
+
+  async function sendTaskNote() {
+    const task = notesTask;
+    const text = noteText.trim();
+    if (!task || !text) return;
+    setNoteBusy(true);
+    try {
+      const response = await api(`/api/content-tasks/${encodeURIComponent(task.id)}/notes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+        timeoutMs: 30000,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không lưu được ghi chú');
+      const rows = Array.isArray(payload.tasks) ? payload.tasks as PlanTask[] : [];
+      if (rows.length) {
+        setTasks(rows);
+        try {
+          window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ tasks: rows, archived, members }));
+        } catch {
+          /* ignore */
+        }
+      } else if (payload.task) {
+        const updated = payload.task as PlanTask;
+        setTasks((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      }
+      if (payload.warning) setScriptsStatus(payload.warning);
+      setNoteText('');
+      setNotice('Đã gửi ghi chú.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Không lưu được ghi chú');
+    } finally {
+      setNoteBusy(false);
+    }
   }
 
   async function createScriptForTask(task: PlanTask) {
@@ -668,6 +727,15 @@ export function ContentPlanPanel() {
                           >
                             <FileText />
                           </button>
+                          <button
+                            type="button"
+                            className="content-plan-script-btn note"
+                            title="Ghi chú & timeline"
+                            onClick={() => openNotes(task)}
+                          >
+                            <MessageSquare />
+                            {task.notes?.length ? <em>{task.notes.length}</em> : null}
+                          </button>
                         </div>
                         {linkedScript ? (
                           <div className="content-plan-script-chip">
@@ -826,6 +894,71 @@ export function ContentPlanPanel() {
             <div className="content-plan-modal-actions">
               <button type="button" onClick={() => setShowTaskModal(false)}>Hủy</button>
               <button type="button" className="content-plan-btn primary" onClick={createTask}>Thêm</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {notesTask ? (
+        <div className="content-plan-modal-backdrop" role="presentation" onMouseDown={() => setNotesTaskId('')}>
+          <div className="content-plan-modal content-plan-notes-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="content-plan-modal-head">
+              <div>
+                <strong>Ghi chú task</strong>
+                <span>{notesTask.title}</span>
+              </div>
+              <button type="button" onClick={() => setNotesTaskId('')}><X /></button>
+            </div>
+
+            <div className="content-plan-notes-layout">
+              <section className="content-plan-note-chat" aria-label="Chat ghi chú">
+                <div className="content-plan-note-list">
+                  {notesTask.notes?.length ? (
+                    notesTask.notes.map((note) => (
+                      <div className="content-plan-note-bubble" key={note.id || `${note.at}-${note.text}`}>
+                        <div>
+                          <strong>{note.staff_name || 'Nhân sự'}</strong>
+                          <span>{formatLogTime(note.at)}</span>
+                        </div>
+                        <p>{note.text}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="content-plan-note-empty">Chưa có ghi chú trao đổi.</div>
+                  )}
+                </div>
+                <div className="content-plan-note-compose">
+                  <textarea
+                    value={noteText}
+                    onChange={(event) => setNoteText(event.target.value)}
+                    placeholder="Nhập phản hồi, ví dụ: Em sửa rồi / Cần chỉnh lại hook..."
+                    rows={3}
+                  />
+                  <button type="button" className="content-plan-btn primary" disabled={noteBusy || !noteText.trim()} onClick={() => void sendTaskNote()}>
+                    <SendHorizontal /> Gửi
+                  </button>
+                </div>
+              </section>
+
+              <section className="content-plan-timeline" aria-label="Timeline task">
+                <div className="content-plan-timeline-head">
+                  <Clock3 />
+                  <strong>Mốc thời gian</strong>
+                </div>
+                {notesTask.timeline?.length ? (
+                  notesTask.timeline.map((item) => (
+                    <div className="content-plan-timeline-item" key={item.id || `${item.kind}-${item.at}`}>
+                      <span />
+                      <div>
+                        <strong>{item.label || item.kind}</strong>
+                        <p>{formatLogTime(item.at)}{item.staff_name ? ` · ${item.staff_name}` : ''}</p>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="content-plan-note-empty">Chưa có timeline.</div>
+                )}
+              </section>
             </div>
           </div>
         </div>
