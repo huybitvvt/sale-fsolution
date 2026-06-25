@@ -459,6 +459,7 @@ type ScriptBlockEditorProps = {
 function ScriptBlockEditor({ block, placeholder, onChange, onBlurSave, minimal = false }: ScriptBlockEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const mountedBlockId = useRef('');
+  const [fontSize, setFontSize] = useState(13);
 
   useEffect(() => {
     const node = editorRef.current;
@@ -491,6 +492,62 @@ function ScriptBlockEditor({ block, placeholder, onChange, onBlurSave, minimal =
   function handleFormatMouseDown(event: MouseEvent, command: string, value?: string) {
     event.preventDefault();
     runCommand(command, value);
+  }
+
+  function selectedRangeInEditor(node: HTMLDivElement) {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    return node.contains(range.commonAncestorContainer) ? range : null;
+  }
+
+  function updateFontSizeFromSelection() {
+    const node = editorRef.current;
+    const range = node ? selectedRangeInEditor(node) : null;
+    if (!node || !range) return;
+    const target = range.startContainer.nodeType === Node.TEXT_NODE
+      ? range.startContainer.parentElement
+      : range.startContainer as HTMLElement;
+    if (!target || !node.contains(target)) return;
+    const current = Math.round(Number.parseFloat(window.getComputedStyle(target).fontSize));
+    if (Number.isFinite(current)) setFontSize(Math.min(72, Math.max(8, current)));
+  }
+
+  function applyFontSize(nextValue: number) {
+    const node = editorRef.current;
+    if (!node) return;
+    const next = Math.min(72, Math.max(8, Math.round(nextValue)));
+    const selection = window.getSelection();
+    let range = selectedRangeInEditor(node);
+    if (!range || range.collapsed) {
+      range = document.createRange();
+      range.selectNodeContents(node);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    node.focus();
+    try {
+      document.execCommand('styleWithCSS', false, 'false');
+    } catch {
+      /* trình duyệt cũ */
+    }
+    document.execCommand('fontSize', false, '7');
+    node.querySelectorAll('font[size="7"]').forEach((font) => {
+      font.removeAttribute('size');
+      (font as HTMLElement).style.fontSize = `${next}px`;
+    });
+    try {
+      document.execCommand('styleWithCSS', false, 'true');
+    } catch {
+      /* trình duyệt cũ */
+    }
+    setFontSize(next);
+    syncEditor();
+  }
+
+  function handleFontSizeMouseDown(event: MouseEvent, direction: -1 | 1) {
+    event.preventDefault();
+    applyFontSize(fontSize + direction);
   }
 
   function setAlign(align: BlockAlign) {
@@ -548,15 +605,15 @@ function ScriptBlockEditor({ block, placeholder, onChange, onBlurSave, minimal =
           <button type="button" title="Gạch chân" onMouseDown={(event) => handleFormatMouseDown(event, 'underline')}>
             <Underline />
           </button>
-          <button type="button" className="script-font-size-button" title="Chữ nhỏ" onMouseDown={(event) => handleFormatMouseDown(event, 'fontSize', '2')}>
-            A−
-          </button>
-          <button type="button" className="script-font-size-button" title="Chữ thường" onMouseDown={(event) => handleFormatMouseDown(event, 'fontSize', '3')}>
-            A
-          </button>
-          <button type="button" className="script-font-size-button" title="Chữ lớn" onMouseDown={(event) => handleFormatMouseDown(event, 'fontSize', '5')}>
-            A+
-          </button>
+          <div className="script-font-size-control" aria-label="Cỡ chữ theo pixel">
+            <button type="button" title="Giảm cỡ chữ" disabled={fontSize <= 8} onMouseDown={(event) => handleFontSizeMouseDown(event, -1)}>
+              −
+            </button>
+            <span title={`Cỡ chữ ${fontSize}px`}>{fontSize}</span>
+            <button type="button" title="Tăng cỡ chữ" disabled={fontSize >= 72} onMouseDown={(event) => handleFontSizeMouseDown(event, 1)}>
+              +
+            </button>
+          </div>
           <span className="script-block-toolbar-divider" aria-hidden="true" />
           <button type="button" className={block.align === 'left' || !block.align ? 'active' : ''} title="Căn trái" onMouseDown={(event) => handleAlignMouseDown(event, 'left')}>
             <AlignLeft />
@@ -582,6 +639,8 @@ function ScriptBlockEditor({ block, placeholder, onChange, onBlurSave, minimal =
         data-placeholder={placeholder}
         style={{ textAlign: block.align || 'left' }}
         onInput={syncEditor}
+        onMouseUp={updateFontSizeFromSelection}
+        onKeyUp={updateFontSizeFromSelection}
         onBlur={() => {
           syncEditor();
           onBlurSave?.();
