@@ -35,8 +35,8 @@
 
 .script-block-list-v3 {
   min-height: 0;
-  max-height: 100%;
-  overflow-y: scroll !important;
+  overflow-y: auto !important;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   padding: 18px 20px 48px !important;
   display: flex;
@@ -48,6 +48,7 @@
 .script-block-card {
   position: relative;
   display: flex;
+  flex: 0 0 auto;
   align-items: stretch;
   border-radius: 12px;
   background: #fff;
@@ -68,6 +69,7 @@
 .script-block-card-inner {
   flex: 1;
   min-width: 0;
+  min-height: min-content;
   padding: 10px 12px 12px;
 }
 
@@ -136,6 +138,7 @@
 .script-block-card .script-block-actions button svg { width: 13px; height: 13px; }
 
 .script-block-card .script-block-editor {
+  flex: 0 0 auto;
   min-width: 0;
   max-width: 100%;
   border: 0;
@@ -161,6 +164,9 @@
   background: #fff;
 }
 .script-block-card .script-rich-editor {
+  display: block;
+  height: auto;
+  min-height: 44px;
   min-width: 0;
   max-width: 100%;
   overflow: visible;
@@ -179,6 +185,7 @@
 .script-block-card.block-h2 .script-rich-editor { font-size: 16px; font-weight: 700; }
 
 .script-add-block-v3 {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
