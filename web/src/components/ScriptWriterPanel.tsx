@@ -1389,7 +1389,7 @@ export function ScriptWriterPanel() {
       full: `Viết khung nội dung HOOK / BODY / CTA cho chủ đề "${topic}".`,
       cta: `Viết 1 CTA ngắn cho chủ đề "${topic}".`,
     };
-    const section: SectionKey = type === 'hook' ? 'opening' : type === 'cta' ? 'closing' : 'body';
+    const section: SectionKey = type === 'hook' ? 'opening' : type === 'cta' ? 'ending' : 'body';
     setAiTab('chat');
     void quickAi(prompts[type], section);
   }
