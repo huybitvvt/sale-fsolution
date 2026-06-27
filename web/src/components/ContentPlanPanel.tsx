@@ -857,40 +857,36 @@ export function ContentPlanPanel() {
                           >
                             {task.title}
                           </button>
+                          <div className="content-plan-card-quick">
+                            <button
+                              type="button"
+                              className="content-plan-script-btn"
+                              title={linkedScript ? 'Mở kịch bản' : 'Tạo kịch bản'}
+                              onClick={() => handleTaskScriptAction(task)}
+                            >
+                              <FileText />
+                            </button>
+                            <button
+                              type="button"
+                              className="content-plan-script-btn note"
+                              title="Ghi chú & timeline"
+                              onClick={() => openNotes(task)}
+                            >
+                              <MessageSquare />
+                              {task.notes?.length ? <em>{task.notes.length}</em> : null}
+                            </button>
+                          </div>
                         </div>
                         {linkedScript ? (
                           <div className="content-plan-script-chip">
                             {linkedScript.title} · {linkedScript.status === 'approved' ? 'Đã duyệt' : linkedScript.status === 'pending' ? 'Chờ duyệt' : 'Nháp'}
                           </div>
                         ) : null}
-                        <div className="content-plan-card-body">
-                          <div className="content-plan-card-meta-line">
-                            <span className="content-plan-avatar sm" style={{ background: task.color }}>{task.assignee[0]}</span>
-                            <span className="content-plan-card-assignee">{task.assignee}</span>
-                          </div>
-                          <div className="content-plan-card-meta-line">
-                            {badge ? <span className={`content-plan-dl ${badge.tone}`}>{badge.text}</span> : null}
-                            <span className="content-plan-card-pri">{task.pri}</span>
-                          </div>
-                        </div>
-                        <div className="content-plan-card-quick">
-                          <button
-                            type="button"
-                            className="content-plan-script-btn"
-                            title={linkedScript ? 'Mở kịch bản' : 'Tạo kịch bản'}
-                            onClick={() => handleTaskScriptAction(task)}
-                          >
-                            <FileText />
-                          </button>
-                          <button
-                            type="button"
-                            className="content-plan-script-btn note"
-                            title="Ghi chú & timeline"
-                            onClick={() => openNotes(task)}
-                          >
-                            <MessageSquare />
-                            {task.notes?.length ? <em>{task.notes.length}</em> : null}
-                          </button>
+                        <div className="content-plan-card-meta">
+                          <span className="content-plan-avatar sm" style={{ background: task.color }}>{task.assignee[0]}</span>
+                          <span className="content-plan-card-assignee">{task.assignee}</span>
+                          {badge ? <span className={`content-plan-dl ${badge.tone}`}>{badge.text}</span> : null}
+                          <span className="content-plan-card-pri">{task.pri}</span>
                         </div>
                         <div className="content-plan-card-actions">
                           {column.id === 3 ? (
