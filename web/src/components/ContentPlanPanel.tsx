@@ -410,12 +410,17 @@ export function ContentPlanPanel() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const taskId = new URLSearchParams(window.location.search).get('task')?.trim() || '';
+    const params = new URLSearchParams(window.location.search);
+    const taskId = params.get('task')?.trim() || '';
     if (!taskId) return;
     setHighlightTaskId(taskId);
     setViewMode('all');
     window.setTimeout(() => {
       document.querySelector(`[data-plan-task-id="${taskId}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (params.get('edit') === '1') {
+        const task = tasks.find((item) => item.id === taskId);
+        if (task) openEditTask(task);
+      }
     }, 120);
   }, [tasks]);
 

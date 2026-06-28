@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   AlignCenter,
@@ -454,9 +454,11 @@ type ScriptBlockEditorProps = {
   onChange: (patch: Partial<ScriptBlock>) => void;
   onBlurSave?: () => void;
   minimal?: boolean;
+  compactChrome?: ReactNode;
+  compactTrailing?: ReactNode;
 };
 
-function ScriptBlockEditor({ block, placeholder, onChange, onBlurSave, minimal = false }: ScriptBlockEditorProps) {
+function ScriptBlockEditor({ block, placeholder, onChange, onBlurSave, minimal = false, compactChrome, compactTrailing }: ScriptBlockEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const mountedBlockId = useRef('');
   const [fontSize, setFontSize] = useState(13);
@@ -592,60 +594,79 @@ function ScriptBlockEditor({ block, placeholder, onChange, onBlurSave, minimal =
     );
   }
 
+  const formatToolbar = !minimal ? (
+    <div className="script-block-toolbar" role="toolbar" aria-label="Định dạng văn bản">
+      <button type="button" title="In đậm" onMouseDown={(event) => handleFormatMouseDown(event, 'bold')}>
+        <Bold />
+      </button>
+      <button type="button" title="In nghiêng" onMouseDown={(event) => handleFormatMouseDown(event, 'italic')}>
+        <Italic />
+      </button>
+      <button type="button" title="Gạch chân" onMouseDown={(event) => handleFormatMouseDown(event, 'underline')}>
+        <Underline />
+      </button>
+      <div className="script-font-size-control" aria-label="Cỡ chữ theo pixel">
+        <button type="button" title="Giảm cỡ chữ" disabled={fontSize <= 8} onMouseDown={(event) => handleFontSizeMouseDown(event, -1)}>
+          −
+        </button>
+        <span title={`Cỡ chữ ${fontSize}px`}>{fontSize}</span>
+        <button type="button" title="Tăng cỡ chữ" disabled={fontSize >= 72} onMouseDown={(event) => handleFontSizeMouseDown(event, 1)}>
+          +
+        </button>
+      </div>
+      <span className="script-block-toolbar-divider" aria-hidden="true" />
+      <button type="button" className={block.align === 'left' || !block.align ? 'active' : ''} title="Căn trái" onMouseDown={(event) => handleAlignMouseDown(event, 'left')}>
+        <AlignLeft />
+      </button>
+      <button type="button" className={block.align === 'center' ? 'active' : ''} title="Căn giữa" onMouseDown={(event) => handleAlignMouseDown(event, 'center')}>
+        <AlignCenter />
+      </button>
+      <button type="button" className={block.align === 'right' ? 'active' : ''} title="Căn phải" onMouseDown={(event) => handleAlignMouseDown(event, 'right')}>
+        <AlignRight />
+      </button>
+      <button type="button" className={block.align === 'justify' ? 'active' : ''} title="Căn đều" onMouseDown={(event) => handleAlignMouseDown(event, 'justify')}>
+        <AlignJustify />
+      </button>
+    </div>
+  ) : null;
+
+  const richEditor = (
+    <div
+      ref={editorRef}
+      className="script-rich-editor"
+      contentEditable
+      suppressContentEditableWarning
+      role="textbox"
+      aria-multiline="true"
+      data-placeholder={placeholder}
+      style={{ textAlign: block.align || 'left' }}
+      onInput={syncEditor}
+      onMouseUp={updateFontSizeFromSelection}
+      onKeyUp={updateFontSizeFromSelection}
+      onBlur={() => {
+        syncEditor();
+        onBlurSave?.();
+      }}
+    />
+  );
+
+  if (compactChrome) {
+    return (
+      <div className="script-block-editor script-block-editor-compact">
+        <div className="script-block-chrome-row">
+          {compactChrome}
+          {formatToolbar}
+          {compactTrailing}
+        </div>
+        {richEditor}
+      </div>
+    );
+  }
+
   return (
     <div className={`script-block-editor${minimal ? ' minimal' : ''}`}>
-      {!minimal ? (
-        <div className="script-block-toolbar" role="toolbar" aria-label="Định dạng văn bản">
-          <button type="button" title="In đậm" onMouseDown={(event) => handleFormatMouseDown(event, 'bold')}>
-            <Bold />
-          </button>
-          <button type="button" title="In nghiêng" onMouseDown={(event) => handleFormatMouseDown(event, 'italic')}>
-            <Italic />
-          </button>
-          <button type="button" title="Gạch chân" onMouseDown={(event) => handleFormatMouseDown(event, 'underline')}>
-            <Underline />
-          </button>
-          <div className="script-font-size-control" aria-label="Cỡ chữ theo pixel">
-            <button type="button" title="Giảm cỡ chữ" disabled={fontSize <= 8} onMouseDown={(event) => handleFontSizeMouseDown(event, -1)}>
-              −
-            </button>
-            <span title={`Cỡ chữ ${fontSize}px`}>{fontSize}</span>
-            <button type="button" title="Tăng cỡ chữ" disabled={fontSize >= 72} onMouseDown={(event) => handleFontSizeMouseDown(event, 1)}>
-              +
-            </button>
-          </div>
-          <span className="script-block-toolbar-divider" aria-hidden="true" />
-          <button type="button" className={block.align === 'left' || !block.align ? 'active' : ''} title="Căn trái" onMouseDown={(event) => handleAlignMouseDown(event, 'left')}>
-            <AlignLeft />
-          </button>
-          <button type="button" className={block.align === 'center' ? 'active' : ''} title="Căn giữa" onMouseDown={(event) => handleAlignMouseDown(event, 'center')}>
-            <AlignCenter />
-          </button>
-          <button type="button" className={block.align === 'right' ? 'active' : ''} title="Căn phải" onMouseDown={(event) => handleAlignMouseDown(event, 'right')}>
-            <AlignRight />
-          </button>
-          <button type="button" className={block.align === 'justify' ? 'active' : ''} title="Căn đều" onMouseDown={(event) => handleAlignMouseDown(event, 'justify')}>
-            <AlignJustify />
-          </button>
-        </div>
-      ) : null}
-      <div
-        ref={editorRef}
-        className="script-rich-editor"
-        contentEditable
-        suppressContentEditableWarning
-        role="textbox"
-        aria-multiline="true"
-        data-placeholder={placeholder}
-        style={{ textAlign: block.align || 'left' }}
-        onInput={syncEditor}
-        onMouseUp={updateFontSizeFromSelection}
-        onKeyUp={updateFontSizeFromSelection}
-        onBlur={() => {
-          syncEditor();
-          onBlurSave?.();
-        }}
-      />
+      {formatToolbar}
+      {richEditor}
     </div>
   );
 }
@@ -705,6 +726,7 @@ export function ScriptWriterPanel() {
   const [publishBusy, setPublishBusy] = useState(false);
   const userEditedRef = useRef(false);
   const skipNextAutosaveRef = useRef(false);
+  const manualSaveRef = useRef(false);
   const scriptsRef = useRef(scripts);
   const saveTimerRef = useRef<number | null>(null);
   const dirtyRef = useRef(false);
@@ -723,8 +745,14 @@ export function ScriptWriterPanel() {
     });
   }
 
+  function flushActiveEditor() {
+    if (typeof document === 'undefined') return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+  }
+
   function queueSave(showNotice = false, immediate = false) {
-    if (!loaded || !detailsLoaded) return;
+    if (!loaded) return;
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
     dirtyRef.current = true;
     const run = () => {
@@ -735,6 +763,22 @@ export function ScriptWriterPanel() {
     saveTimerRef.current = window.setTimeout(run, delay);
   }
 
+  function saveNow(showNotice = true) {
+    if (!loaded) return;
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    manualSaveRef.current = true;
+    flushActiveEditor();
+    dirtyRef.current = false;
+    window.setTimeout(() => {
+      void saveScripts(scriptsRef.current, showNotice).finally(() => {
+        manualSaveRef.current = false;
+      });
+    }, 50);
+  }
+
   useEffect(() => {
     const seq = ++loadSeqRef.current;
     const isStale = () => seq !== loadSeqRef.current;
@@ -743,6 +787,24 @@ export function ScriptWriterPanel() {
       return typeof window !== 'undefined'
         ? new URLSearchParams(window.location.search).get('script')?.trim() || ''
         : '';
+    }
+
+    function scriptHasLocalBlocks(script: ScriptDocument) {
+      return script.blocks.some((block) => htmlToPlain(block.text).trim());
+    }
+
+    function mergeScriptRowsFromServer(current: ScriptDocument[], incoming: ScriptDocument[]) {
+      const byId = new Map(incoming.map((row) => [row.id, row]));
+      return current.map((script) => {
+        const remote = byId.get(script.id);
+        if (!remote) return script;
+        if (scriptHasLocalBlocks(script)) return script;
+        return {
+          ...script,
+          ...remote,
+          blocks: remote.blocks?.length ? remote.blocks : script.blocks,
+        };
+      });
     }
 
     function applyScriptRows(rows: ScriptDocument[], payload: { warning?: string; storage?: string; scripts?: unknown[] }) {
@@ -778,27 +840,37 @@ export function ScriptWriterPanel() {
         }
         const liteRows = Array.isArray(litePayload.scripts) ? litePayload.scripts as ScriptDocument[] : [];
         applyScriptRows(liteRows, litePayload);
-        if (!isStale()) setLoaded(true);
+        if (!isStale()) {
+          setLoaded(true);
+          setDetailsLoaded(true);
+        }
 
         if (!liteRows.length) {
-          setDetailsLoaded(true);
           return;
         }
 
         setSyncStatus('Đang tải nội dung chi tiết...');
         const response = await api('/api/scripts', { timeoutMs: 60000 });
         const payload = await response.json().catch(() => ({}));
-        if (isStale() || userEditedRef.current) return;
+        if (isStale()) return;
         if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không tải được nội dung kịch bản');
         const rows = Array.isArray(payload.scripts) ? payload.scripts as ScriptDocument[] : [];
-        applyScriptRows(rows, payload);
-        if (!isStale()) setDetailsLoaded(true);
+        if (userEditedRef.current) {
+          skipNextAutosaveRef.current = true;
+          setScripts((current) => mergeScriptRowsFromServer(current, rows));
+          setSyncStatus(`Đã tải ${rows.length} kịch bản từ Supabase`);
+        } else {
+          applyScriptRows(rows, payload);
+        }
       } catch (error) {
         if (isStale()) return;
         setSyncError(error instanceof Error ? error.message : 'Không kết nối được Supabase');
         setSyncStatus('Chưa đồng bộ Supabase');
       } finally {
-        if (!isStale()) setLoaded(true);
+        if (!isStale()) {
+          setLoaded(true);
+          setDetailsLoaded(true);
+        }
       }
     }
     void loadScripts();
@@ -834,6 +906,7 @@ export function ScriptWriterPanel() {
     }
     queueSave(false, false);
     return () => {
+      if (manualSaveRef.current) return;
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
     };
     // queueSave is intentionally driven by the latest scripts snapshot.
@@ -858,7 +931,7 @@ export function ScriptWriterPanel() {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  const selected = detailsLoaded ? scripts.find((script) => script.id === selectedId) || null : null;
+  const selected = loaded ? scripts.find((script) => script.id === selectedId) || null : null;
   const facebookPost = useMemo(() => (selected ? buildFacebookPost(selected) : null), [selected]);
   const visibleScripts = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase('vi');
@@ -1025,6 +1098,7 @@ export function ScriptWriterPanel() {
 
   async function saveCurrentWithStatus(status: ScriptStatus, message: string) {
     if (!selected) return;
+    flushActiveEditor();
     const nextRows = scripts.map((script) => (script.id === selected.id ? { ...script, status } : script));
     setScripts(nextRows);
     await saveScripts(nextRows, false);
@@ -1147,7 +1221,7 @@ export function ScriptWriterPanel() {
   }
 
   function updateSelected(updater: (script: ScriptDocument) => ScriptDocument) {
-    if (!detailsLoaded) return;
+    if (!loaded) return;
     userEditedRef.current = true;
     setScripts((rows) => rows.map((script) => (script.id === selectedId ? updater(script) : script)));
   }
@@ -1155,6 +1229,15 @@ export function ScriptWriterPanel() {
   function editScript(scriptId: string) {
     setSelectedId(scriptId);
     setNotice('Đang sửa kịch bản.');
+  }
+
+  function openPlanForScript(scriptId: string, options?: { edit?: boolean }) {
+    const script = scripts.find((item) => item.id === scriptId);
+    if (!script) return;
+    const taskId = script.plan_task_id?.trim() || `task-${script.id}`;
+    const query = new URLSearchParams({ task: taskId });
+    if (options?.edit) query.set('edit', '1');
+    router.push(`${viewToPath('plan')}?${query.toString()}`);
   }
 
   function deleteScript(scriptId: string) {
@@ -1276,9 +1359,9 @@ export function ScriptWriterPanel() {
     const post = facebookPost || buildFacebookPost(selected);
     const printedAt = new Date().toLocaleDateString('vi-VN');
     const bodyHtml = post.html || '<p style="color:#9CA3AF">Kịch bản chưa có nội dung.</p>';
-    return `<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8"><title>${escapeHtml(selected.title)}</title><style>
+    return `<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8"><title>${escapeHtml(selected.title)}</title><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&display=swap"><style>
       @page { margin: 18mm; }
-      body { font-family: "Segoe UI", Arial, sans-serif; max-width: 680px; margin: 36px auto; color: #1E1B4B; padding: 0 18px; }
+      body { font-family: Roboto, Arial, sans-serif; max-width: 680px; margin: 36px auto; color: #1E1B4B; padding: 0 18px; }
       .head { border-bottom: 3px solid #1877F2; padding-bottom: 12px; margin-bottom: 22px; }
       .brand { font-size: 9px; color: #9CA3AF; margin-bottom: 3px; }
       h1 { font-size: 20px; font-weight: 800; margin: 0 0 4px; }
@@ -1907,7 +1990,15 @@ export function ScriptWriterPanel() {
                 </div>
               </button>
               <div className="script-list-actions">
-                <button type="button" className="script-list-edit" title="Sửa kịch bản" onClick={() => editScript(script.id)}>
+                <button
+                  type="button"
+                  className="script-list-edit"
+                  title="Mở task trên Kế hoạch"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    openPlanForScript(script.id, { edit: true });
+                  }}
+                >
                   <Pencil /> Sửa
                 </button>
                 <button type="button" className="script-list-delete" title="Xóa kịch bản" onClick={(event) => { event.stopPropagation(); deleteScript(script.id); }}>
@@ -1948,17 +2039,15 @@ export function ScriptWriterPanel() {
                 <option value="approved">Đã duyệt</option>
               </select>
               <div className="script-editor-toolbar">
-                {selected.plan_task_id ? (
-                  <button
-                    type="button"
-                    className="script-save plan-link"
-                    title={selected.plan_task_title ? `Task kế hoạch: ${selected.plan_task_title}` : 'Mở task trên Kế hoạch content'}
-                    onClick={() => router.push(`${viewToPath('plan')}?task=${encodeURIComponent(selected.plan_task_id!)}`)}
-                  >
-                    <CalendarDays /> Kế hoạch
-                  </button>
-                ) : null}
-                <button type="button" className="script-save" onClick={() => queueSave(true, true)}><Save /> Lưu bài</button>
+                <button
+                  type="button"
+                  className="script-save plan-link"
+                  title={selected.plan_task_title ? `Task kế hoạch: ${selected.plan_task_title}` : 'Mở task trên Kế hoạch content'}
+                  onClick={() => openPlanForScript(selected.id)}
+                >
+                  <CalendarDays /> Kế hoạch
+                </button>
+                <button type="button" className="script-save" onClick={() => saveNow(true)}><Save /> Lưu bài</button>
                 <button type="button" className="script-save review" onClick={() => void saveCurrentWithStatus('pending', 'Đã gửi duyệt. Task đã chuyển sang Chờ duyệt.')}><SendHorizontal /> Gửi duyệt</button>
                 {selected.status === 'pending' ? (
                   <button type="button" className="script-save approve" onClick={() => void saveCurrentWithStatus('approved', 'Đã duyệt bài và lưu vào Bài đã duyệt.')}><Check /> Duyệt</button>
@@ -2010,24 +2099,28 @@ export function ScriptWriterPanel() {
                   <div className={`script-block-card tone-${v3.tone} block-${block.type}`} key={block.id}>
                     <div className="script-block-accent" aria-hidden="true" />
                     <div className="script-block-card-inner">
-                      <div className="script-block-card-head">
-                        <GripVertical className="script-drag" />
-                        <span className="script-block-label">{v3.label}</span>
-                        <select className="script-block-type-mini" value={block.type} onChange={(event) => updateBlock(block.id, { type: event.target.value as BlockType })} aria-label="Loại block">
-                          {BLOCK_TYPES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-                        </select>
-                        <div className="script-block-actions">
-                          <button type="button" title="Lên" disabled={index === 0} onClick={() => moveBlock(index, -1)}><ChevronUp /></button>
-                          <button type="button" title="Xuống" disabled={index === selected.blocks.length - 1} onClick={() => moveBlock(index, 1)}><ChevronDown /></button>
-                          <button type="button" title="Nhân bản" onClick={() => duplicateBlock(block, index)}><Copy /></button>
-                          <button type="button" title="Xóa block" onClick={() => removeBlock(block.id)}><X /></button>
-                        </div>
-                      </div>
                       <ScriptBlockEditor
                         block={block}
                         placeholder={definition.placeholder}
                         onChange={(patch) => updateBlock(block.id, patch)}
                         onBlurSave={handleEditorBlurSave}
+                        compactChrome={(
+                          <>
+                            <GripVertical className="script-drag" />
+                            <span className="script-block-label">{v3.label}</span>
+                            <select className="script-block-type-mini" value={block.type} onChange={(event) => updateBlock(block.id, { type: event.target.value as BlockType })} aria-label="Loại block">
+                              {BLOCK_TYPES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                            </select>
+                          </>
+                        )}
+                        compactTrailing={(
+                          <div className="script-block-actions">
+                            <button type="button" title="Lên" disabled={index === 0} onClick={() => moveBlock(index, -1)}><ChevronUp /></button>
+                            <button type="button" title="Xuống" disabled={index === selected.blocks.length - 1} onClick={() => moveBlock(index, 1)}><ChevronDown /></button>
+                            <button type="button" title="Nhân bản" onClick={() => duplicateBlock(block, index)}><Copy /></button>
+                            <button type="button" title="Xóa block" onClick={() => removeBlock(block.id)}><X /></button>
+                          </div>
+                        )}
                       />
                     </div>
                   </div>

@@ -1,5 +1,7 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #f0f2f5; color: #1c1e21; min-height: 100vh; }
+:root { --app-font: var(--font-roboto), Roboto, Arial, sans-serif; }
+html, body { font-family: var(--app-font); background: #f0f2f5; color: #1c1e21; min-height: 100vh; }
+button, input, select, textarea { font-family: inherit; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .ref-spin { animation: spin 1s linear infinite; display: inline-block; }
@@ -2444,7 +2446,7 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
   border: 1px solid #dbe3ef;
   border-radius: 10px;
   padding: 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--app-font);
   font-size: 12px;
   line-height: 1.45;
   resize: vertical;
@@ -2544,7 +2546,7 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
 .ai-row select { padding: 6px 10px; border-radius: 10px; border: 1.5px solid #e4e6eb; font-size: 13px; background: white; outline: none; cursor: pointer; }
 .ai-row .ai-model-select { min-width: 260px; flex: 1 1 260px; }
 .ai-row select:focus { border-color: #8b5cf6; }
-.ai-key-input { flex: 1; min-width: 120px; padding: 6px 11px; border-radius: 10px; border: 1.5px solid #e4e6eb; font-size: 13px; outline: none; font-family: monospace; }
+.ai-key-input { flex: 1; min-width: 120px; padding: 6px 11px; border-radius: 10px; border: 1.5px solid #e4e6eb; font-size: 13px; outline: none; font-family: inherit; }
 .ai-key-input:focus { border-color: #8b5cf6; }
 .btn-ai-sm { padding: 5px 12px; border-radius: 10px; border: none; font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; transition: all .15s; }
 .btn-ai-save { background: #8b5cf6; color: white; }
@@ -2556,7 +2558,7 @@ body { font-family: var(--font-roboto), Roboto, Arial, sans-serif; background: #
 .ai-status { font-size: 12px; color: #65676b; }
 .ai-auto-label { font-size: 12px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; color: #65676b; }
 .ai-auto-label input { accent-color: #8b5cf6; }
-.ai-key-display { font-size: 12px; font-family: monospace; color: #65676b; background: #f3f4f6; padding: 4px 10px; border-radius: 8px; letter-spacing: 1px; }
+.ai-key-display { font-size: 12px; font-family: inherit; color: #65676b; background: #f3f4f6; padding: 4px 10px; border-radius: 8px; letter-spacing: 1px; }
 
 .badge-cat { cursor: default; }
 .btn-classify { background: linear-gradient(135deg, #8b5cf6, #6d28d9); color: white; }
