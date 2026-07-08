@@ -1,0 +1,789 @@
+-- ============================================================
+-- Seeding Fsolution — SUPABASE ALL-IN-ONE
+-- Gộp toàn bộ schema + patch thành 1 file duy nhất.
+--
+-- CÁCH CHẠY:
+--   1. Tạo project mới trên https://supabase.com/dashboard
+--   2. SQL Editor → New query
+--   3. Dán TOÀN BỘ file này → Run
+--   4. Đợi 5 giây, vào Settings → API → Reload schema (nếu cần)
+--
+-- An toàn chạy lại (idempotent) trên DB đã có bảng cũ.
+-- Tài khoản test: khachtest / 123456
+-- ============================================================
+
+-- ── Extensions ──────────────────────────────────────────────
+create extension if not exists pgcrypto;
+
+-- ── Shared triggers ─────────────────────────────────────────
+create or replace function public.set_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create or replace function public.set_content_workflow_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create or replace function public.set_customer_ai_settings_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create or replace function public.set_app_kv_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+-- ── groups ──────────────────────────────────────────────────
+create table if not exists public.groups (
+    id          text primary key,
+    name        text not null default '',
+    created_at  timestamptz not null default now()
+);
+
+-- ── telegram_chat_ids ───────────────────────────────────────
+create table if not exists public.telegram_chat_ids (
+    chat_id     text primary key,
+    created_at  timestamptz not null default now()
+);
+
+-- ── app_kv (ai_config, content_studio_setup, comment_templates…) ──
+create table if not exists public.app_kv (
+    key         text primary key,
+    value       jsonb not null default '{}'::jsonb,
+    updated_at  timestamptz not null default now()
+);
+
+alter table public.app_kv
+  add column if not exists value jsonb not null default '{}'::jsonb,
+  add column if not exists updated_at timestamptz not null default now();
+
+drop trigger if exists trg_app_kv_updated_at on public.app_kv;
+create trigger trg_app_kv_updated_at
+before update on public.app_kv
+for each row execute function public.set_app_kv_updated_at();
+
+alter table public.app_kv disable row level security;
+grant usage on schema public to anon, authenticated, service_role;
+grant select, insert, update, delete on public.app_kv to anon, authenticated, service_role;
+
+-- ── staff_users ─────────────────────────────────────────────
+create table if not exists public.staff_users (
+    id                 text primary key default gen_random_uuid()::text,
+    name               text not null,
+    username           text not null,
+    password           text not null,
+    role               text not null default 'staff',
+    cookie             text,
+    facebook_user_id   text,
+    managed_groups     jsonb not null default '[]'::jsonb,
+    facebook_cookies   jsonb not null default '[]'::jsonb,
+    active_cookie_id   text default '',
+    enabled            boolean not null default true,
+    created_at         timestamptz not null default now(),
+    updated_at         timestamptz not null default now()
+);
+
+alter table public.staff_users
+  add column if not exists name text,
+  add column if not exists username text,
+  add column if not exists password text,
+  add column if not exists role text default 'staff',
+  add column if not exists cookie text,
+  add column if not exists facebook_user_id text,
+  add column if not exists managed_groups jsonb default '[]'::jsonb,
+  add column if not exists facebook_cookies jsonb default '[]'::jsonb,
+  add column if not exists active_cookie_id text default '',
+  add column if not exists enabled boolean default true,
+  add column if not exists created_at timestamptz default now(),
+  add column if not exists updated_at timestamptz default now();
+
+update public.staff_users
+set
+  username = coalesce(nullif(username, ''), id, 'user_' || substr(gen_random_uuid()::text, 1, 8)),
+  name = coalesce(nullif(name, ''), nullif(username, ''), 'Nhân sự'),
+  password = coalesce(password, ''),
+  role = coalesce(nullif(role, ''), 'staff'),
+  managed_groups = coalesce(managed_groups, '[]'::jsonb),
+  facebook_cookies = case
+    when facebook_cookies is not null and facebook_cookies <> '[]'::jsonb then facebook_cookies
+    when coalesce(cookie, '') <> '' then jsonb_build_array(
+      jsonb_build_object(
+        'id', 'primary',
+        'label', 'Cookie chính',
+        'cookie', cookie,
+        'facebook_user_id', coalesce(facebook_user_id, '')
+      )
+    )
+    else '[]'::jsonb
+  end,
+  active_cookie_id = coalesce(active_cookie_id, ''),
+  enabled = coalesce(enabled, true),
+  created_at = coalesce(created_at, now()),
+  updated_at = coalesce(updated_at, now());
+
+alter table public.staff_users
+  alter column name set not null,
+  alter column username set not null,
+  alter column password set not null,
+  alter column role set default 'staff',
+  alter column role set not null,
+  alter column enabled set default true,
+  alter column enabled set not null,
+  alter column created_at set default now(),
+  alter column created_at set not null,
+  alter column updated_at set default now(),
+  alter column updated_at set not null;
+
+create unique index if not exists staff_users_username_uidx on public.staff_users (username);
+create index if not exists staff_users_enabled_idx on public.staff_users (enabled);
+create index if not exists staff_users_managed_groups_gin_idx on public.staff_users using gin (managed_groups);
+create index if not exists staff_users_facebook_cookies_gin_idx on public.staff_users using gin (facebook_cookies);
+
+alter table public.staff_users enable row level security;
+
+do $$ begin
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='staff_users' and policyname='allow anon select staff users') then
+    create policy "allow anon select staff users" on public.staff_users for select to anon using (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='staff_users' and policyname='allow anon insert staff users') then
+    create policy "allow anon insert staff users" on public.staff_users for insert to anon with check (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='staff_users' and policyname='allow anon update staff users') then
+    create policy "allow anon update staff users" on public.staff_users for update to anon using (true) with check (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='staff_users' and policyname='allow anon delete staff users') then
+    create policy "allow anon delete staff users" on public.staff_users for delete to anon using (true);
+  end if;
+end $$;
+
+insert into public.staff_users (id, name, username, password, role, enabled)
+values ('test-khach', 'Khách Test', 'khachtest', '123456', 'admin', true)
+on conflict (username) do update
+set name = excluded.name, password = excluded.password, role = excluded.role,
+    enabled = excluded.enabled, updated_at = now();
+
+-- ── managed_channels ────────────────────────────────────────
+create table if not exists public.managed_channels (
+    id           text primary key,
+    platform     text not null,
+    channel_name text not null,
+    channel_type text not null,
+    link         text,
+    target_id    text,
+    note         text,
+    created_at   timestamptz not null default now(),
+    updated_at   timestamptz not null default now()
+);
+
+alter table public.managed_channels
+  add column if not exists platform text,
+  add column if not exists channel_name text,
+  add column if not exists channel_type text,
+  add column if not exists link text,
+  add column if not exists target_id text,
+  add column if not exists note text,
+  add column if not exists created_at timestamptz default now(),
+  add column if not exists updated_at timestamptz default now();
+
+update public.managed_channels
+set
+  platform = coalesce(nullif(platform, ''), 'facebook'),
+  channel_name = coalesce(nullif(channel_name, ''), target_id, id),
+  channel_type = coalesce(nullif(channel_type, ''), 'Nhóm'),
+  created_at = coalesce(created_at, now()),
+  updated_at = coalesce(updated_at, now());
+
+alter table public.managed_channels
+  alter column platform set not null,
+  alter column channel_name set not null,
+  alter column channel_type set not null,
+  alter column created_at set default now(),
+  alter column created_at set not null,
+  alter column updated_at set default now(),
+  alter column updated_at set not null;
+
+create index if not exists managed_channels_platform_idx on public.managed_channels (platform);
+create index if not exists managed_channels_type_idx on public.managed_channels (channel_type);
+
+alter table public.managed_channels enable row level security;
+
+do $$ begin
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='managed_channels' and policyname='allow anon select managed channels') then
+    create policy "allow anon select managed channels" on public.managed_channels for select to anon using (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='managed_channels' and policyname='allow anon insert managed channels') then
+    create policy "allow anon insert managed channels" on public.managed_channels for insert to anon with check (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='managed_channels' and policyname='allow anon update managed channels') then
+    create policy "allow anon update managed channels" on public.managed_channels for update to anon using (true) with check (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='managed_channels' and policyname='allow anon delete managed channels') then
+    create policy "allow anon delete managed channels" on public.managed_channels for delete to anon using (true);
+  end if;
+end $$;
+
+-- ── content_scripts ─────────────────────────────────────────
+create table if not exists public.content_scripts (
+    id                    text primary key,
+    title                 text not null default '',
+    platform              text not null default 'TikTok',
+    status                text not null default 'draft',
+    writer                text not null default '',
+    script_date           text not null default '',
+    blocks                jsonb not null default '[]'::jsonb,
+    created_by_staff_id   text,
+    created_by_staff_name text,
+    created_at            timestamptz not null default now(),
+    updated_at            timestamptz not null default now()
+);
+
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'content_scripts_status_check') then
+    alter table public.content_scripts add constraint content_scripts_status_check
+      check (status in ('draft', 'pending', 'approved'));
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'content_scripts_blocks_array_check') then
+    alter table public.content_scripts add constraint content_scripts_blocks_array_check
+      check (jsonb_typeof(blocks) = 'array');
+  end if;
+end $$;
+
+alter table public.content_scripts
+  add column if not exists title text default '',
+  add column if not exists platform text default 'TikTok',
+  add column if not exists status text default 'draft',
+  add column if not exists writer text default '',
+  add column if not exists script_date text default '',
+  add column if not exists blocks jsonb default '[]'::jsonb,
+  add column if not exists created_by_staff_id text,
+  add column if not exists created_by_staff_name text,
+  add column if not exists created_at timestamptz default now(),
+  add column if not exists updated_at timestamptz default now();
+
+create index if not exists content_scripts_status_idx on public.content_scripts (status);
+create index if not exists content_scripts_updated_at_idx on public.content_scripts (updated_at desc);
+
+drop policy if exists "allow anon select content scripts" on public.content_scripts;
+drop policy if exists "allow anon insert content scripts" on public.content_scripts;
+drop policy if exists "allow anon update content scripts" on public.content_scripts;
+drop policy if exists "allow anon delete content scripts" on public.content_scripts;
+drop policy if exists "content_scripts_anon_all" on public.content_scripts;
+alter table public.content_scripts disable row level security;
+grant select, insert, update, delete on public.content_scripts to anon, authenticated, service_role;
+
+-- ── content_tasks + content_script_blocks ───────────────────
+create table if not exists public.content_tasks (
+    id                     text primary key,
+    title                  text not null default '',
+    assignee_id            text,
+    assignee_name          text not null default '',
+    assignee_username      text,
+    status                 text not null default 'todo',
+    priority               text not null default 'medium',
+    due_date               text,
+    script_id              text unique,
+    platform               text not null default 'TikTok',
+    color                  text default '',
+    notes                  jsonb not null default '[]'::jsonb,
+    timeline               jsonb not null default '[]'::jsonb,
+    created_by_staff_id    text,
+    created_by_staff_name  text,
+    approved_by_staff_id   text,
+    approved_by_staff_name text,
+    started_at             timestamptz,
+    submitted_at           timestamptz,
+    approved_at            timestamptz,
+    completed_at           timestamptz,
+    archived_at            timestamptz,
+    created_at             timestamptz not null default now(),
+    updated_at             timestamptz not null default now()
+);
+
+create table if not exists public.content_script_blocks (
+    id           text primary key,
+    task_id      text not null references public.content_tasks(id) on delete cascade,
+    script_id    text not null,
+    block_order  integer not null default 0,
+    content_type text not null default 'text',
+    content      text not null default '',
+    metadata     jsonb not null default '{}'::jsonb,
+    created_at   timestamptz not null default now(),
+    updated_at   timestamptz not null default now()
+);
+
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'content_tasks_status_check') then
+    alter table public.content_tasks add constraint content_tasks_status_check
+      check (status in ('todo', 'doing', 'pending', 'approved', 'archived'));
+  end if;
+end $$;
+
+alter table public.content_tasks
+  add column if not exists assignee_id text,
+  add column if not exists assignee_name text default '',
+  add column if not exists assignee_username text,
+  add column if not exists priority text default 'medium',
+  add column if not exists due_date text,
+  add column if not exists script_id text,
+  add column if not exists platform text default 'TikTok',
+  add column if not exists color text default '',
+  add column if not exists notes jsonb default '[]'::jsonb,
+  add column if not exists timeline jsonb default '[]'::jsonb,
+  add column if not exists approved_by_staff_id text,
+  add column if not exists approved_by_staff_name text,
+  add column if not exists started_at timestamptz,
+  add column if not exists submitted_at timestamptz,
+  add column if not exists approved_at timestamptz,
+  add column if not exists completed_at timestamptz,
+  add column if not exists archived_at timestamptz;
+
+alter table public.content_script_blocks
+  add column if not exists task_id text,
+  add column if not exists script_id text,
+  add column if not exists block_order integer default 0,
+  add column if not exists content_type text default 'text',
+  add column if not exists content text default '',
+  add column if not exists metadata jsonb default '{}'::jsonb;
+
+drop trigger if exists trg_content_tasks_updated_at on public.content_tasks;
+create trigger trg_content_tasks_updated_at
+before update on public.content_tasks
+for each row execute function public.set_content_workflow_updated_at();
+
+drop trigger if exists trg_content_script_blocks_updated_at on public.content_script_blocks;
+create trigger trg_content_script_blocks_updated_at
+before update on public.content_script_blocks
+for each row execute function public.set_content_workflow_updated_at();
+
+create index if not exists idx_content_tasks_status on public.content_tasks(status);
+create index if not exists idx_content_tasks_assignee on public.content_tasks(assignee_name);
+create index if not exists idx_content_tasks_script_id on public.content_tasks(script_id);
+create index if not exists idx_content_tasks_updated on public.content_tasks(updated_at desc);
+create index if not exists idx_content_script_blocks_task_order on public.content_script_blocks(task_id, block_order);
+create index if not exists idx_content_script_blocks_script_id on public.content_script_blocks(script_id);
+
+alter table public.content_tasks enable row level security;
+alter table public.content_script_blocks enable row level security;
+drop policy if exists "content_tasks_anon_all" on public.content_tasks;
+drop policy if exists "content_script_blocks_anon_all" on public.content_script_blocks;
+create policy "content_tasks_anon_all" on public.content_tasks for all to anon, authenticated using (true) with check (true);
+create policy "content_script_blocks_anon_all" on public.content_script_blocks for all to anon, authenticated using (true) with check (true);
+grant select, insert, update, delete on public.content_tasks to anon, authenticated, service_role;
+grant select, insert, update, delete on public.content_script_blocks to anon, authenticated, service_role;
+
+-- ── customer_ai_settings ────────────────────────────────────
+create table if not exists public.customer_ai_settings (
+    id                 uuid primary key default gen_random_uuid(),
+    staff_key          text not null unique,
+    staff_id           text,
+    username           text,
+    customer_name      text,
+    provider           text not null default 'gemini',
+    model              text not null default 'gemini-3.1-pro-preview',
+    api_key            text,
+    api_keys           jsonb not null default '{}'::jsonb,
+    content_setup      jsonb not null default '{}'::jsonb,
+    content_techniques jsonb not null default '[]'::jsonb,
+    created_at         timestamptz not null default now(),
+    updated_at         timestamptz not null default now()
+);
+
+alter table public.customer_ai_settings
+  add column if not exists content_setup jsonb not null default '{}'::jsonb,
+  add column if not exists content_techniques jsonb not null default '[]'::jsonb;
+
+drop trigger if exists trg_customer_ai_settings_updated_at on public.customer_ai_settings;
+create trigger trg_customer_ai_settings_updated_at
+before update on public.customer_ai_settings
+for each row execute function public.set_customer_ai_settings_updated_at();
+
+create index if not exists idx_customer_ai_settings_staff_key on public.customer_ai_settings (staff_key);
+
+alter table public.customer_ai_settings enable row level security;
+drop policy if exists "customer_ai_settings_anon_all" on public.customer_ai_settings;
+create policy "customer_ai_settings_anon_all" on public.customer_ai_settings
+  for all to anon, authenticated using (true) with check (true);
+grant select, insert, update, delete on public.customer_ai_settings to anon, authenticated, service_role;
+
+-- ── seen_posts ──────────────────────────────────────────────
+create table if not exists public.seen_posts (
+    post_id       text primary key,
+    permalink_url text,
+    group_id      text,
+    author_name   text,
+    message       text,
+    created_time  timestamptz,
+    seen_at       timestamptz not null default now()
+);
+
+alter table public.seen_posts
+  add column if not exists permalink_url text,
+  add column if not exists group_id text,
+  add column if not exists author_name text,
+  add column if not exists message text,
+  add column if not exists created_time timestamptz,
+  add column if not exists seen_at timestamptz default now();
+
+create index if not exists seen_posts_created_time_idx on public.seen_posts (created_time desc);
+create index if not exists seen_posts_group_id_idx on public.seen_posts (group_id);
+alter table public.seen_posts disable row level security;
+
+-- ── classifications ─────────────────────────────────────────
+create table if not exists public.classifications (
+    post_id     text primary key,
+    category    text not null,
+    updated_at  timestamptz not null default now()
+);
+alter table public.classifications disable row level security;
+
+-- ── leads ───────────────────────────────────────────────────
+create table if not exists public.leads (
+    id                        bigint generated by default as identity primary key,
+    lead_key                  text not null unique,
+    platform                  text,
+    lead_source               text,
+    source_id                 text,
+    post_id                   text,
+    group_id                  text,
+    post_url                  text,
+    comment_id                text,
+    comment_url               text,
+    customer_name             text,
+    customer_phone            text,
+    phones                    jsonb not null default '[]'::jsonb,
+    customer_need             text,
+    intent                    text,
+    product_or_service        text,
+    location                  text,
+    budget                    text,
+    urgency                   text,
+    contact_status            text,
+    confidence                numeric,
+    evidence                  text,
+    raw_lead                  jsonb not null default '{}'::jsonb,
+    created_by_staff_id       text,
+    created_by_staff_name     text,
+    created_by_staff_username text,
+    created_at                timestamptz not null default now(),
+    updated_at                timestamptz not null default now()
+);
+
+alter table public.leads
+  add column if not exists lead_key text,
+  add column if not exists platform text,
+  add column if not exists lead_source text,
+  add column if not exists source_id text,
+  add column if not exists post_id text,
+  add column if not exists group_id text,
+  add column if not exists post_url text,
+  add column if not exists comment_id text,
+  add column if not exists comment_url text,
+  add column if not exists customer_name text,
+  add column if not exists customer_phone text,
+  add column if not exists phones jsonb default '[]'::jsonb,
+  add column if not exists customer_need text,
+  add column if not exists intent text,
+  add column if not exists product_or_service text,
+  add column if not exists location text,
+  add column if not exists budget text,
+  add column if not exists urgency text,
+  add column if not exists contact_status text,
+  add column if not exists confidence numeric,
+  add column if not exists evidence text,
+  add column if not exists raw_lead jsonb default '{}'::jsonb,
+  add column if not exists created_by_staff_id text,
+  add column if not exists created_by_staff_name text,
+  add column if not exists created_by_staff_username text,
+  add column if not exists created_at timestamptz default now(),
+  add column if not exists updated_at timestamptz default now();
+
+create index if not exists leads_post_id_idx on public.leads (post_id);
+create index if not exists leads_customer_phone_idx on public.leads (customer_phone);
+create index if not exists leads_platform_idx on public.leads (platform);
+create index if not exists leads_created_at_idx on public.leads (created_at desc);
+
+drop trigger if exists leads_set_updated_at on public.leads;
+create trigger leads_set_updated_at
+before update on public.leads
+for each row execute function public.set_updated_at();
+
+alter table public.leads enable row level security;
+
+do $$ begin
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='leads' and policyname='allow anon insert leads') then
+    create policy "allow anon insert leads" on public.leads for insert to anon with check (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='leads' and policyname='allow anon select leads') then
+    create policy "allow anon select leads" on public.leads for select to anon using (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='leads' and policyname='allow anon update leads') then
+    create policy "allow anon update leads" on public.leads for update to anon using (true) with check (true);
+  end if;
+end $$;
+
+-- ── ai_reply_suggestions ────────────────────────────────────
+create table if not exists public.ai_reply_suggestions (
+    id                  bigint generated by default as identity primary key,
+    post_id             text not null,
+    group_id            text,
+    post_url            text,
+    target_source       text,
+    target_source_id    text,
+    customer_name       text,
+    intent_label        text,
+    customer_need       text,
+    buying_stage        text,
+    urgency             text,
+    confidence          numeric,
+    recommended_approach text,
+    suggested_replies   jsonb not null default '[]'::jsonb,
+    raw_ai              jsonb not null default '{}'::jsonb,
+    created_at          timestamptz not null default now()
+);
+
+create index if not exists ai_reply_suggestions_post_id_idx on public.ai_reply_suggestions (post_id);
+create index if not exists ai_reply_suggestions_created_at_idx on public.ai_reply_suggestions (created_at desc);
+
+alter table public.ai_reply_suggestions enable row level security;
+
+do $$ begin
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='ai_reply_suggestions' and policyname='allow anon insert ai reply suggestions') then
+    create policy "allow anon insert ai reply suggestions" on public.ai_reply_suggestions for insert to anon with check (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='ai_reply_suggestions' and policyname='allow anon select ai reply suggestions') then
+    create policy "allow anon select ai reply suggestions" on public.ai_reply_suggestions for select to anon using (true);
+  end if;
+end $$;
+
+-- ── comment_logs ────────────────────────────────────────────
+create table if not exists public.comment_logs (
+    id                bigint generated by default as identity primary key,
+    staff_id          text,
+    staff_name        text,
+    staff_username    text,
+    facebook_user_id  text,
+    post_id           text not null,
+    group_id          text,
+    post_url          text,
+    comment_text      text not null,
+    comment_image_url text,
+    comment_id        text,
+    page_id           text,
+    status            text not null check (status in ('success', 'failed')),
+    error_message     text,
+    created_at        timestamptz not null default now()
+);
+
+alter table public.comment_logs add column if not exists comment_image_url text;
+
+create index if not exists comment_logs_created_at_idx on public.comment_logs (created_at desc);
+create index if not exists comment_logs_staff_id_idx on public.comment_logs (staff_id);
+create index if not exists comment_logs_post_id_idx on public.comment_logs (post_id);
+
+alter table public.comment_logs enable row level security;
+
+do $$ begin
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='comment_logs' and policyname='allow anon insert comment logs') then
+    create policy "allow anon insert comment logs" on public.comment_logs for insert to anon with check (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='comment_logs' and policyname='allow anon select comment logs') then
+    create policy "allow anon select comment logs" on public.comment_logs for select to anon using (true);
+  end if;
+end $$;
+
+-- ── post_comments ───────────────────────────────────────────
+create table if not exists public.post_comments (
+    id                        bigint generated by default as identity primary key,
+    source                    text not null default 'facebook',
+    post_id                   text not null,
+    group_id                  text,
+    post_url                  text,
+    comment_id                text not null unique,
+    parent_comment_id         text,
+    depth                     integer not null default 0,
+    author_id                 text,
+    author_name               text,
+    message                   text,
+    attachment_type           text,
+    created_time              timestamptz,
+    matched_keywords          jsonb not null default '[]'::jsonb,
+    is_matched                boolean not null default false,
+    raw_comment               jsonb not null default '{}'::jsonb,
+    fetched_by_staff_id       text,
+    fetched_by_staff_name     text,
+    fetched_by_staff_username text,
+    fetched_at                timestamptz not null default now()
+);
+
+alter table public.post_comments add column if not exists source text not null default 'facebook';
+
+create index if not exists post_comments_source_idx on public.post_comments (source);
+create index if not exists post_comments_post_id_idx on public.post_comments (post_id);
+create index if not exists post_comments_created_time_idx on public.post_comments (created_time desc);
+create index if not exists post_comments_is_matched_idx on public.post_comments (is_matched);
+
+alter table public.post_comments enable row level security;
+
+do $$ begin
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='post_comments' and policyname='allow anon insert post comments') then
+    create policy "allow anon insert post comments" on public.post_comments for insert to anon with check (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='post_comments' and policyname='allow anon select post comments') then
+    create policy "allow anon select post comments" on public.post_comments for select to anon using (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='post_comments' and policyname='allow anon update post comments') then
+    create policy "allow anon update post comments" on public.post_comments for update to anon using (true) with check (true);
+  end if;
+end $$;
+
+-- ── post_comment_summaries ──────────────────────────────────
+create table if not exists public.post_comment_summaries (
+    id                    bigint generated by default as identity primary key,
+    post_id               text not null,
+    group_id              text,
+    post_url              text,
+    post_author           text,
+    post_text             text,
+    comment_count         integer not null default 0,
+    fetched_comment_count integer not null default 0,
+    comment_authors_count integer not null default 0,
+    summary               text,
+    sentiment             text,
+    urgency               text,
+    main_topics           jsonb not null default '[]'::jsonb,
+    customer_intents      jsonb not null default '[]'::jsonb,
+    top_questions         jsonb not null default '[]'::jsonb,
+    notable_comments      jsonb not null default '[]'::jsonb,
+    lead_signals          jsonb not null default '[]'::jsonb,
+    recommended_action    text,
+    spam_or_noise_count   integer not null default 0,
+    raw_ai                jsonb not null default '{}'::jsonb,
+    created_by_staff_id   text,
+    created_by_staff_name text,
+    created_at            timestamptz not null default now()
+);
+
+create index if not exists post_comment_summaries_post_id_idx on public.post_comment_summaries (post_id);
+create index if not exists post_comment_summaries_created_at_idx on public.post_comment_summaries (created_at desc);
+
+alter table public.post_comment_summaries enable row level security;
+
+do $$ begin
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='post_comment_summaries' and policyname='allow anon insert post comment summaries') then
+    create policy "allow anon insert post comment summaries" on public.post_comment_summaries for insert to anon with check (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='post_comment_summaries' and policyname='allow anon select post comment summaries') then
+    create policy "allow anon select post comment summaries" on public.post_comment_summaries for select to anon using (true);
+  end if;
+end $$;
+
+-- ── business_profiles ───────────────────────────────────────
+create table if not exists public.business_profiles (
+    id             text primary key default 'default',
+    business_name  text,
+    phone          text,
+    address        text,
+    why_choose_us  text,
+    extra_notes    text,
+    created_at     timestamptz not null default now(),
+    updated_at     timestamptz not null default now()
+);
+
+drop trigger if exists business_profiles_set_updated_at on public.business_profiles;
+create trigger business_profiles_set_updated_at
+before update on public.business_profiles
+for each row execute function public.set_updated_at();
+
+alter table public.business_profiles enable row level security;
+
+do $$ begin
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='business_profiles' and policyname='allow anon select business profile') then
+    create policy "allow anon select business profile" on public.business_profiles for select to anon using (id = 'default');
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='business_profiles' and policyname='allow anon insert business profile') then
+    create policy "allow anon insert business profile" on public.business_profiles for insert to anon with check (id = 'default');
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='business_profiles' and policyname='allow anon update business profile') then
+    create policy "allow anon update business profile" on public.business_profiles for update to anon using (id = 'default') with check (id = 'default');
+  end if;
+end $$;
+
+-- ── View thống kê comment theo nhân sự ──────────────────────
+create or replace view public.comment_daily_staff_stats
+with (security_invoker = true) as
+select
+  (created_at at time zone 'Asia/Ho_Chi_Minh')::date as comment_date,
+  coalesce(nullif(staff_id, ''), 'unknown') as staff_id,
+  coalesce(nullif(staff_name, ''), 'Chưa có tên') as staff_name,
+  coalesce(nullif(staff_username, ''), 'unknown') as staff_username,
+  coalesce(nullif(facebook_user_id, ''), 'unknown') as facebook_user_id,
+  count(distinct post_id) as successful_post_count,
+  count(*) as successful_comment_count,
+  min(created_at) as first_success_at,
+  max(created_at) as last_success_at
+from public.comment_logs
+where status = 'success'
+group by 1, 2, 3, 4, 5;
+
+grant select on public.comment_daily_staff_stats to anon, authenticated;
+
+-- ── Storage bucket ảnh comment ──────────────────────────────
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'comment-images',
+  'comment-images',
+  true,
+  8388608,
+  array['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+)
+on conflict (id) do update
+set public = excluded.public,
+    file_size_limit = excluded.file_size_limit,
+    allowed_mime_types = excluded.allowed_mime_types;
+
+do $$ begin
+  if not exists (select 1 from pg_policies where schemaname='storage' and tablename='objects' and policyname='allow anon upload comment images') then
+    create policy "allow anon upload comment images" on storage.objects for insert to anon with check (bucket_id = 'comment-images');
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='storage' and tablename='objects' and policyname='allow anon select comment images') then
+    create policy "allow anon select comment images" on storage.objects for select to anon using (bucket_id = 'comment-images');
+  end if;
+end $$;
+
+-- ── RLS cho bảng core còn lại ───────────────────────────────
+alter table public.groups disable row level security;
+alter table public.telegram_chat_ids disable row level security;
+
+-- ── Reload PostgREST schema cache ───────────────────────────
+select pg_notify('pgrst', 'reload schema');
+
+-- ── Kiểm tra: liệt kê tất cả bảng đã tạo ────────────────────
+select
+  c.relname as table_name,
+  c.relrowsecurity as rls_enabled
+from pg_class c
+join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public'
+  and c.relkind = 'r'
+  and c.relname in (
+    'groups', 'telegram_chat_ids', 'app_kv', 'staff_users', 'managed_channels',
+    'content_scripts', 'content_tasks', 'content_script_blocks', 'customer_ai_settings',
+    'seen_posts', 'classifications', 'leads', 'ai_reply_suggestions',
+    'comment_logs', 'post_comments', 'post_comment_summaries', 'business_profiles'
+  )
+order by c.relname;
