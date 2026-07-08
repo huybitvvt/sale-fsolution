@@ -41,7 +41,7 @@ export function AuthPanel({ mode, status, onLogin, onSetup }: Props) {
       <section className="auth-shell">
         <div className="auth-brand">
           <div className="auth-logo-card">
-            <img src="/st-real-logo.jpg" alt="Seeding Fsolution" />
+            <img src="/LOGO4_XOANEN.png" alt="Seeding Fsolution" />
           </div>
           <div className="auth-brand-copy">
             <div className="auth-kicker">Seeding Fsolution</div>
@@ -68,7 +68,7 @@ export function AuthPanel({ mode, status, onLogin, onSetup }: Props) {
 
         <form className="auth-card" onSubmit={onSubmit}>
           <div className="auth-form-logo">
-            <img src="/st-real-logo.jpg" alt="Seeding Fsolution" />
+            <img src="/LOGO4_XOANEN.png" alt="Seeding Fsolution" />
           </div>
           <div className="auth-title">{isSetup ? 'Setup tài khoản đầu tiên' : 'Đăng nhập'}</div>
           <div className="auth-sub">

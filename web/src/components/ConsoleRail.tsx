@@ -16,7 +16,7 @@ export function ConsoleRail({ activeView, onNavigate, collapsed = false, onToggl
   return (
     <aside className={`console-rail${collapsed ? ' collapsed' : ''}`}>
       <div className="console-rail-brand">
-        <img className="console-logo" src="/st-real-logo.jpg" alt="Seeding Fsolution" />
+        <img className="console-logo" src="/LOGO4_XOANEN.png" alt="Seeding Fsolution" />
         <div className="console-rail-title">
           <b>Seeding</b>
           <span>Fsolution</span>

@@ -2850,7 +2850,7 @@ export function MonitorPage() {
     return (
       <main className="auth-page">
         <div className="auth-loading">
-          <img src="/st-real-logo.jpg" alt="Seeding Fsolution" />
+          <img src="/LOGO4_XOANEN.png" alt="Seeding Fsolution" />
           <div className="auth-loading-text">
             <b>Seeding Fsolution</b>
             <span>Đang kiểm tra phiên đăng nhập...</span>

@@ -8,7 +8,7 @@ const MonitorPage = nextDynamic(
     loading: () => (
       <main className="auth-page">
         <div className="auth-loading">
-          <img src="/st-real-logo.jpg" alt="Seeding Fsolution" />
+          <img src="/LOGO4_XOANEN.png" alt="Seeding Fsolution" />
           <div className="auth-loading-text">
             <b>Seeding Fsolution</b>
             <span>Đang tải giao diện...</span>

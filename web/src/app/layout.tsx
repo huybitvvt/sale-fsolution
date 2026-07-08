@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   title: 'Seeding Fsolution',
   description: 'Theo dõi bài viết, lọc bình luận và quản lý sale đa kênh',
   icons: {
-    icon: '/st-real-logo.jpg',
+    icon: '/LOGO4_XOANEN.png',
     shortcut: '/favicon.ico',
   },
 };
