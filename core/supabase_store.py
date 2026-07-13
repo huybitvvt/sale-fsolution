@@ -24,7 +24,16 @@ from dotenv import load_dotenv
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_BASE_DIR, '.env'), override=True)
 
-SUPABASE_URL = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+
+def _normalize_supabase_url(value: str) -> str:
+    url = (value or '').strip().rstrip('/')
+    for suffix in ('/rest/v1', '/storage/v1'):
+        if url.endswith(suffix):
+            return url[: -len(suffix)].rstrip('/')
+    return url
+
+
+SUPABASE_URL = _normalize_supabase_url(os.environ.get('SUPABASE_URL') or os.environ.get('VITE_SUPABASE_URL') or '')
 SUPABASE_KEY = (
     os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
     or os.environ.get('SUPABASE_ANON_KEY')
@@ -59,6 +68,24 @@ def _url(path: str) -> str:
     return f'{SUPABASE_URL}/rest/v1/{path.lstrip("/")}'
 
 
+def _format_supabase_error(response: requests.Response) -> str:
+    message = response.text
+    code = ''
+    if response.headers.get('content-type', '').startswith('application/json'):
+        try:
+            body = response.json()
+            code = str(body.get('code') or '')
+            message = body.get('message') or message
+        except Exception:
+            pass
+    if code == '42501' or 'row-level security policy' in message.lower():
+        message = (
+            f'{message}. Supabase đang chặn ghi bởi RLS; chạy file SQL fix tương ứng '
+            f'(ví dụ supabase_app_kv_rls_fix.sql cho app_kv) hoặc cấu hình SUPABASE_SERVICE_ROLE_KEY ở backend.'
+        )
+    return message[:600]
+
+
 def _request(method: str, path: str, **kwargs) -> requests.Response:
     if not is_enabled():
         raise RuntimeError('Supabase chưa được cấu hình (thiếu SUPABASE_URL/KEY)')
@@ -68,7 +95,7 @@ def _request(method: str, path: str, **kwargs) -> requests.Response:
         try:
             r = requests.request(method, _url(path), headers=headers, timeout=_TIMEOUT, **kwargs)
             if r.status_code >= 400:
-                raise RuntimeError(f'Supabase {method} {path} {r.status_code}: {r.text}')
+                raise RuntimeError(f'Supabase {method} {path} {r.status_code}: {_format_supabase_error(r)}')
             return r
         except (requests.Timeout, requests.ConnectionError) as e:
             last_err = e
@@ -82,11 +109,17 @@ def ping() -> dict:
         return {'ok': False, 'error': 'Chưa cấu hình SUPABASE_URL/KEY'}
     try:
         r = requests.get(
-            f'{SUPABASE_URL}/rest/v1/',
+            f'{SUPABASE_URL}/rest/v1/app_kv',
             headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+            params={'select': 'key', 'limit': '1'},
             timeout=_TIMEOUT,
         )
-        return {'ok': r.status_code < 500, 'status': r.status_code}
+        result = {'ok': 200 <= r.status_code < 400, 'status': r.status_code}
+        if r.status_code in (401, 403):
+            result['error'] = 'Supabase từ chối API key hoặc key không có quyền'
+        elif r.status_code >= 400:
+            result['error'] = r.text[:300]
+        return result
     except Exception as e:
         return {'ok': False, 'error': str(e)}
 

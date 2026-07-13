@@ -1,0 +1,171 @@
+-- Integrate seeding Supabase with F-Solution Flow and the task app.
+-- Run this on the same Supabase project used by seedingfacebook.
+
+create extension if not exists pgcrypto;
+
+create table if not exists public.users (
+    user_id     text primary key,
+    full_name   text not null,
+    username    text,
+    email       text,
+    phone       text,
+    role        text not null default 'staff',
+    avatar_url  text,
+    enabled     boolean not null default true,
+    created_at  timestamptz not null default now(),
+    updated_at  timestamptz not null default now()
+);
+
+create table if not exists public.projects (
+    project_id      uuid primary key default gen_random_uuid(),
+    name            text not null,
+    pricing         numeric not null default 0,
+    status          text not null default 'active',
+    owner_user_id   text references public.users(user_id) on delete set null,
+    content_blocks  jsonb not null default '{}'::jsonb,
+    documents       jsonb not null default '[]'::jsonb,
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz not null default now()
+);
+
+create table if not exists public.features (
+    feature_id      uuid primary key default gen_random_uuid(),
+    project_id      uuid not null references public.projects(project_id) on delete cascade,
+    name            text not null,
+    status          text not null default 'pending',
+    deadline        timestamptz,
+    content_blocks  jsonb not null default '{}'::jsonb,
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz not null default now()
+);
+
+create table if not exists public.tasks (
+    task_id         uuid primary key default gen_random_uuid(),
+    feature_id      uuid not null references public.features(feature_id) on delete cascade,
+    parent_task_id  uuid references public.tasks(task_id) on delete cascade,
+    name            text not null,
+    assigned_to     text references public.users(user_id) on delete set null,
+    description     text,
+    image_url       text,
+    content_blocks  jsonb not null default '{}'::jsonb,
+    deadline        timestamptz,
+    status          text not null default 'pending',
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz not null default now()
+);
+
+create index if not exists idx_features_project_id on public.features(project_id);
+create index if not exists idx_tasks_feature_id on public.tasks(feature_id);
+create index if not exists idx_tasks_parent_task_id on public.tasks(parent_task_id);
+create index if not exists idx_tasks_assigned_to on public.tasks(assigned_to);
+create index if not exists idx_tasks_feature_root on public.tasks(feature_id) where parent_task_id is null;
+
+-- Alias for requests/tools that ask for the singular "task" table.
+create or replace view public.task as
+select * from public.tasks;
+
+-- Flow reads/writes marketing leads with Vietnamese column names.
+-- Seeding already writes leads with customer_* columns. Keep one table and sync both shapes.
+alter table public.leads add column if not exists ho_ten text;
+alter table public.leads add column if not exists so_dien_thoai text;
+alter table public.leads add column if not exists nguon text;
+alter table public.leads add column if not exists anh_nhu_cau_url text;
+alter table public.leads add column if not exists trang_thai text;
+alter table public.leads add column if not exists hop_le boolean;
+alter table public.leads add column if not exists thu_nhap numeric not null default 0;
+alter table public.leads add column if not exists la_trung boolean not null default false;
+alter table public.leads add column if not exists phu_trach text references public.users(user_id) on delete set null;
+
+create or replace function public.sync_flow_lead_fields()
+returns trigger
+language plpgsql
+as $$
+begin
+    new.customer_name := coalesce(nullif(new.customer_name, ''), nullif(new.ho_ten, ''));
+    new.customer_phone := coalesce(nullif(new.customer_phone, ''), nullif(new.so_dien_thoai, ''));
+    new.ho_ten := coalesce(nullif(new.ho_ten, ''), nullif(new.customer_name, ''));
+    new.so_dien_thoai := coalesce(nullif(new.so_dien_thoai, ''), nullif(new.customer_phone, ''));
+    new.nguon := coalesce(nullif(new.nguon, ''), nullif(new.lead_source, ''), nullif(new.platform, ''), 'seeding');
+    new.source_id := coalesce(nullif(new.source_id, ''), nullif(new.post_id, ''), nullif(new.comment_id, ''), nullif(new.group_id, ''));
+    new.trang_thai := coalesce(nullif(new.trang_thai, ''), case when new.contact_status in ('lost', 'rejected') then 'unqualified' else 'qualified' end);
+    new.hop_le := coalesce(new.hop_le, new.trang_thai = 'qualified');
+
+    if new.phu_trach is null and nullif(new.created_by_staff_id, '') is not null then
+        select u.user_id
+        into new.phu_trach
+        from public.users u
+        where u.user_id = new.created_by_staff_id
+           or lower(u.username) = lower(new.created_by_staff_username)
+        limit 1;
+    end if;
+
+    if new.lead_key is null or new.lead_key = '' then
+        new.lead_key := encode(
+            digest(
+                coalesce(new.customer_phone, '') || '|' ||
+                coalesce(new.customer_name, '') || '|' ||
+                coalesce(new.source_id, '') || '|' ||
+                gen_random_uuid()::text,
+                'sha1'
+            ),
+            'hex'
+        );
+    end if;
+
+    new.updated_at := now();
+    return new;
+end;
+$$;
+
+drop trigger if exists trg_sync_flow_lead_fields on public.leads;
+create trigger trg_sync_flow_lead_fields
+before insert or update on public.leads
+for each row
+execute function public.sync_flow_lead_fields();
+
+update public.leads
+set ho_ten = coalesce(ho_ten, customer_name),
+    so_dien_thoai = coalesce(so_dien_thoai, customer_phone),
+    nguon = coalesce(nguon, lead_source, platform, 'seeding'),
+    trang_thai = coalesce(trang_thai, 'qualified'),
+    hop_le = coalesce(hop_le, true)
+where ho_ten is null
+   or so_dien_thoai is null
+   or nguon is null
+   or trang_thai is null
+   or hop_le is null;
+
+-- One-way sync: seeding staff_users -> Flow/task users.
+insert into public.users (user_id, full_name, username, role, enabled)
+select
+    s.id,
+    coalesce(nullif(s.name, ''), nullif(s.username, ''), s.id) as full_name,
+    s.username,
+    coalesce(nullif(s.role, ''), 'staff') as role,
+    coalesce(s.enabled, true) as enabled
+from public.staff_users s
+on conflict (user_id) do update
+set full_name = excluded.full_name,
+    username = excluded.username,
+    role = excluded.role,
+    enabled = excluded.enabled,
+    updated_at = now();
+
+alter table public.users disable row level security;
+alter table public.projects disable row level security;
+alter table public.features disable row level security;
+alter table public.tasks disable row level security;
+
+grant usage on schema public to anon, authenticated, service_role;
+grant select, insert, update, delete on public.users to anon, authenticated, service_role;
+grant select, insert, update, delete on public.projects to anon, authenticated, service_role;
+grant select, insert, update, delete on public.features to anon, authenticated, service_role;
+grant select, insert, update, delete on public.tasks to anon, authenticated, service_role;
+grant select on public.task to anon, authenticated, service_role;
+
+notify pgrst, 'reload schema';
+
+select 'users' as table_name, count(*) as rows from public.users
+union all select 'projects', count(*) from public.projects
+union all select 'features', count(*) from public.features
+union all select 'tasks', count(*) from public.tasks;

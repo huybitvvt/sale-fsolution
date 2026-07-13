@@ -102,9 +102,20 @@ PORT = int(os.environ.get('PORT', 5000))
 SCHEDULED_POST_WORKER_INTERVAL_SECONDS = int(os.environ.get('SCHEDULED_POST_WORKER_INTERVAL_SECONDS', '30') or '30')
 WEB_UI_URL = (os.environ.get('WEB_UI_URL') or 'http://localhost:3000').rstrip('/')
 USE_LEGACY_UI = os.environ.get('USE_LEGACY_UI', '').lower() in ('1', 'true', 'yes')
-SUPABASE_URL = os.environ.get('SUPABASE_URL') or os.environ.get('VITE_SUPABASE_URL', '')
+
+
+def _normalize_supabase_url(value: str) -> str:
+    url = (value or '').strip().rstrip('/')
+    for suffix in ('/rest/v1', '/storage/v1'):
+        if url.endswith(suffix):
+            return url[: -len(suffix)].rstrip('/')
+    return url
+
+
+SUPABASE_URL = _normalize_supabase_url(os.environ.get('SUPABASE_URL') or os.environ.get('VITE_SUPABASE_URL') or '')
 SUPABASE_KEY = (
     os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    or os.environ.get('SUPABASE_ANON_KEY')
     or os.environ.get('SUPABASE_PUBLISHABLE_KEY')
     or os.environ.get('VITE_SUPABASE_PUBLISHABLE_KEY', '')
 )
