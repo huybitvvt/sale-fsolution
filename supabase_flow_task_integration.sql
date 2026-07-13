@@ -151,11 +151,6 @@ set full_name = excluded.full_name,
     enabled = excluded.enabled,
     updated_at = now();
 
-alter table public.users disable row level security;
-alter table public.projects disable row level security;
-alter table public.features disable row level security;
-alter table public.tasks disable row level security;
-
 grant usage on schema public to anon, authenticated, service_role;
 grant select, insert, update, delete on public.users to anon, authenticated, service_role;
 grant select, insert, update, delete on public.projects to anon, authenticated, service_role;
@@ -163,9 +158,36 @@ grant select, insert, update, delete on public.features to anon, authenticated, 
 grant select, insert, update, delete on public.tasks to anon, authenticated, service_role;
 grant select on public.task to anon, authenticated, service_role;
 
+alter table public.users enable row level security;
+alter table public.projects enable row level security;
+alter table public.features enable row level security;
+alter table public.tasks enable row level security;
+
+drop policy if exists "users_all" on public.users;
+create policy "users_all" on public.users for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "projects_all" on public.projects;
+create policy "projects_all" on public.projects for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "features_all" on public.features;
+create policy "features_all" on public.features for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "tasks_all" on public.tasks;
+create policy "tasks_all" on public.tasks for all to anon, authenticated using (true) with check (true);
+
 notify pgrst, 'reload schema';
 
 select 'users' as table_name, count(*) as rows from public.users
 union all select 'projects', count(*) from public.projects
 union all select 'features', count(*) from public.features
 union all select 'tasks', count(*) from public.tasks;
+
+select
+  tablename,
+  policyname,
+  cmd,
+  roles
+from pg_policies
+where schemaname = 'public'
+  and tablename in ('users', 'projects', 'features', 'tasks')
+order by tablename, policyname;
