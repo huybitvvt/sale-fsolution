@@ -16,6 +16,20 @@ create table if not exists public.users (
     updated_at  timestamptz not null default now()
 );
 
+alter table public.users add column if not exists department text;
+alter table public.users add column if not exists status text not null default 'active';
+alter table public.users add column if not exists access_role text;
+
+create table if not exists public.customers (
+    customer_id  uuid primary key default gen_random_uuid(),
+    name         text not null,
+    phone        text,
+    email        text,
+    department   text,
+    created_at   timestamptz not null default now(),
+    updated_at   timestamptz not null default now()
+);
+
 create table if not exists public.projects (
     project_id      uuid primary key default gen_random_uuid(),
     name            text not null,
@@ -27,6 +41,8 @@ create table if not exists public.projects (
     created_at      timestamptz not null default now(),
     updated_at      timestamptz not null default now()
 );
+
+alter table public.projects add column if not exists customer_id uuid references public.customers(customer_id) on delete set null;
 
 create table if not exists public.features (
     feature_id      uuid primary key default gen_random_uuid(),
@@ -153,18 +169,23 @@ set full_name = excluded.full_name,
 
 grant usage on schema public to anon, authenticated, service_role;
 grant select, insert, update, delete on public.users to anon, authenticated, service_role;
+grant select, insert, update, delete on public.customers to anon, authenticated, service_role;
 grant select, insert, update, delete on public.projects to anon, authenticated, service_role;
 grant select, insert, update, delete on public.features to anon, authenticated, service_role;
 grant select, insert, update, delete on public.tasks to anon, authenticated, service_role;
 grant select on public.task to anon, authenticated, service_role;
 
 alter table public.users enable row level security;
+alter table public.customers enable row level security;
 alter table public.projects enable row level security;
 alter table public.features enable row level security;
 alter table public.tasks enable row level security;
 
 drop policy if exists "users_all" on public.users;
 create policy "users_all" on public.users for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "customers_all" on public.customers;
+create policy "customers_all" on public.customers for all to anon, authenticated using (true) with check (true);
 
 drop policy if exists "projects_all" on public.projects;
 create policy "projects_all" on public.projects for all to anon, authenticated using (true) with check (true);
@@ -178,6 +199,7 @@ create policy "tasks_all" on public.tasks for all to anon, authenticated using (
 notify pgrst, 'reload schema';
 
 select 'users' as table_name, count(*) as rows from public.users
+union all select 'customers', count(*) from public.customers
 union all select 'projects', count(*) from public.projects
 union all select 'features', count(*) from public.features
 union all select 'tasks', count(*) from public.tasks;
@@ -189,5 +211,5 @@ select
   roles
 from pg_policies
 where schemaname = 'public'
-  and tablename in ('users', 'projects', 'features', 'tasks')
+  and tablename in ('users', 'customers', 'projects', 'features', 'tasks')
 order by tablename, policyname;
