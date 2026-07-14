@@ -81,6 +81,16 @@ set can_view = excluded.can_view,
     can_manage = excluded.can_manage,
     updated_at = now();
 
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+    new.updated_at := now();
+    return new;
+end;
+$$;
+
 create table if not exists public.customers (
     customer_id  uuid primary key default gen_random_uuid(),
     name         text not null,
@@ -104,6 +114,136 @@ create table if not exists public.projects (
 );
 
 alter table public.projects add column if not exists customer_id uuid references public.customers(customer_id) on delete set null;
+
+-- Legacy finance / ticket modules used by BA, CS and Dashboard pages.
+create table if not exists public.income_rate_config (
+    id          uuid primary key default gen_random_uuid(),
+    project_id  uuid not null references public.projects(project_id) on delete cascade,
+    bo_phan     text not null check (bo_phan in ('marketing', 'sale', 'ba', 'product', 'dev', 'cs')),
+    ty_le       numeric(5,2) not null,
+    created_at  timestamptz not null default now(),
+    updated_at  timestamptz not null default now(),
+    unique (project_id, bo_phan)
+);
+
+create table if not exists public.point_config (
+    id          uuid primary key default gen_random_uuid(),
+    project_id  uuid not null references public.projects(project_id) on delete cascade,
+    loai_ticket text not null,
+    bo_phan     text not null check (bo_phan in ('dev', 'cs')),
+    diem        int not null,
+    created_at  timestamptz not null default now(),
+    updated_at  timestamptz not null default now(),
+    unique (project_id, bo_phan, loai_ticket)
+);
+
+create table if not exists public.amc_payments (
+    id              uuid primary key default gen_random_uuid(),
+    project_id      uuid not null references public.projects(project_id) on delete cascade,
+    nam_thu         int not null default 1,
+    phan_sale       numeric not null default 0,
+    phan_cs         numeric not null default 0,
+    phan_dev        numeric not null default 0,
+    phan_product    numeric not null default 0,
+    phan_cong_ty    numeric not null default 0,
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz not null default now(),
+    unique (project_id, nam_thu)
+);
+
+create table if not exists public.tickets (
+    id                    uuid primary key default gen_random_uuid(),
+    ma_ticket             text not null unique,
+    tieu_de               text not null,
+    project_id            uuid references public.projects(project_id) on delete set null,
+    loai                  text,
+    bo_phan               text not null,
+    phu_trach             text references public.users(user_id) on delete set null,
+    trang_thai            text not null default 'pending',
+    khach_xac_nhan        boolean not null default false,
+    loi_sau_trien_khai    boolean not null default false,
+    thu_nhap              numeric not null default 0,
+    diem                  int not null default 0,
+    so_lan_reopen         int not null default 0,
+    bug_do_dev            boolean not null default false,
+    co_tai_lieu           boolean not null default false,
+    hop_le                boolean not null default false,
+    do_uu_tien            text not null default 'medium',
+    tai_lieu_url          text,
+    mo_ta                 text,
+    content_blocks        jsonb not null default '{}'::jsonb,
+    created_at            timestamptz not null default now(),
+    updated_at            timestamptz not null default now()
+);
+
+create table if not exists public.ticket_payment_stages (
+    id          uuid primary key default gen_random_uuid(),
+    ticket_id   uuid not null references public.tickets(id) on delete cascade,
+    giai_doan   text not null,
+    da_tra      boolean not null default false,
+    created_at  timestamptz not null default now(),
+    updated_at  timestamptz not null default now(),
+    unique (ticket_id, giai_doan)
+);
+
+drop trigger if exists trg_income_rate_config_updated_at on public.income_rate_config;
+create trigger trg_income_rate_config_updated_at
+before update on public.income_rate_config
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists trg_point_config_updated_at on public.point_config;
+create trigger trg_point_config_updated_at
+before update on public.point_config
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists trg_amc_payments_updated_at on public.amc_payments;
+create trigger trg_amc_payments_updated_at
+before update on public.amc_payments
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists trg_tickets_updated_at on public.tickets;
+create trigger trg_tickets_updated_at
+before update on public.tickets
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists trg_ticket_payment_stages_updated_at on public.ticket_payment_stages;
+create trigger trg_ticket_payment_stages_updated_at
+before update on public.ticket_payment_stages
+for each row
+execute function public.set_updated_at();
+
+create or replace function public.seed_ticket_payment_stages()
+returns trigger
+language plpgsql
+as $$
+begin
+    insert into public.ticket_payment_stages (ticket_id, giai_doan, da_tra)
+    values
+        (new.id, 'done', false),
+        (new.id, 'acceptance', false),
+        (new.id, 'golive', false)
+    on conflict (ticket_id, giai_doan) do nothing;
+    return new;
+end;
+$$;
+
+drop trigger if exists trg_seed_ticket_payment_stages on public.tickets;
+create trigger trg_seed_ticket_payment_stages
+after insert on public.tickets
+for each row
+execute function public.seed_ticket_payment_stages();
+
+insert into public.ticket_payment_stages (ticket_id, giai_doan, da_tra)
+select t.id, s.giai_doan, false
+from public.tickets t
+cross join (values ('done'), ('acceptance'), ('golive')) as s(giai_doan)
+left join public.ticket_payment_stages tps
+  on tps.ticket_id = t.id and tps.giai_doan = s.giai_doan
+where tps.ticket_id is null;
 
 create table if not exists public.features (
     feature_id      uuid primary key default gen_random_uuid(),
@@ -136,6 +276,14 @@ create index if not exists idx_tasks_feature_id on public.tasks(feature_id);
 create index if not exists idx_tasks_parent_task_id on public.tasks(parent_task_id);
 create index if not exists idx_tasks_assigned_to on public.tasks(assigned_to);
 create index if not exists idx_tasks_feature_root on public.tasks(feature_id) where parent_task_id is null;
+create index if not exists idx_income_rate_config_project_id on public.income_rate_config(project_id);
+create index if not exists idx_point_config_project_id on public.point_config(project_id);
+create index if not exists idx_amc_payments_project_id on public.amc_payments(project_id);
+create index if not exists idx_tickets_bo_phan on public.tickets(bo_phan);
+create index if not exists idx_tickets_trang_thai on public.tickets(trang_thai);
+create index if not exists idx_tickets_phu_trach on public.tickets(phu_trach);
+create index if not exists idx_tickets_project_id on public.tickets(project_id);
+create index if not exists idx_ticket_payment_stages_ticket_id on public.ticket_payment_stages(ticket_id);
 
 -- Alias for requests/tools that ask for the singular "task" table.
 create or replace view public.task as
@@ -251,6 +399,11 @@ grant select, insert, update, delete on public.access_roles to anon, authenticat
 grant select, insert, update, delete on public.role_permissions to anon, authenticated, service_role;
 grant select, insert, update, delete on public.customers to anon, authenticated, service_role;
 grant select, insert, update, delete on public.projects to anon, authenticated, service_role;
+grant select, insert, update, delete on public.income_rate_config to anon, authenticated, service_role;
+grant select, insert, update, delete on public.point_config to anon, authenticated, service_role;
+grant select, insert, update, delete on public.amc_payments to anon, authenticated, service_role;
+grant select, insert, update, delete on public.tickets to anon, authenticated, service_role;
+grant select, insert, update, delete on public.ticket_payment_stages to anon, authenticated, service_role;
 grant select, insert, update, delete on public.features to anon, authenticated, service_role;
 grant select, insert, update, delete on public.tasks to anon, authenticated, service_role;
 grant select on public.task to anon, authenticated, service_role;
@@ -260,6 +413,11 @@ alter table public.access_roles enable row level security;
 alter table public.role_permissions enable row level security;
 alter table public.customers enable row level security;
 alter table public.projects enable row level security;
+alter table public.income_rate_config enable row level security;
+alter table public.point_config enable row level security;
+alter table public.amc_payments enable row level security;
+alter table public.tickets enable row level security;
+alter table public.ticket_payment_stages enable row level security;
 alter table public.features enable row level security;
 alter table public.tasks enable row level security;
 
@@ -278,6 +436,21 @@ create policy "customers_all" on public.customers for all to anon, authenticated
 drop policy if exists "projects_all" on public.projects;
 create policy "projects_all" on public.projects for all to anon, authenticated using (true) with check (true);
 
+drop policy if exists "income_rate_config_all" on public.income_rate_config;
+create policy "income_rate_config_all" on public.income_rate_config for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "point_config_all" on public.point_config;
+create policy "point_config_all" on public.point_config for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "amc_payments_all" on public.amc_payments;
+create policy "amc_payments_all" on public.amc_payments for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "tickets_all" on public.tickets;
+create policy "tickets_all" on public.tickets for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "ticket_payment_stages_all" on public.ticket_payment_stages;
+create policy "ticket_payment_stages_all" on public.ticket_payment_stages for all to anon, authenticated using (true) with check (true);
+
 drop policy if exists "features_all" on public.features;
 create policy "features_all" on public.features for all to anon, authenticated using (true) with check (true);
 
@@ -291,6 +464,11 @@ union all select 'access_roles', count(*) from public.access_roles
 union all select 'role_permissions', count(*) from public.role_permissions
 union all select 'customers', count(*) from public.customers
 union all select 'projects', count(*) from public.projects
+union all select 'income_rate_config', count(*) from public.income_rate_config
+union all select 'point_config', count(*) from public.point_config
+union all select 'amc_payments', count(*) from public.amc_payments
+union all select 'tickets', count(*) from public.tickets
+union all select 'ticket_payment_stages', count(*) from public.ticket_payment_stages
 union all select 'features', count(*) from public.features
 union all select 'tasks', count(*) from public.tasks;
 
@@ -301,5 +479,9 @@ select
   roles
 from pg_policies
 where schemaname = 'public'
-  and tablename in ('users', 'access_roles', 'role_permissions', 'customers', 'projects', 'features', 'tasks')
+  and tablename in (
+    'users', 'access_roles', 'role_permissions', 'customers', 'projects',
+    'income_rate_config', 'point_config', 'amc_payments', 'tickets',
+    'ticket_payment_stages', 'features', 'tasks'
+  )
 order by tablename, policyname;
