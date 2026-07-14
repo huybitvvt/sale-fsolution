@@ -22,6 +22,65 @@ alter table public.users add column if not exists status text not null default '
 alter table public.users add column if not exists access_role text;
 alter table public.users add column if not exists password text;
 
+create table if not exists public.access_roles (
+    role_key     text primary key,
+    role_name    text not null,
+    description  text,
+    is_system    boolean not null default false,
+    created_at   timestamptz not null default now(),
+    updated_at   timestamptz not null default now()
+);
+
+create table if not exists public.role_permissions (
+    role_key    text not null references public.access_roles(role_key) on delete cascade,
+    module_key  text not null,
+    can_view    boolean not null default true,
+    can_create  boolean not null default false,
+    can_update  boolean not null default false,
+    can_delete  boolean not null default false,
+    can_manage  boolean not null default false,
+    created_at  timestamptz not null default now(),
+    updated_at  timestamptz not null default now(),
+    primary key (role_key, module_key)
+);
+
+insert into public.access_roles (role_key, role_name, description, is_system)
+values
+    ('admin', 'Admin', 'Toan quyen quan tri he thong, tai khoan, phan quyen va moi module.', true),
+    ('worker', 'Nhan vien', 'Quyen van hanh co ban, khong vao phan quan tri.', true)
+on conflict (role_key) do update
+set role_name = excluded.role_name,
+    description = excluded.description,
+    is_system = excluded.is_system,
+    updated_at = now();
+
+insert into public.role_permissions (role_key, module_key, can_view, can_create, can_update, can_delete, can_manage)
+select 'admin', module_key, true, true, true, true, true
+from (values
+    ('dashboard'), ('customers'), ('marketing'), ('sale'), ('bao_gia'),
+    ('task'), ('ba_sa'), ('dev'), ('cs'), ('settings'), ('accounts')
+) as modules(module_key)
+on conflict (role_key, module_key) do update
+set can_view = excluded.can_view,
+    can_create = excluded.can_create,
+    can_update = excluded.can_update,
+    can_delete = excluded.can_delete,
+    can_manage = excluded.can_manage,
+    updated_at = now();
+
+insert into public.role_permissions (role_key, module_key, can_view, can_create, can_update, can_delete, can_manage)
+select 'worker', module_key, true, true, true, false, false
+from (values
+    ('dashboard'), ('customers'), ('marketing'), ('sale'), ('bao_gia'), ('task')
+) as modules(module_key)
+on conflict (role_key, module_key) do update
+set can_view = excluded.can_view,
+    can_create = excluded.can_create,
+    can_update = excluded.can_update,
+    can_delete = excluded.can_delete,
+    can_manage = excluded.can_manage,
+    updated_at = now();
+
 create table if not exists public.customers (
     customer_id  uuid primary key default gen_random_uuid(),
     name         text not null,
@@ -188,6 +247,8 @@ where password is null
 
 grant usage on schema public to anon, authenticated, service_role;
 grant select, insert, update, delete on public.users to anon, authenticated, service_role;
+grant select, insert, update, delete on public.access_roles to anon, authenticated, service_role;
+grant select, insert, update, delete on public.role_permissions to anon, authenticated, service_role;
 grant select, insert, update, delete on public.customers to anon, authenticated, service_role;
 grant select, insert, update, delete on public.projects to anon, authenticated, service_role;
 grant select, insert, update, delete on public.features to anon, authenticated, service_role;
@@ -195,6 +256,8 @@ grant select, insert, update, delete on public.tasks to anon, authenticated, ser
 grant select on public.task to anon, authenticated, service_role;
 
 alter table public.users enable row level security;
+alter table public.access_roles enable row level security;
+alter table public.role_permissions enable row level security;
 alter table public.customers enable row level security;
 alter table public.projects enable row level security;
 alter table public.features enable row level security;
@@ -202,6 +265,12 @@ alter table public.tasks enable row level security;
 
 drop policy if exists "users_all" on public.users;
 create policy "users_all" on public.users for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "access_roles_all" on public.access_roles;
+create policy "access_roles_all" on public.access_roles for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "role_permissions_all" on public.role_permissions;
+create policy "role_permissions_all" on public.role_permissions for all to anon, authenticated using (true) with check (true);
 
 drop policy if exists "customers_all" on public.customers;
 create policy "customers_all" on public.customers for all to anon, authenticated using (true) with check (true);
@@ -218,6 +287,8 @@ create policy "tasks_all" on public.tasks for all to anon, authenticated using (
 notify pgrst, 'reload schema';
 
 select 'users' as table_name, count(*) as rows from public.users
+union all select 'access_roles', count(*) from public.access_roles
+union all select 'role_permissions', count(*) from public.role_permissions
 union all select 'customers', count(*) from public.customers
 union all select 'projects', count(*) from public.projects
 union all select 'features', count(*) from public.features
@@ -230,5 +301,5 @@ select
   roles
 from pg_policies
 where schemaname = 'public'
-  and tablename in ('users', 'customers', 'projects', 'features', 'tasks')
+  and tablename in ('users', 'access_roles', 'role_permissions', 'customers', 'projects', 'features', 'tasks')
 order by tablename, policyname;
