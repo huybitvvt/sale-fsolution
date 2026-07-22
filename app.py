@@ -1273,6 +1273,7 @@ def _normalise_lead(lead: dict, post_id: str = '') -> dict:
 def _merge_leads_into_memory(leads: list[dict]) -> int:
     global _leads
     changed = 0
+    dirty = False
     for lead in leads or []:
         row = _normalise_lead(lead)
         pid = row.get('post_id')
@@ -1285,11 +1286,15 @@ def _merge_leads_into_memory(leads: list[dict]) -> int:
             continue
         public_row = {k: v for k, v in row.items() if k != 'raw_lead'}
         if key in existing:
-            bucket[existing[key]] = {**bucket[existing[key]], **public_row}
+            next_row = {**bucket[existing[key]], **public_row}
+            if next_row != bucket[existing[key]]:
+                bucket[existing[key]] = next_row
+                dirty = True
         else:
             bucket.append(public_row)
             changed += 1
-    if changed:
+            dirty = True
+    if dirty:
         _save_leads()
     return changed
 
@@ -1549,6 +1554,9 @@ def _supabase_lead_row_to_public(row: dict) -> dict:
         'processed_at': raw.get('processed_at') or row.get('processed_at') or '',
         'processed_by': raw.get('processed_by') or row.get('processed_by_staff_name') or row.get('created_by_staff_name') or '',
         'processed_by_staff_id': raw.get('processed_by_staff_id') or row.get('created_by_staff_id') or '',
+        'created_by_staff_id': row.get('created_by_staff_id') or raw.get('created_by_staff_id') or '',
+        'created_by_staff_name': row.get('created_by_staff_name') or raw.get('created_by_staff_name') or '',
+        'created_by_staff_username': row.get('created_by_staff_username') or raw.get('created_by_staff_username') or '',
         'score': raw.get('score') if raw.get('score') is not None else row.get('score'),
         'lead_level': raw.get('lead_level') or '',
         'lead_level_label': raw.get('lead_level_label') or '',
@@ -1566,6 +1574,31 @@ def _public_leads_dict(leads: dict) -> dict:
         if bucket:
             grouped[str(post_id)] = bucket
     return _filter_deleted_leads(grouped)
+
+
+def _filter_leads_for_current_staff(leads: dict) -> dict:
+    if _is_admin():
+        return leads
+    staff = _current_staff()
+    staff_id = str(staff.get('id') or '').strip()
+    staff_name = str(staff.get('name') or '').strip().lower()
+    staff_username = str(staff.get('username') or '').strip().lower()
+    if not staff_id:
+        return {}
+    filtered: dict[str, list] = {}
+    for post_id, items in (leads or {}).items():
+        owned = []
+        for item in items or []:
+            owner_ids = {
+                str(item.get('processed_by_staff_id') or '').strip(),
+                str(item.get('created_by_staff_id') or '').strip(),
+            }
+            assigned_sale = str(item.get('assigned_sale') or '').strip().lower()
+            if staff_id in owner_ids or assigned_sale in {staff_name, staff_username}:
+                owned.append(item)
+        if owned:
+            filtered[post_id] = owned
+    return filtered
 
 
 def _load_leads_from_supabase(limit: int = 3000) -> tuple[dict, str]:
@@ -4907,7 +4940,23 @@ def _record_tiktok_extension_comment(body: dict) -> tuple[dict, int]:
     if not comment_id.startswith('tiktok_'):
         comment_id = f'tiktok_{comment_id}'
 
-    log = _record_comment_log(final_post_id, 'tiktok', final_url, message, delivery, 'success', comment_id=comment_id)
+    log = _record_comment_log(
+        final_post_id,
+        'tiktok',
+        final_url,
+        message,
+        delivery,
+        'success',
+        comment_id=comment_id,
+        lead_context={
+            'platform': 'tiktok',
+            'customer_name': body.get('customer_name') or body.get('author_name') or body.get('channel_name'),
+            'customer_need': body.get('customer_need') or body.get('comment_text') or body.get('video_title'),
+            'video_title': body.get('video_title'),
+            'channel_name': body.get('channel_name'),
+        },
+        create_lead=not is_manual,
+    )
     rows = [{
         'source': 'tiktok',
         'post_id': final_post_id,
@@ -5207,8 +5256,79 @@ def _filter_posts_for_staff(posts: list, staff_id: str) -> tuple[list, int]:
     return kept, skipped
 
 
+def _commented_post_lead_key(platform: str, post_id: str, staff_id: str) -> str:
+    identity = '|'.join([
+        'commented_post',
+        str(platform or '').strip().lower(),
+        str(post_id or '').strip(),
+        str(staff_id or '').strip(),
+    ])
+    return hashlib.sha1(identity.encode('utf-8')).hexdigest()
+
+
+def _upsert_lead_from_comment_log(log: dict, lead_context: dict | None = None) -> tuple[dict, bool, str]:
+    if str(log.get('status') or '').strip().lower() != 'success':
+        return {}, True, ''
+    context = lead_context if isinstance(lead_context, dict) else {}
+    post_id = str(log.get('post_id') or '').strip()
+    staff_id = str(log.get('staff_id') or '').strip()
+    if not post_id or not staff_id:
+        return {}, True, ''
+
+    platform = str(context.get('platform') or '').strip().lower()
+    if not platform:
+        platform = 'tiktok' if post_id.startswith('tiktok_') or str(log.get('group_id') or '') == 'tiktok' else 'facebook'
+    processor = str(log.get('staff_name') or log.get('staff_username') or 'Nhân sự').strip()
+    customer_name = str(
+        context.get('customer_name')
+        or context.get('author_name')
+        or context.get('channel_name')
+        or 'Ẩn danh'
+    ).strip()
+    customer_need = str(
+        context.get('customer_need')
+        or context.get('post_message')
+        or context.get('video_title')
+        or ''
+    ).strip()
+    outbound_comment = str(log.get('comment_text') or '').strip()
+    phones = extract_phones(customer_need)
+    now = str(log.get('created_at') or datetime.utcnow().isoformat(timespec='seconds') + 'Z')
+    lead_key = _commented_post_lead_key(platform, post_id, staff_id)
+    lead = _normalise_lead({
+        'lead_key': lead_key,
+        'platform': platform,
+        'source': 'commented_post',
+        'source_id': post_id,
+        'post_id': post_id,
+        'group_id': str(log.get('group_id') or context.get('group_id') or '').strip(),
+        'post_url': str(log.get('post_url') or context.get('post_url') or '').strip(),
+        'comment_id': str(log.get('comment_id') or '').strip(),
+        'name': customer_name,
+        'comment_author': customer_name,
+        'comment_text': outbound_comment,
+        'need': customer_need[:500] or 'Bài viết đã được nhân sự bình luận và cần Sale chăm sóc.',
+        'evidence': (customer_need[:300] or f'Đã bình luận: {outbound_comment[:260]}').strip(),
+        'phone': phones[0] if phones else '',
+        'phones': phones,
+        'intent': 'staff_commented_post',
+        'contact_status': 'has_phone' if phones else 'no_phone',
+        'confidence': 0.95 if phones else 0.6,
+        'processed_at': now,
+        'processed_by': processor,
+        'processed_by_staff_id': staff_id,
+        'assigned_sale': processor,
+        'crm_status': 'Lead mới',
+        'created_at': now,
+    }, post_id)
+    _merge_leads_into_memory([lead])
+    supabase_ok, supabase_error = _save_leads_to_supabase([lead])
+    return lead, supabase_ok, supabase_error
+
+
 def _record_comment_log(post_id: str, group_id: str, post_url: str, message: str, page_id: str,
-                        status: str, comment_id: str = '', error_message: str = '', image_url: str = '') -> dict:
+                        status: str, comment_id: str = '', error_message: str = '', image_url: str = '',
+                        lead_context: dict | None = None, create_lead: bool = True) -> dict:
     global _comment_logs
     staff = _current_staff()
     now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
@@ -5232,8 +5352,19 @@ def _record_comment_log(post_id: str, group_id: str, post_url: str, message: str
     _save_comment_logs()
     supabase_ok, supabase_error = _save_comment_log_to_supabase(log)
     log['storage'] = 'supabase' if supabase_ok else 'local'
-    if supabase_error:
-        log['storage_warning'] = supabase_error
+    warnings = [f'Lịch sử: {supabase_error}'] if supabase_error else []
+    if create_lead and status == 'success':
+        try:
+            lead, lead_ok, lead_error = _upsert_lead_from_comment_log(log, lead_context)
+            if lead:
+                log['lead_key'] = lead.get('lead_key')
+                log['lead_storage'] = 'supabase' if lead_ok else 'local'
+            if lead_error:
+                warnings.append(f'Lead: {lead_error}')
+        except Exception as e:
+            warnings.append(f'Lead: {str(e)[:300]}')
+    if warnings:
+        log['storage_warning'] = ' | '.join(warnings)
     return log
 
 
@@ -6021,7 +6152,21 @@ def api_comment():
         result = get_api(group_id).post_comment(post_id, message, page_token, image_url)
         if result and 'id' in result:
             log_text = message or '[Bình luận bằng ảnh]'
-            log = _record_comment_log(post_id, group_id, post_url, log_text, page_id, 'success', comment_id=result['id'], image_url=image_url)
+            log = _record_comment_log(
+                post_id,
+                group_id,
+                post_url,
+                log_text,
+                page_id,
+                'success',
+                comment_id=result['id'],
+                image_url=image_url,
+                lead_context={
+                    'platform': 'facebook',
+                    'customer_name': body.get('customer_name') or body.get('author_name'),
+                    'customer_need': body.get('customer_need') or body.get('post_message'),
+                },
+            )
             payload = {'ok': True, 'comment_id': result['id'], 'log_storage': log.get('storage')}
             if log.get('storage_warning'):
                 payload['warning'] = f"Đã lưu local, Supabase chưa ghi được: {log['storage_warning']}"
@@ -6071,7 +6216,20 @@ def api_reply_post_comment():
         api_group_id = DEFAULT_GROUP if page_token else (group_id or DEFAULT_GROUP)
         result = get_api(api_group_id).post_comment(comment_id, message, page_token)
         if result and result.get('id'):
-            log = _record_comment_log(post_id or comment_id, group_id, post_url, message, page_id, 'success', comment_id=result['id'])
+            log = _record_comment_log(
+                post_id or comment_id,
+                group_id,
+                post_url,
+                message,
+                page_id,
+                'success',
+                comment_id=result['id'],
+                lead_context={
+                    'platform': 'facebook',
+                    'customer_name': body.get('customer_name') or body.get('author_name'),
+                    'customer_need': body.get('customer_need') or body.get('post_message') or body.get('comment_text'),
+                },
+            )
             now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
             staff = _current_staff()
             row = {
@@ -6813,7 +6971,22 @@ def send_tiktok_comment():
         or payload.get('comment_id')
         or uuid.uuid4().hex
     )
-    log = _record_comment_log(final_post_id, 'tiktok', final_url, message, 'tiktok', 'success', comment_id=f'tiktok_{comment_id}')
+    log = _record_comment_log(
+        final_post_id,
+        'tiktok',
+        final_url,
+        message,
+        'tiktok',
+        'success',
+        comment_id=f'tiktok_{comment_id}',
+        lead_context={
+            'platform': 'tiktok',
+            'customer_name': body.get('customer_name') or body.get('author_name') or body.get('channel_name'),
+            'customer_need': body.get('customer_need') or body.get('comment_text') or body.get('video_title'),
+            'video_title': body.get('video_title'),
+            'channel_name': body.get('channel_name'),
+        },
+    )
     staff = _current_staff()
     now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
     rows = [{
@@ -10471,8 +10644,8 @@ def ai_leads_get():
             for item in items:
                 by_key[str(item.get('lead_key') or _lead_key(item))] = item
             merged[post_id] = list(by_key.values())
-        return jsonify(_public_leads_dict(merged))
-    return jsonify(_public_leads_dict(_leads))
+        return jsonify(_filter_leads_for_current_staff(_public_leads_dict(merged)))
+    return jsonify(_filter_leads_for_current_staff(_public_leads_dict(_leads)))
 
 
 @app.route('/api/ai/reply-suggestions', methods=['GET'])

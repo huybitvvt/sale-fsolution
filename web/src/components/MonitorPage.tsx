@@ -943,13 +943,6 @@ export function MonitorPage() {
     }
   }, []);
 
-  const handleCommentSent = useCallback(async (postId: string) => {
-    await loadTodayCommentStats();
-    if (postId) {
-      setAllPosts((prev) => prev.filter((p) => p.id !== postId));
-    }
-  }, [loadTodayCommentStats]);
-
   const reloadLeads = useCallback(async () => {
     try {
       const r = await api('/api/ai/leads');
@@ -958,6 +951,13 @@ export function MonitorPage() {
       /* ignore */
     }
   }, []);
+
+  const handleCommentSent = useCallback(async (postId: string) => {
+    await Promise.all([loadTodayCommentStats(), reloadLeads()]);
+    if (postId) {
+      setAllPosts((prev) => prev.filter((p) => p.id !== postId));
+    }
+  }, [loadTodayCommentStats, reloadLeads]);
 
   const confirmLeadProcessed = useCallback(async (crmStatus: string, assignedSale: string): Promise<Lead> => {
     if (!leadProcessPost) throw new Error('Không có bài viết');
@@ -2834,6 +2834,7 @@ export function MonitorPage() {
   useEffect(() => {
     if (!authenticated) return;
     if (activeView === 'history') void loadCommentLogs();
+    if (activeView === 'leads') void reloadLeads();
     if (activeView === 'channels' || activeView === 'manage') void loadChannels();
     if (activeView === 'channels' || activeView === 'staff') void loadStaffCookies();
     if (activeView === 'manage') void loadFacebookCookieContext();
@@ -2845,7 +2846,7 @@ export function MonitorPage() {
       void loadContentPipeline();
       void loadChannels();
     }
-  }, [activeView, authenticated, loadChannels, loadCommentLogs, loadContentPipeline, loadFacebookCookieContext, loadStaffCookies, refreshFacebookCookieNames]);
+  }, [activeView, authenticated, loadChannels, loadCommentLogs, loadContentPipeline, loadFacebookCookieContext, loadStaffCookies, refreshFacebookCookieNames, reloadLeads]);
 
   if (!authChecked) {
     return (
