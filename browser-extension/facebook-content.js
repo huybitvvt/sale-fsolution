@@ -74,6 +74,30 @@
   }
 
   const COMPOSER_TITLES = ['tạo bài viết', 'create post', 'đăng bài'];
+  const COMPOSER_TRIGGER_PHRASES = [
+    'bạn viết gì đi',
+    'bạn đang nghĩ gì',
+    'hãy viết gì đó',
+    'viết gì đó',
+    'bạn muốn chia sẻ điều gì',
+    'tạo bài viết',
+    'write something',
+    "what's on your mind",
+    'create post',
+    'start a post',
+    'post something',
+  ];
+  const COMPOSER_INPUT_PHRASES = [
+    'bạn viết gì đi',
+    'bạn đang nghĩ gì',
+    'hãy viết gì đó',
+    'viết gì đó',
+    'bạn muốn chia sẻ điều gì',
+    'write something',
+    "what's on your mind",
+    'start a post',
+    'post something',
+  ];
   const COMMENT_PHRASES = ['bình luận', 'comment', 'trả lời', 'reply'];
 
   function nodeText(node) {
@@ -90,7 +114,9 @@
     const headings = Array.from(dialog.querySelectorAll('[role="heading"], h1, h2, h3'))
       .filter(isVisible)
       .map(nodeText);
-    const hasComposerHeading = headings.some((heading) => COMPOSER_TITLES.includes(heading));
+    const hasComposerHeading = headings.some((heading) => (
+      COMPOSER_TITLES.some((title) => heading === title || heading.startsWith(`${title} `))
+    ));
     if (!hasComposerHeading) return -1;
 
     let score = 100;
@@ -142,21 +168,20 @@
   }
 
   function findComposerTrigger() {
-    const phrases = [
-      'bạn viết gì đi',
-      'bạn đang nghĩ gì',
-      'viết gì đó',
-      'tạo bài viết',
-      'write something',
-      "what's on your mind",
-      'create post',
-    ];
     const nodes = Array.from(document.querySelectorAll('[role="button"], button, [tabindex="0"]'));
     const candidates = nodes
       .filter((node) => {
-        if (!isVisible(node) || node.closest('[role="dialog"], [role="article"]') || isCommentControl(node)) return false;
         const text = nodeText(node);
-        return phrases.some((phrase) => text.includes(phrase));
+        if (
+          !isVisible(node)
+          || node.closest('[role="dialog"], [role="tab"]')
+          || (
+            node.closest('[role="article"]')
+            && !COMPOSER_INPUT_PHRASES.some((phrase) => text.includes(phrase))
+          )
+          || isCommentControl(node)
+        ) return false;
+        return COMPOSER_TRIGGER_PHRASES.some((phrase) => text.includes(phrase));
       })
       .map((node) => {
         const text = nodeText(node);
@@ -168,6 +193,80 @@
       })
       .sort((a, b) => b.score - a.score);
     return candidates[0]?.node || null;
+  }
+
+  function scrollTowardGroupFeed() {
+    const feedLandmark = Array.from(document.querySelectorAll('[role="feed"], [role="article"]'))
+      .find(isVisible);
+    if (feedLandmark) {
+      feedLandmark.scrollIntoView({ behavior: 'auto', block: 'start' });
+      window.scrollBy(0, -Math.max(120, Math.round((window.innerHeight || 800) * 0.28)));
+      return;
+    }
+
+    // Some Groups do not mount the feed/composer until the tall cover area has
+    // left the viewport. A small bounded scroll makes Facebook render that lazy
+    // section without jumping deep into the list of posts.
+    const viewportHeight = Math.max(600, window.innerHeight || 0);
+    const pageHeight = Math.max(
+      document.documentElement?.scrollHeight || 0,
+      document.body?.scrollHeight || 0,
+    );
+    const maxScrollTop = Math.max(0, pageHeight - viewportHeight);
+    const currentScrollTop = Math.max(
+      0,
+      window.scrollY || document.documentElement?.scrollTop || 0,
+    );
+    const nextScrollTop = Math.min(maxScrollTop, currentScrollTop + Math.round(viewportHeight * 0.62));
+    if (nextScrollTop > currentScrollTop) {
+      window.scrollTo({ top: nextScrollTop, behavior: 'auto' });
+    }
+  }
+
+  async function waitForComposerTrigger(requestId, targetType) {
+    let trigger = findComposerTrigger();
+    for (let attempt = 0; attempt < 36 && !trigger; attempt += 1) {
+      if (state.cancelledRequestIds.has(requestId)) return null;
+      if (targetType === 'group' && [3, 11, 21].includes(attempt)) {
+        scrollTowardGroupFeed();
+      }
+      await sleep(250);
+      trigger = findComposerTrigger();
+    }
+    return trigger;
+  }
+
+  function detectGroupComposerBlocker() {
+    const controls = Array.from(document.querySelectorAll('button, [role="button"]')).filter(isVisible);
+    const joinPhrases = ['tham gia nhóm', 'join group'];
+    const hasJoinControl = controls.some((node) => {
+      const values = [
+        node.getAttribute('aria-label'),
+        node.getAttribute('title'),
+        node.innerText,
+        node.textContent,
+      ].map((value) => normalize(value).toLowerCase()).filter(Boolean);
+      return values.some((value) => (
+        joinPhrases.some((phrase) => value === phrase || value.startsWith(`${phrase} `))
+      ));
+    });
+    if (hasJoinControl) {
+      return 'Tài khoản Facebook đang mở chưa tham gia Group này. Hãy tham gia Group và chờ được duyệt trước khi đăng.';
+    }
+
+    const main = document.querySelector('main, [role="main"]');
+    const mainText = nodeText(main);
+    const restrictedPhrases = [
+      'chỉ quản trị viên mới có thể đăng',
+      'chỉ quản trị viên và người kiểm duyệt mới có thể đăng',
+      'tính năng đăng bài đã bị tắt',
+      'only admins can post',
+      'posting has been turned off',
+    ];
+    if (restrictedPhrases.some((phrase) => mainText.includes(phrase))) {
+      return 'Group này đang giới hạn quyền đăng bài; Facebook không cấp ô tạo bài cho tài khoản hiện tại.';
+    }
+    return '';
   }
 
   function editorContainsMessage(editor, message) {
@@ -476,13 +575,18 @@
     let dialog = findComposerDialog();
     let editor = findComposerEditor(dialog);
     if (!editor) {
-      const trigger = findComposerTrigger();
+      showStatus(`Đang chờ Facebook tải vùng tạo bài cho ${state.groupName}...`);
+      const trigger = await waitForComposerTrigger(nextRequestId, state.targetType);
+      if (state.cancelledRequestIds.has(nextRequestId)) {
+        return { ok: false, final: true, cancelled: true };
+      }
       if (!trigger) {
-        const error = state.targetType === 'page'
+        const groupBlocker = state.targetType === 'group' ? detectGroupComposerBlocker() : '';
+        const error = groupBlocker || (state.targetType === 'page'
           ? 'Không tìm thấy ô tạo bài viết trên Page. Hãy kiểm tra quyền quản trị/chế độ dùng Facebook với tư cách Page.'
-          : 'Không tìm thấy ô tạo bài viết. Hãy kiểm tra đã tham gia Group và tải lại trang.';
+          : 'Không tìm thấy ô tạo bài viết sau khi đã chờ Facebook tải phần thảo luận. Hãy kiểm tra đã tham gia Group và Group có cho phép thành viên đăng bài.');
         showStatus(error, 'error');
-        return { ok: false, error };
+        return { ok: false, final: true, error };
       }
       trigger.click();
       for (let attempt = 0; attempt < 30 && !editor; attempt += 1) {
