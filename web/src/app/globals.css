@@ -3129,6 +3129,43 @@ button, input, select, textarea { font-family: inherit; }
   font-weight: 800;
   cursor: pointer;
 }
+
+.facebook-metrics-cell,
+.facebook-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 180px;
+}
+
+.facebook-metrics-cell small,
+.facebook-metrics-cell b {
+  flex-basis: 100%;
+}
+
+.facebook-history-actions a,
+.facebook-history-actions button,
+.facebook-comment-results button {
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #fff;
+  color: #1d4ed8;
+  cursor: pointer;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.facebook-history-actions button:disabled,
+.facebook-comment-results button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.facebook-comment-results {
+  margin-top: 18px;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 16px;
+}
 .seeding-history-cancel:hover:not(:disabled) { background: #ffe4e6; }
 .seeding-history-cancel:disabled { cursor: wait; opacity: .6; }
 .pill-ok,

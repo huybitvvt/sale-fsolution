@@ -3,6 +3,8 @@ import re
 import requests
 from typing import Optional, Dict, List
 
+from core.phone_utils import extract_phones, normalize_phone
+
 DEFAULT_MODEL = 'gemini-3.1-pro-preview'
 DEFAULT_API_KEY = ''
 
@@ -17,8 +19,6 @@ DEFAULT_CATEGORIES = [
     'Mua bán', 'Hỏi đáp', 'Thông báo', 'Tán gẫu',
     'Spam/Quảng cáo', 'Tuyển dụng', 'Chia sẻ kiến thức',
 ]
-
-PHONE_RE = re.compile(r'(?<!\d)(?:\+?84|0)(?:[\s.\-()]?\d){8,10}(?!\d)')
 
 LEAD_EXTRACTION_PROMPT = """Bạn là AI trích xuất lead/nhu cầu từ bài viết Facebook tiếng Việt.
 
@@ -167,17 +167,6 @@ Trả về JSON object có đúng các trường:
 CHỈ trả về JSON object."""
 
 
-def normalize_phone(raw: str) -> str:
-    digits = re.sub(r'\D', '', raw or '')
-    if digits.startswith('0084'):
-        digits = '0' + digits[4:]
-    elif digits.startswith('84') and len(digits) in (11, 12):
-        digits = '0' + digits[2:]
-    if len(digits) in (10, 11) and digits.startswith('0'):
-        return digits
-    return ''
-
-
 def _reply_contains_phone(text: str, phone: str) -> bool:
     if not phone:
         return True
@@ -218,17 +207,6 @@ def _ensure_phone_in_replies(
     item['text'] = f'{text} {name} có thể {phone_snippet} hoặc inbox để được hỗ trợ nhanh hơn.'.strip()
     updated[target_idx] = item
     return updated
-
-
-def extract_phones(text: str) -> List[str]:
-    seen = set()
-    phones = []
-    for match in PHONE_RE.finditer(text or ''):
-        phone = normalize_phone(match.group())
-        if phone and phone not in seen:
-            seen.add(phone)
-            phones.append(phone)
-    return phones
 
 
 def _compact_text(text: str, limit: int = 900) -> str:

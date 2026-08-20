@@ -2,6 +2,8 @@
   const SOURCE = 'streal-web-page';
   const EXTENSION_SOURCE = 'streal-tiktok-extension';
 
+  chrome.runtime.sendMessage({ type: 'STREAL_EXTENSION_SET_API_ORIGIN', origin: window.location.origin });
+
   function postToPage(payload) {
     window.postMessage({ ...payload, source: EXTENSION_SOURCE }, window.location.origin);
   }

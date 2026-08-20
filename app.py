@@ -63,6 +63,7 @@ POST_COMMENTS_FILE = os.path.join(DATA_DIR, 'post_comments.json')
 MANAGED_CHANNELS_FILE = os.path.join(DATA_DIR, 'managed_channels.json')
 TIKTOK_CONFIG_FILE = os.path.join(DATA_DIR, 'tiktok_config.json')
 CONTENT_PIPELINE_FILE = os.path.join(DATA_DIR, 'content_pipeline.json')
+FACEBOOK_POSTS_FILE = os.path.join(DATA_DIR, 'facebook_posts.json')
 COMMENT_TEMPLATES_FILE = os.path.join(DATA_DIR, 'comment_templates.json')
 COMMENT_TAGS_FILE = os.path.join(DATA_DIR, 'comment_tags.json')
 COMMENT_TAG_ASSIGNMENTS_FILE = os.path.join(DATA_DIR, 'comment_tag_assignments.json')
@@ -124,6 +125,7 @@ SUPABASE_PROFILE_TABLE = os.environ.get('SUPABASE_PROFILE_TABLE', 'business_prof
 SUPABASE_COMMENT_LOG_TABLE = os.environ.get('SUPABASE_COMMENT_LOG_TABLE', 'comment_logs')
 SUPABASE_COMMENT_SUMMARY_TABLE = os.environ.get('SUPABASE_COMMENT_SUMMARY_TABLE', 'post_comment_summaries')
 SUPABASE_POST_COMMENT_TABLE = os.environ.get('SUPABASE_POST_COMMENT_TABLE', 'post_comments')
+SUPABASE_FACEBOOK_POST_TABLE = os.environ.get('SUPABASE_FACEBOOK_POST_TABLE', 'facebook_posts')
 SUPABASE_LEAD_TABLE = os.environ.get('SUPABASE_LEAD_TABLE', 'leads')
 SUPABASE_STAFF_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 SUPABASE_CHANNEL_TABLE = os.environ.get('SUPABASE_CHANNEL_TABLE', 'managed_channels')
@@ -260,6 +262,7 @@ _managed_channels_remote_at: float = 0.0
 _MANAGED_CHANNELS_REFRESH_TTL = 30
 _tiktok_config: dict = {}
 _content_pipeline: dict = {}
+_facebook_posts: list = []
 _comment_templates: list = []
 _comment_tags: list = []
 _comment_tag_assignments: dict = {}
@@ -267,6 +270,7 @@ _comment_inbox_workflow: dict = {}
 _comment_manual_phones: dict = {}
 _runtime_staff_context = threading.local()
 _scheduled_posts_lock = threading.Lock()
+_facebook_posts_lock = threading.Lock()
 
 
 def _default_business_profile() -> dict:
@@ -516,7 +520,7 @@ def _load_supabase_startup_snapshot() -> tuple[dict, dict[str, str]]:
 
 
 def _load_state():
-    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _deleted_lead_keys, _reply_suggestions, _business_profile, _staff_cookies, _comment_logs, _comment_summaries, _post_comments, _managed_channels, _managed_channels_remote_at, _tiktok_config, _content_pipeline, _comment_templates, _comment_tags, _comment_tag_assignments, _comment_inbox_workflow, _comment_manual_phones
+    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _deleted_lead_keys, _reply_suggestions, _business_profile, _staff_cookies, _comment_logs, _comment_summaries, _post_comments, _managed_channels, _managed_channels_remote_at, _tiktok_config, _content_pipeline, _facebook_posts, _comment_templates, _comment_tags, _comment_tag_assignments, _comment_inbox_workflow, _comment_manual_phones
     started_at = time_module.monotonic()
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -673,6 +677,15 @@ def _load_state():
         'articles': loaded_pipeline.get('articles') if isinstance(loaded_pipeline.get('articles'), list) else [],
         'posts': loaded_pipeline.get('posts') if isinstance(loaded_pipeline.get('posts'), list) else [],
     }
+    loaded_facebook_posts = _read_json(FACEBOOK_POSTS_FILE, [])
+    if startup_kv_loaded:
+        loaded_facebook_posts = startup_kv.get('facebook_posts') or loaded_facebook_posts
+    elif USE_SUPABASE:
+        try:
+            loaded_facebook_posts = sb.kv_get('facebook_posts', loaded_facebook_posts) or loaded_facebook_posts
+        except Exception as e:
+            print(f'[supabase] load facebook_posts fallback failed: {e}')
+    _facebook_posts = loaded_facebook_posts if isinstance(loaded_facebook_posts, list) else []
     loaded_templates = _read_json(COMMENT_TEMPLATES_FILE, [])
     loaded_tags = _read_json(COMMENT_TAGS_FILE, [])
     loaded_tag_assignments = _read_json(COMMENT_TAG_ASSIGNMENTS_FILE, {})
@@ -806,6 +819,147 @@ def _save_content_pipeline():
             sb.kv_set('content_pipeline', _content_pipeline)
         except Exception as e:
             print(f'[supabase] save content_pipeline failed: {e}')
+
+
+def _facebook_post_url(post_id: str) -> str:
+    value = str(post_id or '').strip()
+    return f'https://www.facebook.com/{value}' if value else ''
+
+
+def _facebook_post_db_row(row: dict) -> dict:
+    allowed = (
+        'id', 'external_key', 'source', 'source_post_id', 'facebook_post_id',
+        'target_type', 'target_id', 'target_name', 'facebook_page_id', 'post_url',
+        'content', 'media_urls', 'status', 'delivery', 'error_message',
+        'reaction_count', 'comment_count', 'share_count', 'total_interactions',
+        'metrics_updated_at', 'created_by_staff_id', 'created_by_staff_name',
+        'created_by_staff_username', 'published_at', 'created_at', 'updated_at',
+    )
+    return {key: row.get(key) for key in allowed if key in row}
+
+
+def _save_facebook_post(row: dict) -> tuple[dict, str]:
+    """Upsert one publish target. Supabase is canonical; JSON/app_kv is fallback."""
+    global _facebook_posts
+    now = _utc_iso()
+    item = dict(row or {})
+    external_key = str(item.get('external_key') or '').strip()
+    item['id'] = str(item.get('id') or uuid.uuid4())
+    item['external_key'] = external_key or item['id']
+    item['updated_at'] = now
+    item.setdefault('created_at', now)
+    item.setdefault('reaction_count', None)
+    item.setdefault('comment_count', None)
+    item.setdefault('share_count', None)
+    item.setdefault('total_interactions', None)
+    with _facebook_posts_lock:
+        previous = next((old for old in _facebook_posts if str(old.get('external_key')) == item['external_key']), None)
+        if previous:
+            item = {**previous, **item, 'id': previous.get('id') or item['id'], 'created_at': previous.get('created_at') or item['created_at']}
+        _facebook_posts = [old for old in _facebook_posts if str(old.get('external_key')) != item['external_key']]
+        _facebook_posts.insert(0, item)
+        _facebook_posts = _facebook_posts[:1000]
+        _write_json(FACEBOOK_POSTS_FILE, _facebook_posts)
+
+    warning = ''
+    if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
+        try:
+            response = _req.post(
+                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_FACEBOOK_POST_TABLE}",
+                headers={
+                    'apikey': SUPABASE_KEY,
+                    'Authorization': f'Bearer {SUPABASE_KEY}',
+                    'Content-Type': 'application/json',
+                    'Prefer': 'resolution=merge-duplicates,return=representation',
+                },
+                params={'on_conflict': 'external_key'},
+                json=_facebook_post_db_row(item),
+                timeout=20,
+            )
+            if response.status_code not in (200, 201):
+                warning = response.text[:300]
+            else:
+                saved = response.json()
+                if saved:
+                    item = {**item, **saved[0]}
+        except Exception as exc:
+            warning = str(exc)[:300]
+    if warning and USE_SUPABASE:
+        try:
+            sb.kv_set('facebook_posts', _facebook_posts)
+        except Exception:
+            pass
+    return item, warning
+
+
+def _load_facebook_posts() -> tuple[list[dict], str]:
+    global _facebook_posts
+    warning = ''
+    if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
+        try:
+            response = _req.get(
+                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_FACEBOOK_POST_TABLE}",
+                headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+                params={'select': '*', 'order': 'created_at.desc', 'limit': '1000'},
+                timeout=20,
+            )
+            if response.status_code == 200:
+                remote = response.json()
+                if isinstance(remote, list):
+                    with _facebook_posts_lock:
+                        _facebook_posts = remote
+            else:
+                warning = response.text[:300]
+        except Exception as exc:
+            warning = str(exc)[:300]
+    with _facebook_posts_lock:
+        return list(_facebook_posts), warning
+
+
+def _record_publish_results(post: dict, targets: list[dict], result: dict, *, source: str, source_post_id: str = '', request_id: str = '') -> list[dict]:
+    staff = _current_staff() or _active_staff()
+    now = _utc_iso()
+    media_urls = _extract_media_urls(post)
+    media_url, native_video_url = _extract_post_media(post)
+    if not media_urls:
+        media_urls = [url for url in (media_url, native_video_url) if url]
+    indexed_targets = {
+        f"{str(target.get('type') or 'group')}:{str(target.get('id') or '')}": target
+        for target in targets or []
+    }
+    saved = []
+    for index, publish_result in enumerate(result.get('results') or []):
+        target_type = 'page' if str(publish_result.get('type')) == 'page' else 'group'
+        target_id = str(publish_result.get('id') or '').strip()
+        target = indexed_targets.get(f'{target_type}:{target_id}') or {}
+        facebook_post_id = str(publish_result.get('post_id') or '').strip()
+        delivery = str(publish_result.get('delivery') or '')
+        ok = bool(publish_result.get('ok')) and bool(facebook_post_id or delivery == 'published')
+        stable_seed = request_id or source_post_id or uuid.uuid4().hex
+        external_key = f'{source}:{stable_seed}:{target_type}:{target_id or index}'
+        row, _ = _save_facebook_post({
+            'external_key': external_key,
+            'source': source,
+            'source_post_id': source_post_id,
+            'facebook_post_id': facebook_post_id or None,
+            'target_type': target_type,
+            'target_id': target_id,
+            'target_name': publish_result.get('name') or target.get('name') or target_id,
+            'facebook_page_id': target_id if target_type == 'page' else (target.get('page_id') or None),
+            'post_url': publish_result.get('post_url') or _facebook_post_url(facebook_post_id),
+            'content': _pipeline_post_message(post) or str(post.get('message') or post.get('content') or ''),
+            'media_urls': media_urls,
+            'status': 'success' if ok else ('pending' if publish_result.get('ok') and delivery in ('opening', 'awaiting_user', 'submitting', 'submitted', 'pending_review') else 'failed'),
+            'delivery': delivery,
+            'error_message': '' if ok or publish_result.get('ok') else str(publish_result.get('error') or result.get('error') or 'Facebook không trả Post ID'),
+            'created_by_staff_id': staff.get('id') or '',
+            'created_by_staff_name': staff.get('name') or '',
+            'created_by_staff_username': staff.get('username') or '',
+            'published_at': now if ok else None,
+            'created_at': now,
+        })
+        saved.append(row)
+    return saved
 
 
 def _merge_system_rows(defaults: list[dict], rows: list[dict]) -> list[dict]:
@@ -2105,12 +2259,12 @@ def _load_leads_from_supabase(limit: int = 3000) -> tuple[dict, str]:
         return {}, str(e)[:300]
 
 
-def _comment_rows_to_phone_leads(rows: list[dict]) -> list[dict]:
+def _comment_rows_to_phone_leads(rows: list[dict], include_without_phone: bool = False) -> list[dict]:
     leads: list[dict] = []
     for row in rows or []:
         message = str(row.get('message') or '').strip()
         _, phones, _ = _resolve_comment_phones(row)
-        if not phones:
+        if not phones and not include_without_phone:
             continue
         public = _public_comment_row(row)
         post_id = str(row.get('post_id') or '')
@@ -2127,12 +2281,14 @@ def _comment_rows_to_phone_leads(rows: list[dict]) -> list[dict]:
             'name': row.get('author_name') or 'Ẩn danh',
             'comment_author': row.get('author_name') or 'Ẩn danh',
             'comment_text': message,
-            'phone': phones[0],
+            'facebook_uid': row.get('author_id') or '',
+            'facebook_url': public.get('author_url') or '',
+            'phone': phones[0] if phones else '',
             'phones': phones,
             'need': message[:220],
-            'intent': 'phone_comment',
-            'contact_status': 'has_phone',
-            'confidence': 0.95,
+            'intent': 'phone_comment' if phones else 'facebook_comment_interest',
+            'contact_status': 'has_phone' if phones else 'no_phone',
+            'confidence': 0.95 if phones else 0.6,
             'evidence': message[:300],
         }))
     return leads
@@ -4604,11 +4760,12 @@ def _save_post_comment_rows_to_supabase(rows: list[dict]) -> tuple[bool, str]:
         ok, error = post_chunks(rows)
         if ok:
             return True, ''
-        if "'source' column" in error or 'source column' in error:
-            legacy_rows = [{k: v for k, v in row.items() if k != 'source'} for row in rows]
+        missing_optional = [field for field in ('source', 'post_title') if field in error and ('column' in error.lower() or 'schema cache' in error.lower())]
+        if missing_optional:
+            legacy_rows = [{k: v for k, v in row.items() if k not in missing_optional} for row in rows]
             legacy_ok, legacy_error = post_chunks(legacy_rows)
             if legacy_ok:
-                return True, 'Đã lưu Supabase, nhưng bảng post_comments đang thiếu cột source nên chưa phân loại được facebook/tiktok trong DB.'
+                return True, f"Đã lưu Supabase, nhưng bảng post_comments đang thiếu cột {', '.join(missing_optional)}."
             return False, legacy_error
         return False, error
     except Exception as e:
@@ -4636,7 +4793,7 @@ def _load_post_comment_rows(source: str = '', post_id: str = '', limit: int = 10
     if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
         try:
             filters = [
-                'select=source,post_id,group_id,post_url,comment_id,parent_comment_id,depth,author_id,author_name,message,attachment_type,created_time,matched_keywords,is_matched,raw_comment,fetched_by_staff_id,fetched_by_staff_name,fetched_by_staff_username,fetched_at',
+                'select=source,post_id,post_title,group_id,post_url,comment_id,parent_comment_id,depth,author_id,author_name,message,attachment_type,created_time,matched_keywords,is_matched,raw_comment,fetched_by_staff_id,fetched_by_staff_name,fetched_by_staff_username,fetched_at',
                 'order=fetched_at.desc',
                 f'limit={limit}',
             ]
@@ -4644,11 +4801,18 @@ def _load_post_comment_rows(source: str = '', post_id: str = '', limit: int = 10
                 filters.append(f'source=eq.{quote(source, safe="")}')
             if post_id:
                 filters.append(f'post_id=eq.{quote(post_id, safe="")}')
+            request_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_POST_COMMENT_TABLE}?{'&'.join(filters)}"
             resp = _req.get(
-                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_POST_COMMENT_TABLE}?{'&'.join(filters)}",
+                request_url,
                 headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
                 timeout=30,
             )
+            if resp.status_code not in (200, 206) and 'post_title' in resp.text:
+                resp = _req.get(
+                    request_url.replace('post_title,', ''),
+                    headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+                    timeout=30,
+                )
             if resp.status_code in (200, 206):
                 remote_rows = resp.json()
                 if not isinstance(remote_rows, list):
@@ -4692,6 +4856,8 @@ def _public_comment_row(row: dict) -> dict:
     auto_phones = extract_phones(row.get('message') or '')
     phone, phones, manual_phones = _resolve_comment_phones(row)
     post_title = str(row.get('post_title') or meta.get('video_title') or '').strip()
+    source = str(row.get('source') or '')
+    author_id = str(row.get('author_id') or '')
     return {
         'source': row.get('source') or '',
         'post_id': row.get('post_id') or '',
@@ -4702,7 +4868,8 @@ def _public_comment_row(row: dict) -> dict:
         'comment_id': cid,
         'parent_comment_id': row.get('parent_comment_id') or '',
         'depth': row.get('depth') or 0,
-        'author_id': row.get('author_id') or '',
+        'author_id': author_id,
+        'author_url': f'https://www.facebook.com/{author_id}' if author_id and 'facebook' in source.lower() else '',
         'author_name': row.get('author_name') or 'Ẩn danh',
         'message': row.get('message') or '',
         'attachment_type': row.get('attachment_type') or '',
@@ -6676,6 +6843,8 @@ def api_create_post():
         )
         delivery = (result or {}).get('_delivery') or ('native_video' if native_video_url else ('link_preview' if media_url else ('native_media' if media_urls else 'text')))
         if result and 'id' in result:
+            publish_result = {'ok': True, 'type': 'group', 'id': group_id, 'post_id': result['id'], 'delivery': delivery}
+            history = _record_publish_results(body, [{'type': 'group', 'id': group_id, 'page_id': page_id}], {'ok': True, 'results': [publish_result]}, source='api_post', request_id=f'api_{uuid.uuid4().hex}')
             return jsonify({
                 'ok': True,
                 'post_id': result['id'],
@@ -6683,11 +6852,15 @@ def api_create_post():
                 'media_count': len(media_urls),
                 'native_video_error': (result or {}).get('_native_video_error'),
                 'target': {'type': 'group', 'id': group_id},
+                'history': history,
             })
         err, diagnostics = _facebook_publish_error(result, 'group', getattr(target_api, 'last_graph_error', ''))
-        return jsonify({'ok': False, 'error': err, 'delivery': delivery, 'native_video_error': (result or {}).get('_native_video_error'), 'target': {'type': 'group', 'id': group_id}, **diagnostics})
+        history = _record_publish_results(body, [{'type': 'group', 'id': group_id, 'page_id': page_id}], {'ok': False, 'results': [{'ok': False, 'type': 'group', 'id': group_id, 'delivery': delivery, 'error': err}]}, source='api_post', request_id=f'api_{uuid.uuid4().hex}')
+        return jsonify({'ok': False, 'error': err, 'delivery': delivery, 'native_video_error': (result or {}).get('_native_video_error'), 'target': {'type': 'group', 'id': group_id}, 'history': history, **diagnostics})
     except Exception as e:
-        return jsonify({'ok': False, 'error': friendly_graph_error(e), 'target': {'type': 'group', 'id': group_id}}), 500
+        error = friendly_graph_error(e)
+        history = _record_publish_results(body, [{'type': 'group', 'id': group_id, 'page_id': page_id}], {'ok': False, 'results': [{'ok': False, 'type': 'group', 'id': group_id, 'error': error}]}, source='api_post', request_id=f'api_{uuid.uuid4().hex}')
+        return jsonify({'ok': False, 'error': error, 'target': {'type': 'group', 'id': group_id}, 'history': history}), 500
 
 
 @app.route('/api/publish', methods=['POST'])
@@ -6743,6 +6916,15 @@ def api_publish_targets():
         'native_video_url': '' if media_urls else native_video_url,
         'media_urls': media_urls,
     }, targets, dry_run=dry_run)
+    if not dry_run:
+        result['history'] = _record_publish_results(
+            {**body, 'content': message, 'media_url': media_url, 'native_video_url': native_video_url, 'media_urls': media_urls},
+            targets,
+            result,
+            source='api_publish',
+            source_post_id=str(body.get('campaign_id') or body.get('source_post_id') or ''),
+            request_id=f'api_{uuid.uuid4().hex}',
+        )
     return jsonify(result), (200 if result.get('ok') else 502)
 
 
@@ -6758,7 +6940,9 @@ def api_create_page_post():
     try:
         page_token = _page_token_from_cache(page_id)
         if not page_token:
-            return jsonify({'ok': False, 'error': 'Không lấy được Page token. Kiểm tra quyền quản trị Page/cookie.'}), 400
+            error = 'Không lấy được Page token. Kiểm tra quyền quản trị Page/cookie.'
+            history = _record_publish_results(body, [{'type': 'page', 'id': page_id}], {'ok': False, 'results': [{'ok': False, 'type': 'page', 'id': page_id, 'error': error}]}, source='api_page_post', request_id=f'api_{uuid.uuid4().hex}')
+            return jsonify({'ok': False, 'error': error, 'history': history}), 400
         result = get_api(DEFAULT_GROUP).create_page_post(
             page_id,
             message,
@@ -6769,6 +6953,8 @@ def api_create_page_post():
         )
         delivery = (result or {}).get('_delivery') or ('native_video' if native_video_url else ('link_preview' if media_url else ('native_media' if media_urls else 'text')))
         if result and result.get('id'):
+            publish_result = {'ok': True, 'type': 'page', 'id': page_id, 'post_id': result['id'], 'delivery': delivery}
+            history = _record_publish_results(body, [{'type': 'page', 'id': page_id}], {'ok': True, 'results': [publish_result]}, source='api_page_post', request_id=f'api_{uuid.uuid4().hex}')
             return jsonify({
                 'ok': True,
                 'post_id': result['id'],
@@ -6776,11 +6962,15 @@ def api_create_page_post():
                 'media_count': len(media_urls),
                 'native_video_error': (result or {}).get('_native_video_error'),
                 'target': {'type': 'page', 'id': page_id},
+                'history': history,
             })
         err = (result or {}).get('error', {}).get('message', 'Lỗi không xác định')
-        return jsonify({'ok': False, 'error': err, 'delivery': delivery, 'native_video_error': (result or {}).get('_native_video_error'), 'target': {'type': 'page', 'id': page_id}})
+        history = _record_publish_results(body, [{'type': 'page', 'id': page_id}], {'ok': False, 'results': [{'ok': False, 'type': 'page', 'id': page_id, 'delivery': delivery, 'error': err}]}, source='api_page_post', request_id=f'api_{uuid.uuid4().hex}')
+        return jsonify({'ok': False, 'error': err, 'delivery': delivery, 'native_video_error': (result or {}).get('_native_video_error'), 'target': {'type': 'page', 'id': page_id}, 'history': history})
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e), 'target': {'type': 'page', 'id': page_id}}), 500
+        error = str(e)
+        history = _record_publish_results(body, [{'type': 'page', 'id': page_id}], {'ok': False, 'results': [{'ok': False, 'type': 'page', 'id': page_id, 'error': error}]}, source='api_page_post', request_id=f'api_{uuid.uuid4().hex}')
+        return jsonify({'ok': False, 'error': error, 'target': {'type': 'page', 'id': page_id}, 'history': history}), 500
 
 
 @app.route('/api/pages')
@@ -7952,6 +8142,175 @@ def list_post_comments():
     if warning:
         payload['warning'] = warning
     return jsonify(payload)
+
+
+def _visible_facebook_post_rows(rows: list[dict]) -> list[dict]:
+    if _is_admin():
+        return rows
+    staff_id = _current_staff_id()
+    return [row for row in rows if str(row.get('created_by_staff_id') or '') == str(staff_id)]
+
+
+@app.route('/api/facebook-posts', methods=['GET'])
+def facebook_posts_get():
+    rows, warning = _load_facebook_posts()
+    rows = _visible_facebook_post_rows(rows)
+    payload = {'ok': True, 'posts': rows[:500], 'count': len(rows), 'storage': 'supabase' if USE_SUPABASE and not warning else 'local'}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
+
+
+@app.route('/api/facebook-posts/extension-result', methods=['POST'])
+def facebook_posts_extension_result():
+    body = request.get_json(silent=True) or {}
+    request_id = str(body.get('request_id') or '').strip()
+    raw_targets = body.get('targets') or []
+    raw_results = body.get('results') or []
+    if not request_id or not isinstance(raw_targets, list) or not raw_targets:
+        return jsonify({'ok': False, 'error': 'Thiếu request_id hoặc danh sách nơi đăng'}), 400
+    results_by_target = {
+        f"{'page' if item.get('type') == 'page' else 'group'}:{str(item.get('id') or '')}": item
+        for item in raw_results if isinstance(item, dict)
+    }
+    results = []
+    for target in raw_targets:
+        target_type = 'page' if target.get('type') == 'page' else 'group'
+        target_id = str(target.get('id') or '').strip()
+        current = results_by_target.get(f'{target_type}:{target_id}') or {}
+        results.append({
+            'ok': current.get('ok', body.get('status') not in ('failed', 'cancelled')),
+            'type': target_type,
+            'id': target_id,
+            'name': target.get('name') or current.get('name') or target_id,
+            'post_id': current.get('post_id') or None,
+            'post_url': current.get('post_url') or '',
+            'delivery': current.get('delivery') or body.get('delivery') or 'submitting',
+            'error': current.get('error') or body.get('error') or '',
+        })
+    saved = _record_publish_results(
+        {'content': str(body.get('content') or ''), 'hashtags': str(body.get('hashtags') or ''), 'media_urls': body.get('media_urls') or []},
+        raw_targets,
+        {'ok': any(item.get('ok') for item in results), 'results': results},
+        source='chrome_extension', source_post_id=request_id, request_id=request_id,
+    )
+    return jsonify({'ok': True, 'posts': saved})
+
+
+def _facebook_post_by_id(record_id: str) -> dict | None:
+    rows, _ = _load_facebook_posts()
+    return next((row for row in _visible_facebook_post_rows(rows) if str(row.get('id')) == str(record_id)), None)
+
+
+def _facebook_post_id_from_url(value: str) -> str:
+    raw = str(value or '').strip()
+    try:
+        parsed = urlsplit(raw)
+    except Exception:
+        return ''
+    host = parsed.netloc.lower().split(':')[0]
+    if host != 'facebook.com' and not host.endswith('.facebook.com'):
+        return ''
+    for pattern in (r'/posts/(\d+)', r'/permalink/(\d+)'):
+        match = re.search(pattern, parsed.path, re.I)
+        if match:
+            return match.group(1)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    return str(query.get('story_fbid') or query.get('fbid') or '').strip() if str(query.get('story_fbid') or query.get('fbid') or '').strip().isdigit() else ''
+
+
+@app.route('/api/facebook-posts/<record_id>/reference', methods=['POST'])
+def facebook_post_reference_save(record_id):
+    row = _facebook_post_by_id(record_id)
+    if not row:
+        return jsonify({'ok': False, 'error': 'Không tìm thấy bài Facebook'}), 404
+    body = request.get_json(silent=True) or {}
+    post_url = str(body.get('post_url') or '').strip()
+    post_id = _facebook_post_id_from_url(post_url)
+    if not post_id:
+        return jsonify({'ok': False, 'error': 'Link chưa phải permalink có Post ID. Hãy bấm thời gian đăng để mở riêng bài viết rồi sao chép URL trên thanh địa chỉ; không dùng link /share/.'}), 400
+    updated, warning = _save_facebook_post({
+        **row,
+        'facebook_post_id': post_id,
+        'post_url': post_url,
+        'status': 'success',
+        'delivery': 'manual_reference',
+        'error_message': '',
+        'published_at': row.get('published_at') or _utc_iso(),
+    })
+    payload = {'ok': True, 'post': updated}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
+
+
+@app.route('/api/facebook-posts/<record_id>/refresh', methods=['POST'])
+def facebook_post_refresh(record_id):
+    row = _facebook_post_by_id(record_id)
+    if not row:
+        return jsonify({'ok': False, 'error': 'Không tìm thấy bài Facebook'}), 404
+    post_id = str(row.get('facebook_post_id') or '').strip()
+    if not post_id:
+        return jsonify({'ok': False, 'error': 'Bài này chưa có Facebook Post ID nên không thể đồng bộ'}), 400
+    last_updated = _parse_iso_datetime(row.get('metrics_updated_at'))
+    if last_updated and (datetime.now(timezone.utc) - last_updated).total_seconds() < 60:
+        return jsonify({'ok': True, 'post': row, 'cached': True, 'note': 'Dùng metrics vừa đồng bộ để tránh gọi Facebook lặp lại.'})
+    page_id = str(row.get('facebook_page_id') or '').strip()
+    target_id = str(row.get('target_id') or '').strip()
+    try:
+        page_token = _page_token_from_cache(page_id) if page_id else ''
+        client = get_api(DEFAULT_GROUP if page_id else (target_id or DEFAULT_GROUP))
+        reactions = client.get_post_reactions(post_id, limit=1, access_token=page_token or None)
+        comments = client.get_post_comments(post_id, limit=1, access_token=page_token or None)
+        shares = client.get_post_share_count(post_id, access_token=page_token or None)
+        reaction_count = int((reactions or {}).get('total_count') or 0) if reactions is not None else None
+        comment_count = int((comments or {}).get('total_count') or 0) if comments is not None else None
+        share_count = int(shares) if shares is not None else None
+        known = [value for value in (reaction_count, comment_count, share_count) if value is not None]
+        updated, warning = _save_facebook_post({**row, 'reaction_count': reaction_count, 'comment_count': comment_count, 'share_count': share_count, 'total_interactions': sum(known) if known else None, 'metrics_updated_at': _utc_iso()})
+        payload = {'ok': True, 'post': updated}
+        if warning:
+            payload['warning'] = warning
+        return jsonify(payload)
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/facebook-posts/<record_id>/comments', methods=['POST'])
+def facebook_post_comments_collect(record_id):
+    row = _facebook_post_by_id(record_id)
+    if not row:
+        return jsonify({'ok': False, 'error': 'Không tìm thấy bài Facebook'}), 404
+    post_id = str(row.get('facebook_post_id') or '').strip()
+    if not post_id:
+        return jsonify({'ok': False, 'error': 'Bài này chưa có Facebook Post ID'}), 400
+    page_id = str(row.get('facebook_page_id') or '').strip()
+    target_id = str(row.get('target_id') or '').strip()
+    try:
+        page_token = _page_token_from_cache(page_id) if page_id else ''
+        client = get_api(DEFAULT_GROUP if page_id else (target_id or DEFAULT_GROUP))
+        loaded = client.get_post_comments(post_id, limit=500, access_token=page_token or None)
+        if loaded is None:
+            return jsonify({'ok': False, 'error': 'Facebook không trả comment; kiểm tra quyền Page/Group'}), 502
+        post = {'id': post_id, 'message': row.get('content') or '', 'permalink_url': row.get('post_url') or '', '_page_id': page_id, '_group_id': '' if page_id else target_id, '_page_name': row.get('target_name') or '', '_group_name': row.get('target_name') or ''}
+        rows = _flatten_facebook_comment_rows(post, loaded.get('comments') or [], [], _utc_iso(), _current_staff())
+        storage, warning = _store_post_comment_rows(rows)
+        existing_comment_ids = {
+            str(lead.get('comment_id') or '')
+            for bucket in _leads.values() for lead in (bucket or [])
+            if str(lead.get('comment_id') or '')
+        }
+        public_comments = []
+        for item in rows:
+            public = _public_comment_row(item)
+            public['lead_exists'] = str(public.get('comment_id') or '') in existing_comment_ids
+            public_comments.append(public)
+        payload = {'ok': True, 'comments': public_comments, 'count': len(rows), 'total_count': int(loaded.get('total_count') or len(rows)), 'storage': storage}
+        if warning:
+            payload['warning'] = warning
+        return jsonify(payload)
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 500
 
 
 @app.route('/api/comment-templates', methods=['GET'])
@@ -11703,10 +12062,15 @@ def leads_bulk_delete():
 
 @app.route('/api/leads/from-comments', methods=['POST'])
 def leads_from_comments():
-    source = str((request.get_json(silent=True) or {}).get('source') or request.args.get('source') or '').strip().lower()
-    post_id = str((request.get_json(silent=True) or {}).get('post_id') or request.args.get('post_id') or '').strip()
+    body = request.get_json(silent=True) or {}
+    source = str(body.get('source') or request.args.get('source') or '').strip().lower()
+    post_id = str(body.get('post_id') or request.args.get('post_id') or '').strip()
+    comment_id = str(body.get('comment_id') or '').strip()
+    include_without_phone = bool(body.get('include_without_phone'))
     rows, warning = _load_post_comment_rows(source=source, post_id=post_id, limit=5000)
-    leads = _comment_rows_to_phone_leads(rows)
+    if comment_id:
+        rows = [row for row in rows if str(row.get('comment_id') or '') == comment_id]
+    leads = _comment_rows_to_phone_leads(rows, include_without_phone=include_without_phone)
     changed = _merge_leads_into_memory(leads)
     supabase_ok, supabase_error = _save_leads_to_supabase(leads)
     grouped = {}
@@ -11722,6 +12086,68 @@ def leads_from_comments():
     final_warning = supabase_error or warning
     if final_warning:
         payload['warning'] = final_warning
+    return jsonify(payload)
+
+
+@app.route('/api/facebook-contacts', methods=['POST'])
+def facebook_contact_save():
+    """Create/update a CRM lead only from Facebook data visible to the logged-in user."""
+    body = request.get_json(silent=True) or {}
+    profile_url = str(body.get('profile_url') or '').strip()
+    facebook_uid = str(body.get('facebook_uid') or '').strip()
+    name = str(body.get('name') or '').strip() or 'Facebook User'
+    phone = normalize_phone(str(body.get('phone') or ''))
+    phone_source = str(body.get('phone_source') or '').strip().lower()
+    allowed_sources = {'facebook_public_contact', 'facebook_public_bio', 'facebook_post'}
+    if not profile_url and not facebook_uid:
+        return jsonify({'ok': False, 'error': 'Thiếu Facebook UID/profile URL'}), 400
+    if not phone:
+        return jsonify({'ok': False, 'error': 'Không có SĐT Việt Nam hợp lệ để lưu'}), 400
+    if phone_source not in allowed_sources:
+        return jsonify({'ok': False, 'error': 'Nguồn SĐT không hợp lệ'}), 400
+    if phone_source == 'facebook_post' and not bool(body.get('confirmed')):
+        return jsonify({'ok': False, 'error': 'SĐT trong bài viết phải được nhân viên xác nhận trước khi gán cho profile'}), 400
+
+    remote, _ = _load_leads_from_supabase(limit=5000)
+    if remote:
+        _merge_leads_into_memory([item for bucket in remote.values() for item in bucket])
+    existing = None
+    for bucket in _leads.values():
+        for lead in bucket or []:
+            lead_uid = str(lead.get('facebook_uid') or '').strip()
+            lead_url = str(lead.get('facebook_url') or '').strip().rstrip('/')
+            lead_phones = {normalize_phone(item) for item in ([lead.get('phone')] + list(lead.get('phones') or [])) if normalize_phone(item)}
+            if (facebook_uid and lead_uid == facebook_uid) or (profile_url and lead_url == profile_url.rstrip('/')) or phone in lead_phones:
+                existing = lead
+                break
+        if existing:
+            break
+
+    staff = _current_staff()
+    lead = _normalise_lead({
+        **(existing or {}),
+        'lead_key': (existing or {}).get('lead_key') or hashlib.sha1(f'facebook_profile|{facebook_uid or profile_url}'.encode('utf-8')).hexdigest(),
+        'platform': 'facebook',
+        'source': (existing or {}).get('source') or 'facebook_public_profile',
+        'source_id': facebook_uid or profile_url,
+        'facebook_uid': facebook_uid or (existing or {}).get('facebook_uid') or '',
+        'facebook_url': profile_url or (existing or {}).get('facebook_url') or '',
+        'name': (existing or {}).get('name') or name,
+        'phone': phone,
+        'phones': list(dict.fromkeys([phone, *list((existing or {}).get('phones') or [])])),
+        'phone_source': phone_source,
+        'phone_confidence': 'high' if phone_source == 'facebook_public_contact' else 'medium',
+        'contact_status': 'has_phone',
+        'need': (existing or {}).get('need') or 'Khách hàng tiềm năng từ Facebook Public Profile',
+        'intent': (existing or {}).get('intent') or 'facebook_profile_contact',
+        'processed_by_staff_id': (existing or {}).get('processed_by_staff_id') or staff.get('id') or '',
+        'processed_by': (existing or {}).get('processed_by') or staff.get('name') or '',
+    })
+    changed = _merge_leads_into_memory([lead])
+    ok, warning = _save_leads_to_supabase([lead])
+    payload = {'ok': True, 'created': not bool(existing), 'updated': bool(existing), 'new_count': changed, 'lead': lead, 'storage': 'supabase' if ok else 'local'}
+    if warning:
+        payload['warning'] = warning
     return jsonify(payload)
 
 
@@ -11995,6 +12421,7 @@ def content_pipeline_post_publish(post_id):
     for post in _content_pipeline.get('posts') or []:
         if str(post.get('id')) == str(post_id):
             result = _publish_content_pipeline_post(post, targets)
+            result['history'] = _record_publish_results(post, targets, result, source='content_pipeline', source_post_id=str(post_id))
             post['publish_results'] = result.get('results') or []
             post['published_at'] = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
             post['status'] = 'posted' if result.get('ok') else 'failed'
@@ -12073,6 +12500,14 @@ def _run_due_scheduled_posts() -> dict:
             if staff:
                 _runtime_staff_context.staff = staff
                 result = _publish_content_pipeline_post(post, due_targets if isinstance(due_targets, list) else [])
+                _record_publish_results(
+                    post,
+                    due_targets if isinstance(due_targets, list) else [],
+                    result,
+                    source='scheduled_pipeline',
+                    source_post_id=str(post.get('id') or ''),
+                    request_id=f"scheduled:{post.get('id')}:{target_index}",
+                )
             else:
                 if hasattr(_runtime_staff_context, 'staff'):
                     delattr(_runtime_staff_context, 'staff')

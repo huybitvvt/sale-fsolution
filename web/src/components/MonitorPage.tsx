@@ -1808,6 +1808,8 @@ export function MonitorPage() {
     setFbCommentBusy(false);
   }
 
+  // Existing TikTok endpoints return several legacy payload shapes.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function readTikTokJson(response: Response, label: string): Promise<any> {
     const rawText = await response.text();
     let data: Record<string, unknown> = {};
@@ -1928,12 +1930,12 @@ export function MonitorPage() {
     setTiktokBusy(true);
     setTiktokStatus(tiktokMode === 'video' ? 'Đang lấy comment TikTok theo video...' : 'Đang lấy comment TikTok theo kênh...');
     try {
-      let endpoint = tiktokMode === 'video'
+      const endpoint = tiktokMode === 'video'
         ? '/api/tiktok/comments/fetch'
         : tiktokMode === 'managed'
           ? '/api/tiktok/channels/fetch-comments'
           : '/api/tiktok/channel-comments/fetch';
-      let body: Record<string, unknown> = tiktokMode === 'video'
+      const body: Record<string, unknown> = tiktokMode === 'video'
         ? {
             url,
             channel_name: tiktokChannelName.trim(),

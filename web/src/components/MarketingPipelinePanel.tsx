@@ -5,7 +5,7 @@ import { Download, X } from 'lucide-react';
 import { api, AI_TIMEOUT_MS, PUBLISH_TIMEOUT_MS, UPLOAD_TIMEOUT_MS, formatFetchError } from '@/lib/api';
 import { APP_BRAND } from '@/lib/app-brand';
 import { buildFacebookPostMessage } from '@/lib/facebook-post-message';
-import type { ContentPipelinePost, FbPage, GroupRow } from '@/lib/types';
+import type { ContentPipelinePost, FacebookPublishedPost, FbPage, GroupRow, StoredPostComment } from '@/lib/types';
 import { PostPublishPreview } from '@/components/PostPublishPreview';
 import type { SheetData } from 'write-excel-file/browser';
 
@@ -34,8 +34,17 @@ type PublishResult = {
   ok: boolean;
   target: PublishTarget;
   post_id?: string;
+  post_url?: string;
   error?: string;
   delivery?: string;
+};
+
+type ExtensionQueueResponse = {
+  ok?: boolean;
+  error?: string;
+  activeRequestId?: string;
+  targetCount?: number;
+  alreadyStopped?: boolean;
 };
 
 type PostMediaItem = { url: string; type?: 'image' | 'video'; name?: string };
@@ -54,6 +63,7 @@ type HistoryRow = {
   results?: PublishResult[];
   publisherName?: string;
   createdAt: string;
+  facebookRecord?: FacebookPublishedPost;
 };
 
 const HISTORY_KEY = 'seeding-post-history-v2';
@@ -154,6 +164,8 @@ function historyFingerprint(row: Pick<HistoryRow, 'title' | 'content' | 'schedul
 function displayPostStatus(status: string) {
   const value = (status || '').trim().toLowerCase();
   if (value === 'posted') return 'Đã đăng';
+  if (value === 'success') return 'Đã đăng';
+  if (value === 'pending') return 'Chờ Facebook xác nhận';
   if (value === 'scheduled') return 'Đã lưu lịch';
   if (value === 'partial') return 'Đã đăng một phần';
   if (value === 'failed') return 'Lỗi';
@@ -165,6 +177,7 @@ function deliveryLabel(result?: PublishResult) {
   if (!result) return 'Đang chờ';
   if (result.delivery === 'cancelled') return 'Đã hủy';
   if (!result.ok) return `Lỗi: ${result.error || 'không xác định'}`;
+  if (result.delivery === 'manual_reference') return 'Đã gắn link thủ công';
   if (result.delivery === 'pending_review') return 'Chờ Facebook kiểm duyệt';
   if (result.delivery === 'published') return 'Facebook báo đã đăng';
   if (result.delivery === 'submitted') return 'Đã gửi, chưa xác định kiểm duyệt';
@@ -173,6 +186,14 @@ function deliveryLabel(result?: PublishResult) {
   if (result.delivery === 'opening') return 'Đang mở Facebook';
   if (result.post_id) return 'Đã đăng';
   return result.delivery || 'Đã xử lý';
+}
+
+function facebookDestinationUrl(record: FacebookPublishedPost) {
+  const targetId = String(record.target_id || '').trim();
+  if (!targetId) return '';
+  return record.target_type === 'group'
+    ? `https://www.facebook.com/groups/${encodeURIComponent(targetId)}`
+    : `https://www.facebook.com/${encodeURIComponent(targetId)}`;
 }
 
 function publishResultPerformance(result?: PublishResult) {
@@ -188,7 +209,7 @@ function publishResultPerformance(result?: PublishResult) {
 function historyPillClass(status: string) {
   const value = status.toLowerCase();
   if (value.includes('lỗi') || value.includes('failed') || value.includes('chưa xác nhận') || value.includes('hủy')) return 'pill-danger';
-  if (value.includes('đang') || value.includes('chờ') || value.includes('khởi tạo')) return 'pill-pending';
+  if (value.includes('đang') || value.includes('chờ') || value.includes('khởi tạo') || value.includes('pending')) return 'pill-pending';
   return 'pill-ok';
 }
 
@@ -277,6 +298,10 @@ export function MarketingPipelinePanel({
   const [selectedPages, setSelectedPages] = useState<Record<string, boolean>>({});
   const [captionVariants, setCaptionVariants] = useState<Record<string, string>>({});
   const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [facebookPosts, setFacebookPosts] = useState<FacebookPublishedPost[]>([]);
+  const [facebookHistoryBusy, setFacebookHistoryBusy] = useState<Record<string, boolean>>({});
+  const [facebookComments, setFacebookComments] = useState<Record<string, StoredPostComment[]>>({});
+  const [expandedComments, setExpandedComments] = useState('');
   const [localStatus, setLocalStatus] = useState('');
   const [loadingTargets, setLoadingTargets] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -289,6 +314,7 @@ export function MarketingPipelinePanel({
   const [historyExporting, setHistoryExporting] = useState(false);
   const [historyExportError, setHistoryExportError] = useState('');
   const assistedQueueRequestRef = useRef('');
+  const assistedQueuePayloadRef = useRef<{ requestId: string; title: string; content: string; hashtags: string; mediaUrls: string[]; targets: PublishTarget[] } | null>(null);
 
   useEffect(() => {
     try {
@@ -301,7 +327,46 @@ export function MarketingPipelinePanel({
 
   useEffect(() => {
     void loadTargets();
+    void loadFacebookHistory();
   }, []);
+
+  useEffect(() => {
+    void loadFacebookHistory();
+  }, [data.posts]);
+
+  async function loadFacebookHistory() {
+    try {
+      const response = await api('/api/facebook-posts');
+      const payload = await response.json().catch(() => ({ posts: [] }));
+      if (response.ok && payload.ok && Array.isArray(payload.posts)) setFacebookPosts(payload.posts);
+    } catch {
+      // The pipeline/local history remains available when the migration is not installed yet.
+    }
+  }
+
+  async function persistAssistedHistory(status: string, results: PublishResult[] = [], error = '') {
+    const snapshot = assistedQueuePayloadRef.current;
+    if (!snapshot) return;
+    try {
+      await api('/api/facebook-posts/extension-result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_id: snapshot.requestId,
+          content: [snapshot.title, snapshot.content].filter(Boolean).join('\n\n'),
+          hashtags: snapshot.hashtags,
+          media_urls: snapshot.mediaUrls,
+          targets: snapshot.targets,
+          status,
+          error,
+          results: results.map((item) => ({ ...item, ...item.target, target: undefined })),
+        }),
+      });
+      await loadFacebookHistory();
+    } catch {
+      // Keep local history; a later backend publish/list refresh can recover the UI.
+    }
+  }
 
   useEffect(() => {
     try {
@@ -369,13 +434,15 @@ export function MarketingPipelinePanel({
         const outcome = ['published', 'pending_review'].includes(payload.outcome) ? payload.outcome : 'submitted';
         updateHistory(`Đã gửi ${completed}/${total}`, {
           ok: true, target, delivery: outcome,
+          post_id: payload.postId ? String(payload.postId) : undefined,
+          post_url: payload.postUrl ? String(payload.postUrl) : undefined,
         });
         const outcomeText = outcome === 'pending_review'
           ? 'đang chờ kiểm duyệt'
           : outcome === 'published' ? 'đã đăng' : 'đã gửi thao tác đăng';
         setLocalStatus(`Đã ghi nhận ${targetName}: ${outcomeText} (${completed}/${total}). Đang chuyển nơi tiếp theo...`);
       } else if (payload.status === 'done') {
-        const finalResults: PublishResult[] = safeList<any>(payload.results).map((item) => ({
+        const finalResults: PublishResult[] = safeList<Record<string, unknown>>(payload.results).map((item) => ({
           ok: item.ok !== false,
           target: {
             type: item.type === 'page' ? 'page' : 'group',
@@ -383,9 +450,12 @@ export function MarketingPipelinePanel({
             name: String(item.name || item.id || ''),
           },
           delivery: String(item.delivery || 'submitted'),
+          post_id: item.post_id ? String(item.post_id) : undefined,
+          post_url: item.post_url ? String(item.post_url) : undefined,
           error: item.error ? String(item.error) : undefined,
         }));
         updateHistory(`Hoàn tất ${completed}/${total} · kiểm tra trạng thái từng nơi`, undefined, finalResults);
+        void persistAssistedHistory('done', finalResults);
         setAssistedQueueBusy(false);
         setLocalStatus(`Hoàn tất đăng hỗ trợ ${completed}/${total} nơi. Xem trạng thái chi tiết trong lịch sử.`);
       } else if (payload.status === 'cancelled') {
@@ -393,17 +463,20 @@ export function MarketingPipelinePanel({
         assistedQueueRequestRef.current = '';
         setAssistedQueueBusy(false);
         setLocalStatus('Đã hủy hàng đợi đăng Facebook. Các Group/Page còn lại sẽ không được mở tiếp.');
+        void persistAssistedHistory('cancelled', [], 'Người dùng đã hủy hàng đợi');
       } else if (payload.status === 'confirmation_timeout') {
         updateHistory(`Chưa xác nhận tại ${targetName}`, {
           ok: false, target, delivery: 'confirmation_timeout', error: 'Facebook chưa đóng hộp soạn bài sau 45 giây.',
         });
         setLocalStatus(`Facebook chưa xác nhận bài tại ${targetName}. Kiểm tra lỗi rồi bấm Đăng lại.`);
+        void persistAssistedHistory('failed', [{ ok: false, target, delivery: 'confirmation_timeout', error: 'Facebook chưa xác nhận thao tác đăng.' }]);
       } else if (payload.status === 'error') {
         updateHistory(`Lỗi tại ${targetName}`, {
           ok: false, target, delivery: 'failed', error: String(payload.error || 'không chuẩn bị được bài viết'),
         });
         setAssistedQueueBusy(false);
         setLocalStatus(`Extension dừng tại ${targetName}: ${payload.error || 'không chuẩn bị được bài viết'}`);
+        void persistAssistedHistory('failed', [{ ok: false, target, delivery: 'failed', error: String(payload.error || 'Không chuẩn bị được bài viết') }], String(payload.error || 'Không chuẩn bị được bài viết'));
       }
     };
     window.addEventListener('message', handleFacebookQueueProgress);
@@ -449,16 +522,43 @@ export function MarketingPipelinePanel({
     }));
   }, [data.posts]);
 
+  const persistedFacebookHistory = useMemo<HistoryRow[]>(() => facebookPosts.map((post) => ({
+    id: `facebook-${post.id}`,
+    title: post.content?.split('\n').find(Boolean)?.slice(0, 100) || post.target_name || 'Bài Facebook',
+    content: post.content || '',
+    mediaUrl: post.media_urls?.[0] || '',
+    mediaUrls: post.media_urls || [],
+    hashtags: '',
+    scheduledAt: '',
+    targets: [{ type: post.target_type, id: post.target_id, name: post.target_name || post.target_id }],
+    status: post.status,
+    results: [{
+      ok: post.status !== 'failed',
+      target: { type: post.target_type, id: post.target_id, name: post.target_name || post.target_id },
+      post_id: post.facebook_post_id || undefined,
+      error: post.error_message || undefined,
+      delivery: post.delivery,
+    }],
+    publisherName: post.created_by_staff_name || post.created_by_staff_username || 'Không xác định',
+    createdAt: post.published_at || post.created_at || '',
+    facebookRecord: post,
+  })), [facebookPosts]);
+
   const visibleHistory = useMemo(() => {
-    const importedKeys = new Set(importedHistory.map(historyFingerprint));
+    const importedKeys = new Set([...persistedFacebookHistory, ...importedHistory].map(historyFingerprint));
+    const persistedChromeIds = new Set(facebookPosts.filter((item) => item.source === 'chrome_extension').map((item) => `chrome-${item.source_post_id}`));
+    const persistedPipelineIds = new Set(facebookPosts.filter((item) => ['content_pipeline', 'scheduled_pipeline'].includes(item.source || '')).map((item) => `pipeline-${item.source_post_id}`));
     const seen = new Set<string>();
-    return [...importedHistory, ...history].filter((row) => {
+    return [...persistedFacebookHistory, ...importedHistory, ...history].filter((row) => {
+      if (row.id.startsWith('pipeline-') && importedKeys.has(historyFingerprint(row)) && persistedFacebookHistory.some((item) => historyFingerprint(item) === historyFingerprint(row))) return false;
+      if (persistedPipelineIds.has(row.id)) return false;
       if (row.id.startsWith('local-') && importedKeys.has(historyFingerprint(row))) return false;
+      if (persistedChromeIds.has(row.id)) return false;
       if (seen.has(row.id)) return false;
       seen.add(row.id);
       return true;
     });
-  }, [history, importedHistory]);
+  }, [facebookPosts, history, importedHistory, persistedFacebookHistory]);
 
   const invalidHistoryRange = Boolean(historyFromDate && historyToDate && historyFromDate > historyToDate);
   const filteredHistory = useMemo(() => {
@@ -592,6 +692,14 @@ export function MarketingPipelinePanel({
     const directMedia = directMediaItem(mediaUrl);
     const assistedMedia = postMedia.length ? postMedia : directMedia ? [directMedia] : [];
     const linkPreviewUrl = !assistedMedia.length ? mediaUrl.trim() : '';
+    assistedQueuePayloadRef.current = {
+      requestId,
+      title,
+      content,
+      hashtags,
+      mediaUrls: assistedMedia.map((item) => item.url),
+      targets: assistedTargets,
+    };
     const historyId = `chrome-${requestId}`;
     setHistory((prev) => [{
       id: historyId,
@@ -608,10 +716,10 @@ export function MarketingPipelinePanel({
       createdAt: new Date().toISOString(),
     }, ...prev.filter((row) => row.id !== historyId)].slice(0, 80));
 
-    const response = await new Promise<Record<string, any>>((resolve) => {
+    const response = await new Promise<ExtensionQueueResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.32 và tải lại trang.' });
+        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.35 và tải lại trang.' });
       }, 6000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -653,6 +761,7 @@ export function MarketingPipelinePanel({
       setLocalStatus(`Không khởi động được đăng qua Chrome: ${response.error || 'extension không phản hồi'}`);
       return;
     }
+    void persistAssistedHistory('pending');
     setLocalStatus(
       `Đã giao ${response.targetCount || assistedTargets.length} nơi cho Chrome. `
       + 'Extension sẽ tự bấm Đăng, ghi trạng thái và chuyển sang nơi kế tiếp sau khi Facebook xác nhận.'
@@ -668,10 +777,10 @@ export function MarketingPipelinePanel({
     setCancellingHistoryIds((prev) => ({ ...prev, [row.id]: true }));
     setLocalStatus('Đang yêu cầu Chrome hủy hàng đợi Facebook...');
     try {
-      const response = await new Promise<Record<string, any>>((resolve) => {
+      const response = await new Promise<ExtensionQueueResponse>((resolve) => {
         const timer = window.setTimeout(() => {
           window.removeEventListener('message', handleResponse);
-          resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.32 và tải lại trang.' });
+          resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.35 và tải lại trang.' });
         }, 6000);
         function handleResponse(event: MessageEvent) {
           if (event.source !== window) return;
@@ -919,6 +1028,80 @@ export function MarketingPipelinePanel({
     }
   }
 
+  async function refreshFacebookMetrics(record: FacebookPublishedPost) {
+    setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: true }));
+    setLocalStatus('Đang cập nhật tương tác từ Facebook...');
+    try {
+      const response = await api(`/api/facebook-posts/${encodeURIComponent(record.id)}/refresh`, { method: 'POST' });
+      const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không cập nhật được tương tác');
+      setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? payload.post : item));
+      setLocalStatus('Đã cập nhật like/reaction, comment và share từ dữ liệu Facebook hiện có.');
+    } catch (error) {
+      setLocalStatus(`Không cập nhật được tương tác: ${formatFetchError(error)}`);
+    } finally {
+      setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: false }));
+    }
+  }
+
+  async function attachFacebookReference(record: FacebookPublishedPost) {
+    const postUrl = window.prompt('Dán permalink Facebook: bấm vào thời gian đăng để mở riêng bài viết, rồi sao chép URL trên thanh địa chỉ (không dùng link /share/)');
+    if (!postUrl?.trim()) return;
+    setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: true }));
+    try {
+      const response = await api(`/api/facebook-posts/${encodeURIComponent(record.id)}/reference`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ post_url: postUrl.trim() }),
+      });
+      const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không gắn được link bài Facebook');
+      setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? payload.post : item));
+      setLocalStatus('Đã xác nhận Post ID từ permalink Facebook. Bạn có thể cập nhật tương tác và lấy comment.');
+    } catch (error) {
+      setLocalStatus(`Không gắn được link: ${formatFetchError(error)}`);
+    } finally {
+      setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: false }));
+    }
+  }
+
+  async function collectFacebookComments(record: FacebookPublishedPost) {
+    setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: true }));
+    setLocalStatus('Đang thu thập comment Facebook...');
+    try {
+      const response = await api(`/api/facebook-posts/${encodeURIComponent(record.id)}/comments`, { method: 'POST' });
+      const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không lấy được comment');
+      setFacebookComments((prev) => ({ ...prev, [record.id]: Array.isArray(payload.comments) ? payload.comments : [] }));
+      setExpandedComments(record.id);
+      setLocalStatus(`Đã lưu ${payload.count || 0} comment; người chưa có SĐT vẫn được giữ trong danh sách tiềm năng.`);
+    } catch (error) {
+      setLocalStatus(`Không lấy được comment: ${formatFetchError(error)}`);
+    } finally {
+      setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: false }));
+    }
+  }
+
+  async function createLeadFromFacebookComment(recordId: string, comment: StoredPostComment) {
+    if (!comment.post_id || !comment.comment_id) return;
+    setFacebookHistoryBusy((prev) => ({ ...prev, [`comment-${comment.comment_id}`]: true }));
+    try {
+      const response = await api('/api/leads/from-comments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: comment.source || 'facebook', post_id: comment.post_id, comment_id: comment.comment_id, include_without_phone: true }),
+      });
+      const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không tạo được Lead');
+      setFacebookComments((prev) => ({ ...prev, [recordId]: (prev[recordId] || []).map((item) => item.comment_id === comment.comment_id ? { ...item, lead_exists: true } : item) }));
+      setLocalStatus(payload.new_count ? 'Đã tạo Lead từ commenter.' : 'Commenter đã có trong CRM, không tạo bản ghi trùng.');
+    } catch (error) {
+      setLocalStatus(`Không tạo được Lead: ${formatFetchError(error)}`);
+    } finally {
+      setFacebookHistoryBusy((prev) => ({ ...prev, [`comment-${comment.comment_id}`]: false }));
+    }
+  }
+
   function appendHistory(row: Omit<HistoryRow, 'id' | 'createdAt'>) {
     setHistory((prev) => [{
       ...row,
@@ -959,8 +1142,8 @@ export function MarketingPipelinePanel({
       });
       setCaptionVariants(next);
       setLocalStatus(`Đã tạo ${Object.keys(next).length} biến thể nội dung.${payload.warning ? ` ${payload.warning}` : ''}`);
-    } catch (err: any) {
-      setLocalStatus(`Lỗi AI viết bài: ${err?.message || 'Không tạo được biến thể'}`);
+    } catch (err: unknown) {
+      setLocalStatus(`Lỗi AI viết bài: ${formatFetchError(err) || 'Không tạo được biến thể'}`);
     } finally {
       setGenerating(false);
     }
@@ -1025,11 +1208,11 @@ export function MarketingPipelinePanel({
           + `Lượt đầu chạy trong khoảng 30 giây, các lượt sau cách nhau ${payload.interval_minutes || PUBLISH_INTERVAL_MINUTES} phút.`
         );
       } else if (payload.results) {
-        const results: PublishResult[] = payload.results.map((r: any) => ({
-          ok: !!r.ok,
-          target: { type: r.type || 'group', id: r.id || '', name: r.name || '' },
-          post_id: r.post_id,
-          error: r.error,
+        const results: PublishResult[] = (payload.results as Record<string, unknown>[]).map((r) => ({
+          ok: r.ok !== false,
+          target: { type: r.type === 'page' ? 'page' : 'group', id: String(r.id || ''), name: String(r.name || '') },
+          post_id: r.post_id ? String(r.post_id) : undefined,
+          error: r.error ? String(r.error) : undefined,
         }));
         const okCount = results.filter((item) => item.ok).length;
         const failCount = results.length - okCount;
@@ -1078,6 +1261,7 @@ export function MarketingPipelinePanel({
     } finally {
       setPublishing(false);
       void onReload();
+      void loadFacebookHistory();
     }
   }
 
@@ -1476,6 +1660,8 @@ export function MarketingPipelinePanel({
                 <th>Nơi đăng</th>
                 <th>Người đăng</th>
                 <th>Trạng thái</th>
+                <th>Tương tác</th>
+                <th>Hành động</th>
               </tr>
             </thead>
             <tbody>
@@ -1519,10 +1705,33 @@ export function MarketingPipelinePanel({
                       </button>
                     ) : null}
                   </td>
+                  <td>
+                    {row.facebookRecord ? (
+                      <div className="facebook-metrics-cell">
+                        <span>❤️ {row.facebookRecord.reaction_count ?? '—'}</span>
+                        <span>💬 {row.facebookRecord.comment_count ?? '—'}</span>
+                        <span>↗ {row.facebookRecord.share_count ?? '—'}</span>
+                        <b>Tổng {row.facebookRecord.total_interactions ?? '—'}</b>
+                        <small>{row.facebookRecord.metrics_updated_at ? `Cập nhật ${formatDateTime(row.facebookRecord.metrics_updated_at)}` : 'Chưa đồng bộ'}</small>
+                      </div>
+                    ) : '—'}
+                  </td>
+                  <td>
+                    {row.facebookRecord ? (
+                      <div className="facebook-history-actions">
+                        {row.facebookRecord.post_url
+                          ? <a href={row.facebookRecord.post_url} target="_blank" rel="noreferrer">Xem bài Facebook</a>
+                          : <a href={facebookDestinationUrl(row.facebookRecord)} target="_blank" rel="noreferrer">Mở nơi đăng</a>}
+                        {!row.facebookRecord.facebook_post_id ? <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id]} onClick={() => void attachFacebookReference(row.facebookRecord!)}>Gắn link thủ công</button> : null}
+                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || !row.facebookRecord.facebook_post_id} onClick={() => void refreshFacebookMetrics(row.facebookRecord!)}>Cập nhật tương tác</button>
+                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || !row.facebookRecord.facebook_post_id} onClick={() => void collectFacebookComments(row.facebookRecord!)}>Xem comment</button>
+                      </div>
+                    ) : '—'}
+                  </td>
                 </tr>
               )) : (
                 <tr>
-                  <td colSpan={7} className="table-empty">
+                  <td colSpan={9} className="table-empty">
                     {visibleHistory.length ? 'Không có bài đăng trong khoảng ngày đã chọn' : 'Chưa có bài đăng nào'}
                   </td>
                 </tr>
@@ -1530,6 +1739,32 @@ export function MarketingPipelinePanel({
             </tbody>
           </table>
         </div>
+        {expandedComments ? (
+          <div className="facebook-comment-results">
+            <div className="seeding-history-head">
+              <div className="seeding-section-title">Comment / khách hàng tiềm năng</div>
+              <button type="button" className="table-icon-button" onClick={() => setExpandedComments('')}>Đóng</button>
+            </div>
+            <div className="data-table-wrap">
+              <table className="data-table">
+                <thead><tr><th>Người comment</th><th>Nội dung</th><th>Facebook</th><th>SĐT</th><th>Nguồn SĐT</th><th>Trạng thái</th><th>Hành động</th></tr></thead>
+                <tbody>
+                  {(facebookComments[expandedComments] || []).length ? (facebookComments[expandedComments] || []).map((comment, index) => (
+                    <tr key={comment.comment_id || index}>
+                      <td>{comment.author_name || 'Ẩn danh'}</td>
+                      <td>{comment.message || '—'}</td>
+                      <td>{comment.author_url ? <a href={comment.author_url} target="_blank" rel="noreferrer">Mở profile</a> : '—'}</td>
+                      <td>{comment.phones?.join(', ') || comment.phone || 'Chưa có'}</td>
+                      <td>{comment.phones_auto?.length ? 'Facebook Comment' : comment.phones_manual?.length ? 'Nhân viên cập nhật' : 'Chưa có'}</td>
+                      <td>{comment.lead_exists ? 'Đã có trong CRM' : comment.phones?.length || comment.phone ? 'Có SĐT' : 'Lead tiềm năng · chưa có SĐT'}</td>
+                      <td><button type="button" disabled={comment.lead_exists || !!facebookHistoryBusy[`comment-${comment.comment_id}`]} onClick={() => void createLeadFromFacebookComment(expandedComments, comment)}>{comment.lead_exists ? 'Đã có CRM' : 'Tạo Lead'}</button></td>
+                    </tr>
+                  )) : <tr><td colSpan={7} className="table-empty">Bài chưa có comment hoặc Facebook không cấp quyền đọc.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="seeding-status-line">{localStatus || status}</div>

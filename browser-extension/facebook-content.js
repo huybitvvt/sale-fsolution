@@ -17,6 +17,10 @@
     autoSubmitTimer: null,
     submissionAutomatic: false,
     preSubmitFailureNotices: new Set(),
+    preSubmitPostUrls: new Set(),
+    preSubmitPostIds: new Set(),
+    postReferenceObserver: null,
+    postReferenceCandidates: [],
     preparedKey: '',
     mediaAttachedCount: 0,
     cancelledRequestIds: new Set(),
@@ -565,6 +569,10 @@
     state.mediaAttachedCount = 0;
     state.postClickedAt = 0;
     state.submissionAutomatic = false;
+    stopPostReferenceObserver();
+    state.preSubmitPostUrls = new Set();
+    state.preSubmitPostIds = new Set();
+    state.postReferenceCandidates = [];
     if (state.completionTimer) clearInterval(state.completionTimer);
     if (state.autoSubmitTimer) clearTimeout(state.autoSubmitTimer);
     state.autoSubmitTimer = null;
@@ -699,6 +707,7 @@
 
   function failAutomaticSubmission(preparedKey, error) {
     if (state.preparedKey !== preparedKey || state.cancelledRequestIds.has(state.requestId)) return;
+    stopPostReferenceObserver();
     state.preparedKey = '';
     state.postClickedAt = 0;
     state.submissionAutomatic = false;
@@ -714,6 +723,13 @@
     state.preSubmitFailureNotices = new Set(
       collectPostFailures().map((notice) => notice.toLowerCase()),
     );
+    state.preSubmitPostUrls = new Set(
+      [...document.querySelectorAll('[role="article"] a[href]')]
+        .map((anchor) => anchor.href || '')
+        .filter((href) => isPostReferenceUrl(href)),
+    );
+    state.preSubmitPostIds = new Set([...state.preSubmitPostUrls].map(postIdFromUrl).filter(Boolean));
+    startPostReferenceObserver();
     showStatus(`Đang chờ Facebook xác nhận bài tại ${state.groupName}...`);
     sendProgress('submitting', { automatic });
     watchForCompletion();
@@ -785,6 +801,107 @@
     return 'submitted';
   }
 
+  function postIdFromUrl(url) {
+    return globalThis.STREALFacebookPostReference?.postIdFromUrl(url)
+      || String(url || '').match(/\/posts\/(\d+)/i)?.[1]
+      || String(url || '').match(/[?&](?:story_fbid|fbid)=(\d+)/i)?.[1]
+      || String(url || '').match(/\/permalink\/(\d+)/i)?.[1]
+      || '';
+  }
+
+  function isPostReferenceUrl(url) {
+    return globalThis.STREALFacebookPostReference?.isPostReferenceUrl(url)
+      || Boolean(postIdFromUrl(url));
+  }
+
+  const PUBLISHED_REFERENCE_PHRASES = [
+    'xem bài viết',
+    'view post',
+    'đã đăng',
+    'đã chia sẻ',
+    'post published',
+    'post was published',
+    'successfully posted',
+  ];
+
+  function postReferenceScore(anchor) {
+    if (!(anchor instanceof Element)) return 0;
+    const article = anchor.closest('[role="article"]');
+    if (article && captionTextMatches(article.innerText || article.textContent || '', state.message)) return 120;
+    const notice = anchor.closest('[role="alert"], [role="status"]');
+    const context = normalize(notice?.innerText || notice?.textContent || anchor.innerText || anchor.textContent || '').toLowerCase();
+    return PUBLISHED_REFERENCE_PHRASES.some((phrase) => context.includes(phrase)) ? 100 : 0;
+  }
+
+  function rememberPostReference(url, score = 0) {
+    const postUrl = String(url || '').trim();
+    const postId = postIdFromUrl(postUrl);
+    if (!postId || state.preSubmitPostIds.has(postId)) return;
+    const existing = state.postReferenceCandidates.find((candidate) => candidate.postId === postId);
+    if (existing) {
+      existing.score = Math.max(existing.score, score);
+      if (score >= existing.score) existing.postUrl = postUrl;
+      return;
+    }
+    state.postReferenceCandidates.push({ postId, postUrl, score, detectedAt: Date.now() });
+  }
+
+  function capturePostReferenceLinks(root) {
+    const element = root instanceof Element ? root : root?.parentElement;
+    if (!element) return;
+    const anchors = [];
+    if (element.matches?.('a[href]')) anchors.push(element);
+    anchors.push(...element.querySelectorAll?.('a[href]') || []);
+    for (const anchor of anchors) {
+      if (!isPostReferenceUrl(anchor.href || '')) continue;
+      rememberPostReference(anchor.href, postReferenceScore(anchor));
+    }
+  }
+
+  function stopPostReferenceObserver() {
+    state.postReferenceObserver?.disconnect();
+    state.postReferenceObserver = null;
+  }
+
+  function startPostReferenceObserver() {
+    stopPostReferenceObserver();
+    state.postReferenceCandidates = [];
+    state.postReferenceObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        capturePostReferenceLinks(mutation.target);
+        for (const node of mutation.addedNodes || []) capturePostReferenceLinks(node);
+      }
+    });
+    state.postReferenceObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['href'],
+    });
+  }
+
+  async function findNewPublishedPostReference() {
+    const selector = 'a[href*="/posts/"], a[href*="story_fbid="], a[href*="/permalink/"], a[href*="fbid="]';
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const currentPostId = postIdFromUrl(window.location.href);
+      if (currentPostId && !state.preSubmitPostIds.has(currentPostId)) {
+        return { postId: currentPostId, postUrl: window.location.href };
+      }
+      for (const article of document.querySelectorAll('[role="article"]')) {
+        if (!isVisible(article) || !captionTextMatches(article.innerText || '', state.message)) continue;
+        for (const anchor of article.querySelectorAll(selector)) rememberPostReference(anchor.href, 120);
+      }
+      for (const notice of document.querySelectorAll('[role="alert"], [role="status"]')) {
+        if (!isVisible(notice)) continue;
+        for (const anchor of notice.querySelectorAll(selector)) rememberPostReference(anchor.href, postReferenceScore(anchor));
+      }
+      const best = [...state.postReferenceCandidates].sort((a, b) => b.score - a.score || b.detectedAt - a.detectedAt)[0];
+      if (best?.score >= 100) return { postId: best.postId, postUrl: best.postUrl };
+      await sleep(750);
+    }
+    return { postId: '', postUrl: '' };
+  }
+
   function collectPostFailures() {
     const notices = Array.from(document.querySelectorAll('[role="alert"], [role="status"]'))
       .filter(isVisible)
@@ -824,6 +941,7 @@
       if (facebookFailure) {
         clearInterval(state.completionTimer);
         state.completionTimer = null;
+        stopPostReferenceObserver();
         state.postClickedAt = 0;
         state.preparedKey = '';
         const error = `Facebook từ chối đăng: ${facebookFailure}`;
@@ -835,16 +953,21 @@
       if (dialogGone) {
         clearInterval(state.completionTimer);
         state.completionTimer = null;
-        setTimeout(() => {
+        setTimeout(async () => {
           const delayedFailure = detectPostFailure();
           if (delayedFailure) {
+            stopPostReferenceObserver();
             state.preparedKey = '';
             const error = `Facebook từ chối đăng: ${delayedFailure}`;
             showStatus(`${error}\nHàng đợi đã dừng.`, 'error');
             sendProgress('facebook_error', { error, automatic: state.submissionAutomatic });
             return;
           }
-          const outcome = detectPostOutcome();
+          let outcome = detectPostOutcome();
+          showStatus(`Facebook đã đóng hộp đăng tại ${state.groupName}. Đang tự tìm link bài viết...`);
+          const reference = await findNewPublishedPostReference();
+          stopPostReferenceObserver();
+          if (reference.postUrl && outcome === 'submitted') outcome = 'published';
           const outcomeText = outcome === 'pending_review'
             ? 'Facebook báo đang chờ kiểm duyệt'
             : outcome === 'published' ? 'Facebook báo đã đăng' : 'đã gửi thao tác đăng';
@@ -852,6 +975,8 @@
           sendProgress('confirmed', {
             confirmedAt: new Date().toISOString(),
             outcome,
+            postId: reference.postId,
+            postUrl: reference.postUrl,
             automatic: state.submissionAutomatic,
           });
         }, 800);
@@ -860,6 +985,7 @@
       if (Date.now() - state.postClickedAt > 45000) {
         clearInterval(state.completionTimer);
         state.completionTimer = null;
+        stopPostReferenceObserver();
         state.postClickedAt = 0;
         state.preparedKey = '';
         const error = 'Facebook chưa xác nhận đăng xong sau 45 giây.';
@@ -898,6 +1024,10 @@
       state.postClickedAt = 0;
       state.submissionAutomatic = false;
       state.preSubmitFailureNotices = new Set();
+      state.preSubmitPostUrls = new Set();
+      state.preSubmitPostIds = new Set();
+      stopPostReferenceObserver();
+      state.postReferenceCandidates = [];
       showStatus('Đã hủy hàng đợi đăng Facebook. Bài chưa đăng sẽ không tự chuyển sang nơi khác.', 'error');
       sendResponse({ ok: true, cancelled: true });
       return false;

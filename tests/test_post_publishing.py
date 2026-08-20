@@ -93,6 +93,7 @@ class PostPublishingTests(unittest.TestCase):
             with (
                 patch.object(backend, '_staff_for_scheduled_post', return_value={'id': 'staff-1'}),
                 patch.object(backend, '_publish_content_pipeline_post', side_effect=fake_publish),
+                patch.object(backend, '_record_publish_results', return_value=[]),
                 patch.object(backend, '_save_content_pipeline'),
             ):
                 first = backend._run_due_scheduled_posts()

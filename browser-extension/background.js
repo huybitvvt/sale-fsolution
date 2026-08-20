@@ -1,4 +1,94 @@
 const TIKTOK_HOST = 'https://www.tiktok.com';
+const STREAL_API_ORIGIN_KEY = 'strealApiOrigin';
+
+function isAllowedApiOrigin(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return (url.protocol === 'https:' && (url.hostname.endsWith('.vercel.app') || url.hostname === 'sale-fsolution.onrender.com'))
+      || (url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
+async function saveFacebookPublicContact(payload) {
+  const stored = await chrome.storage.local.get(STREAL_API_ORIGIN_KEY);
+  const origin = String(stored?.[STREAL_API_ORIGIN_KEY] || '');
+  if (!isAllowedApiOrigin(origin)) {
+    return { ok: false, error: 'Hay mo va dang nhap F-Solution mot lan truoc khi luu Lead.' };
+  }
+  try {
+    const appTabs = await chrome.tabs.query({ url: `${origin}/*` });
+    const appTab = appTabs.find((tab) => Number.isInteger(tab.id));
+    if (appTab?.id) {
+      const injected = await chrome.scripting.executeScript({
+        target: { tabId: appTab.id },
+        world: 'MAIN',
+        args: [payload || {}],
+        func: async (contact) => {
+          const response = await fetch('/api/facebook-contacts', {
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(contact),
+          });
+          const data = await response.json().catch(() => ({ ok: false, error: `Server ${response.status}` }));
+          return response.ok ? data : { ok: false, error: data.error || `Server ${response.status}` };
+        },
+      });
+      if (injected?.[0]?.result) return injected[0].result;
+    }
+  } catch {
+    // Fall through to a direct extension request when the app tab cannot be injected.
+  }
+  const response = await fetch(`${origin}/api/facebook-contacts`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+  });
+  const data = await response.json().catch(() => ({ ok: false, error: `Server ${response.status}` }));
+  return response.ok ? data : { ok: false, error: data.error || `Server ${response.status}` };
+}
+
+async function persistFacebookQueueHistory(queue, status = 'pending', error = '') {
+  if (!queue?.requestId || !Array.isArray(queue.tasks) || !queue.tasks.length) return { ok: false };
+  const stored = await chrome.storage.local.get(STREAL_API_ORIGIN_KEY);
+  const origin = String(stored?.[STREAL_API_ORIGIN_KEY] || '');
+  if (!isAllowedApiOrigin(origin)) return { ok: false };
+  const payload = {
+    request_id: queue.requestId,
+    content: queue.tasks[0]?.message || '',
+    media_urls: (queue.tasks[0]?.media || []).map((item) => item.url).filter(Boolean),
+    targets: queue.tasks.map((task) => ({ type: task.type, id: task.id, name: task.name })),
+    results: queue.results || [],
+    status,
+    error,
+  };
+  try {
+    const tabs = await chrome.tabs.query({ url: `${origin}/*` });
+    const tab = tabs.find((item) => Number.isInteger(item.id));
+    if (tab?.id) {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId: tab.id }, world: 'MAIN', args: [payload],
+        func: async (history) => {
+          const response = await fetch('/api/facebook-posts/extension-result', {
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(history),
+          });
+          return response.json().catch(() => ({ ok: false }));
+        },
+      });
+      return result?.[0]?.result || { ok: false };
+    }
+  } catch {
+    // Try a direct request below; it may still work when the app tab was closed.
+  }
+  try {
+    const response = await fetch(`${origin}/api/facebook-posts/extension-result`, {
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    return response.json().catch(() => ({ ok: false }));
+  } catch {
+    return { ok: false };
+  }
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -866,6 +956,7 @@ async function openCurrentFacebookQueueTask(queue) {
   if (await shouldStopFacebookQueue(queue?.requestId)) return { ok: true, cancelled: true };
   const task = queue?.tasks?.[queue.index];
   if (!task) {
+    await persistFacebookQueueHistory(queue, 'done');
     await notifyFacebookQueue(queue, 'done', { results: queue.results || [] });
     if (queue?.originTabId) {
       try { await chrome.tabs.update(queue.originTabId, { active: true }); } catch {}
@@ -1005,11 +1096,13 @@ async function startFacebookGroupQueue(request, sender) {
   };
   cancelledFacebookQueueRequests.delete(queue.requestId);
   await storageSet(FACEBOOK_QUEUE_STORAGE_KEY, queue);
+  void persistFacebookQueueHistory(queue, 'pending');
   openCurrentFacebookQueueTask(queue).catch(async (error) => {
     if (await shouldStopFacebookQueue(queue.requestId)) return;
     queue.status = 'paused';
     queue.error = error?.message || String(error);
     await storageSet(FACEBOOK_QUEUE_STORAGE_KEY, queue);
+    await persistFacebookQueueHistory(queue, 'failed', queue.error);
     await notifyFacebookQueue(queue, 'error', { error: queue.error });
   });
   return { ok: true, accepted: true, targetCount: tasks.length };
@@ -1032,6 +1125,7 @@ async function cancelFacebookGroupQueue(request) {
   queue.cancelledAt = new Date().toISOString();
   queue.error = '';
   await storageSet(FACEBOOK_QUEUE_STORAGE_KEY, queue);
+  await persistFacebookQueueHistory(queue, 'cancelled', 'Nguoi dung da huy hang doi');
   if (queue.facebookTabId) {
     await sendTabMessage(queue.facebookTabId, {
       type: 'STREAL_FACEBOOK_CANCEL_GROUP_POST',
@@ -1064,6 +1158,7 @@ async function handleFacebookQueueEvent(message, sender) {
     queue.status = 'paused';
     queue.error = message.error || 'Facebook khong xac nhan duoc thao tac dang.';
     await storageSet(FACEBOOK_QUEUE_STORAGE_KEY, queue);
+    await persistFacebookQueueHistory(queue, 'failed', queue.error);
     await notifyFacebookQueue(queue, 'error', {
       targetType: task.type,
       targetId: task.id,
@@ -1096,6 +1191,8 @@ async function handleFacebookQueueEvent(message, sender) {
     name: task.name,
     confirmedAt: message.confirmedAt || new Date().toISOString(),
     delivery: ['published', 'pending_review'].includes(message.outcome) ? message.outcome : 'submitted',
+    post_id: message.postId || '',
+    post_url: message.postUrl || '',
     method: message.automatic ? 'auto-chrome-composer' : 'user-confirmed-chrome',
   }];
   queue.index += 1;
@@ -1109,6 +1206,8 @@ async function handleFacebookQueueEvent(message, sender) {
     groupName: task.name,
     completedCount: queue.index,
     outcome: ['published', 'pending_review'].includes(message.outcome) ? message.outcome : 'submitted',
+    postId: message.postId || '',
+    postUrl: message.postUrl || '',
   });
   if (await shouldStopFacebookQueue(queue.requestId)) {
     return { ok: true, cancelled: true, completedCount: queue.index, targetCount: queue.tasks.length };
@@ -1118,6 +1217,22 @@ async function handleFacebookQueueEvent(message, sender) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'STREAL_EXTENSION_SET_API_ORIGIN') {
+    if (!isAllowedApiOrigin(message.origin)) {
+      sendResponse({ ok: false, error: 'API origin khong hop le' });
+      return false;
+    }
+    chrome.storage.local.set({ [STREAL_API_ORIGIN_KEY]: message.origin })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+  if (message?.type === 'STREAL_SAVE_PUBLIC_FACEBOOK_CONTACT') {
+    saveFacebookPublicContact(message.payload || {})
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
   if (message?.type === 'STREAL_EXTENSION_START_FACEBOOK_GROUP_QUEUE') {
     startFacebookGroupQueue(message, sender)
       .then((response) => sendResponse(response))

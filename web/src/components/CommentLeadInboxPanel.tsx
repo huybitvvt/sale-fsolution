@@ -677,8 +677,7 @@ export function CommentLeadInboxPanel() {
     .map((row) => {
       const tags = tagsForRow(row);
       const phones = row.phones?.length ? row.phones : (row.phone ? [row.phone] : []);
-      const isLead = phones.length || tags.some((tag) => ['hot', 'closed', 'need', 'price', 'vip'].includes(tag.key));
-      return isLead ? { row, tags, phones } : null;
+      return { row, tags, phones };
     })
     .filter(Boolean) as { row: StoredPostComment; tags: TagMeta[]; phones: string[] }[], [filtered, tagsForRow]);
 
@@ -754,8 +753,8 @@ export function CommentLeadInboxPanel() {
   }, [comments, customers, channelCounts, tagCounts, tagOptions, workflowCounts, tagsForRow]);
 
   const syncLead = async (row?: StoredPostComment | null) => {
-    const body = row?.post_id ? { source: row.source || '', post_id: row.post_id } : {};
-    setStatus('Đang đưa SĐT/comment tiềm năng vào bảng Lead...');
+    const body = row?.post_id ? { source: row.source || '', post_id: row.post_id, include_without_phone: true } : { include_without_phone: true };
+    setStatus('Đang đưa commenter tiềm năng vào bảng Lead (kể cả chưa có SĐT)...');
     try {
       const r = await api('/api/leads/from-comments', {
         method: 'POST',
@@ -1754,7 +1753,7 @@ export function CommentLeadInboxPanel() {
                     <td>{sourceLabel(row).label}</td>
                     <td className="mono omni-post-id-cell" title={row.post_id || ''}>{row.post_id || '-'}</td>
                     <td className="omni-post-title-cell" title={postTitle(row)}>{postTitle(row)}</td>
-                    <td>{phones.join(', ') || '-'}</td>
+                    <td>{phones.join(', ') || 'Chưa có'}</td>
                     <td>{tags.map((tag) => tag.label).join(', ') || '-'}</td>
                     <td>{row.message || '-'}</td>
                     <td>{(row.comment_url || row.post_url) ? <button type="button" className="omni-dm-link" onClick={() => void openCommentLink(row)}>Mở</button> : '-'}</td>

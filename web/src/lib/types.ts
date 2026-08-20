@@ -189,6 +189,35 @@ export type ContentPipelinePost = {
   updated_at?: string;
 };
 
+export type FacebookPublishedPost = {
+  id: string;
+  external_key?: string;
+  source?: string;
+  source_post_id?: string;
+  facebook_post_id?: string | null;
+  target_type: 'page' | 'group';
+  target_id: string;
+  target_name?: string;
+  facebook_page_id?: string | null;
+  post_url?: string;
+  content?: string;
+  media_urls?: string[];
+  status: 'pending' | 'success' | 'failed';
+  delivery?: string;
+  error_message?: string;
+  reaction_count?: number | null;
+  comment_count?: number | null;
+  share_count?: number | null;
+  total_interactions?: number | null;
+  metrics_updated_at?: string | null;
+  created_by_staff_id?: string;
+  created_by_staff_name?: string;
+  created_by_staff_username?: string;
+  published_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
 export type ReplySuggestion = {
   post_id?: string;
   intent_label?: string;
@@ -231,6 +260,7 @@ export type StoredPostComment = {
   parent_comment_id?: string;
   depth?: number;
   author_id?: string;
+  author_url?: string;
   author_name?: string;
   message?: string;
   attachment_type?: string;
@@ -248,6 +278,7 @@ export type StoredPostComment = {
   video_title?: string;
   processed?: boolean;
   starred?: boolean;
+  lead_exists?: boolean;
   fetched_at?: string;
 };
 
