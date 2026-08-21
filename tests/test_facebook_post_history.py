@@ -5,6 +5,45 @@ import app as backend
 
 
 class FacebookPostHistoryTests(unittest.TestCase):
+    def test_hides_synthetic_failed_rows_without_a_facebook_reference(self):
+        row = {
+            'source': 'chrome_extension',
+            'status': 'failed',
+            'delivery': '',
+            'error_message': 'Facebook không trả Post ID',
+            'facebook_post_id': None,
+            'post_url': '',
+        }
+
+        self.assertTrue(backend._is_synthetic_untrackable_facebook_post(row))
+        with patch.object(backend, '_is_admin', return_value=True):
+            self.assertEqual(backend._visible_facebook_post_rows([row]), [])
+
+    def test_keeps_real_publish_failures_for_diagnostics(self):
+        row = {
+            'source': 'chrome_extension',
+            'status': 'failed',
+            'delivery': 'confirmation_timeout',
+            'error_message': 'Không xác nhận được caption trong hộp soạn bài Facebook.',
+            'facebook_post_id': None,
+            'post_url': '',
+        }
+
+        self.assertFalse(backend._is_synthetic_untrackable_facebook_post(row))
+        with patch.object(backend, '_is_admin', return_value=True):
+            self.assertEqual(backend._visible_facebook_post_rows([row]), [row])
+
+    def test_keeps_failed_rows_that_have_a_reference(self):
+        row = {
+            'source': 'chrome_extension',
+            'status': 'failed',
+            'error_message': 'Facebook không trả Post ID',
+            'facebook_post_id': 'group-1_post-1',
+            'post_url': 'https://www.facebook.com/groups/group-1/posts/post-1/',
+        }
+
+        self.assertFalse(backend._is_synthetic_untrackable_facebook_post(row))
+
     def test_extracts_post_id_only_from_facebook_permalink(self):
         self.assertEqual(
             backend._facebook_post_id_from_url('https://www.facebook.com/groups/280811807457314/posts/123456789012345/'),

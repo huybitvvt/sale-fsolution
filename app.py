@@ -8226,7 +8226,26 @@ def list_post_comments():
     return jsonify(payload)
 
 
+def _is_synthetic_untrackable_facebook_post(row: dict) -> bool:
+    error = str((row or {}).get('error_message') or '').strip().casefold()
+    has_reference = bool(
+        str((row or {}).get('facebook_post_id') or '').strip()
+        or str((row or {}).get('post_url') or '').strip()
+    )
+    return (
+        str((row or {}).get('source') or '') == 'chrome_extension'
+        and str((row or {}).get('status') or '') == 'failed'
+        and not has_reference
+        and (
+            'hủy hàng đợi' in error
+            or 'cancelled queue' in error
+            or error == 'facebook không trả post id'
+        )
+    )
+
+
 def _visible_facebook_post_rows(rows: list[dict]) -> list[dict]:
+    rows = [row for row in rows if not _is_synthetic_untrackable_facebook_post(row)]
     if _is_admin():
         return rows
     staff_id = _current_staff_id()
@@ -8255,8 +8274,17 @@ def facebook_posts_extension_result():
         f"{'page' if item.get('type') == 'page' else 'group'}:{str(item.get('id') or '')}": item
         for item in raw_results if isinstance(item, dict)
     }
+    # The queue payload always contains every originally selected target, even
+    # before any target starts and after the user cancels. Persist only targets
+    # for which the extension sent a real result.
+    targets_to_record = [
+        target for target in raw_targets
+        if f"{'page' if target.get('type') == 'page' else 'group'}:{str(target.get('id') or '')}" in results_by_target
+    ]
+    if not targets_to_record:
+        return jsonify({'ok': True, 'posts': [], 'skipped_unstarted_targets': len(raw_targets)})
     results = []
-    for target in raw_targets:
+    for target in targets_to_record:
         target_type = 'page' if target.get('type') == 'page' else 'group'
         target_id = str(target.get('id') or '').strip()
         current = results_by_target.get(f'{target_type}:{target_id}') or {}
@@ -8275,7 +8303,7 @@ def facebook_posts_extension_result():
         })
     saved = _record_publish_results(
         {'content': str(body.get('content') or ''), 'hashtags': str(body.get('hashtags') or ''), 'media_urls': body.get('media_urls') or []},
-        raw_targets,
+        targets_to_record,
         {'ok': any(item.get('ok') for item in results), 'results': results},
         source='chrome_extension', source_post_id=request_id, request_id=request_id,
     )

@@ -446,7 +446,6 @@ export function MarketingPipelinePanel({
   const [historyExportError, setHistoryExportError] = useState('');
   const assistedQueueRequestRef = useRef('');
   const assistedQueuePayloadRef = useRef<{ requestId: string; title: string; content: string; hashtags: string; mediaUrls: string[]; targets: PublishTarget[] } | null>(null);
-  const localFacebookHistoryRecoveryRef = useRef<Set<string>>(new Set());
   const persistAssistedHistoryRef = useRef<(status: string, results?: PublishResult[], error?: string) => Promise<FacebookPublishedPost[]>>(async () => []);
   const resolveAndSyncFacebookPostRef = useRef<(record: FacebookPublishedPost, options?: { automatic?: boolean; allowManualFallback?: boolean; forceReference?: boolean }) => Promise<void>>(async () => {});
 
@@ -491,48 +490,6 @@ export function MarketingPipelinePanel({
       // The pipeline/local history remains available when the migration is not installed yet.
     }
   }
-
-  useEffect(() => {
-    const persistedRequestIds = new Set(
-      facebookPosts
-        .filter((item) => item.source === 'chrome_extension' || item.source_post_id)
-        .map((item) => String(item.source_post_id || '')),
-    );
-    const unsynced = history.filter((row) => {
-      const reqId = row.id.replace(/^(chrome|pipeline|local)-/, '');
-      return reqId && !persistedRequestIds.has(reqId) && !localFacebookHistoryRecoveryRef.current.has(reqId);
-    }).slice(0, 5);
-
-    unsynced.forEach((row) => {
-      const reqId = row.id.replace(/^(chrome|pipeline|local)-/, '');
-      localFacebookHistoryRecoveryRef.current.add(reqId);
-      const isFailed = historyPillClass(row.status) === 'pill-danger';
-      void api('/api/facebook-posts/extension-result', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          request_id: reqId,
-          content: buildFacebookPostMessage({
-            title: row.title,
-            content: row.content,
-            hashtags: row.hashtags,
-          }),
-          hashtags: row.hashtags,
-          media_urls: row.mediaUrls?.length ? row.mediaUrls : row.mediaUrl ? [row.mediaUrl] : [],
-          targets: row.targets,
-          status: isFailed ? 'failed' : 'success',
-          results: (row.results || []).map((item) => ({ ...item, ...item.target, target: undefined })),
-        }),
-      }).then(async (response) => {
-        const payload = await response.json().catch(() => ({ posts: [] }));
-        const saved = safeList<FacebookPublishedPost>(payload.posts);
-        if (response.ok && payload.ok && saved.length) {
-          const savedIds = new Set(saved.map((item) => item.id));
-          setFacebookPosts((prev) => [...saved, ...prev.filter((item) => !savedIds.has(item.id))]);
-        }
-      });
-    });
-  }, [facebookPosts, history]);
 
   async function persistAssistedHistory(status: string, results: PublishResult[] = [], error = ''): Promise<FacebookPublishedPost[]> {
     const snapshot = assistedQueuePayloadRef.current;
