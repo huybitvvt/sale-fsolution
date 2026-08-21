@@ -1045,9 +1045,7 @@
       const best = [...state.postReferenceCandidates].sort((a, b) => b.score - a.score || b.detectedAt - a.detectedAt)[0];
       if (best?.score >= 100) {
         const article = findMatchingPublishedArticle(state.message);
-        if (article) {
-          return { postId: best.postId, postUrl: best.postUrl, ...engagementMetricsFromArticle(article) };
-        }
+        return { postId: best.postId, postUrl: best.postUrl, ...engagementMetricsFromArticle(article) };
       }
       await sleep(750);
     }
