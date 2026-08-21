@@ -12,6 +12,8 @@ class CommentTemplatePersistenceTests(unittest.TestCase):
         ), patch.object(
             backend.sb, 'kv_set', side_effect=RuntimeError('RLS denied')
         ), patch.object(
+            backend, '_refresh_comment_templates_from_storage', return_value=''
+        ), patch.object(
             backend, '_current_staff_id', return_value='sale-1'
         ), patch.object(
             backend, '_current_staff', return_value={'name': 'Sale One'}
@@ -33,6 +35,8 @@ class CommentTemplatePersistenceTests(unittest.TestCase):
         ), patch.object(backend.sb, 'kv_set') as save_mock, patch.object(
             backend, '_write_json', return_value=True
         ), patch.object(
+            backend, '_refresh_comment_templates_from_storage', return_value=''
+        ), patch.object(
             backend, '_current_staff_id', return_value='sale-1'
         ), patch.object(
             backend, '_current_staff', return_value={'name': 'Sale One'}
@@ -49,6 +53,26 @@ class CommentTemplatePersistenceTests(unittest.TestCase):
             save_mock.assert_called_once()
             self.assertEqual(save_mock.call_args.args[0], 'comment_templates')
             self.assertEqual(len(save_mock.call_args.args[1]), 2)
+
+    def test_get_refreshes_templates_from_supabase(self):
+        recovered = [{
+            'id': 'recovered-1',
+            'title': 'Mẫu khôi phục',
+            'trigger': 'khoiphuc',
+            'text': 'Nội dung cũ',
+            'system': False,
+        }]
+        with patch.object(backend, '_comment_templates', backend._default_comment_templates()), patch.object(
+            backend, 'USE_SUPABASE', True
+        ), patch.object(
+            backend.sb, 'kv_get', return_value=recovered
+        ), backend.app.test_request_context('/api/comment-templates'):
+            response = backend.comment_templates_get()
+
+            payload = response.get_json()
+            self.assertTrue(payload['ok'])
+            self.assertEqual(len(payload['templates']), 5)
+            self.assertTrue(any(item['id'] == 'recovered-1' for item in payload['templates']))
 
 
 if __name__ == '__main__':

@@ -1004,6 +1004,21 @@ def _save_comment_templates(rows: list[dict] | None = None) -> str:
     return ''
 
 
+def _refresh_comment_templates_from_storage() -> str:
+    """Refresh before reads/writes so a stale Render worker cannot overwrite Supabase."""
+    global _comment_templates
+    if not USE_SUPABASE:
+        return ''
+    try:
+        remote = sb.kv_get('comment_templates', None)
+    except Exception as exc:
+        print(f'[supabase] refresh comment_templates failed: {exc}')
+        return str(exc)[:300]
+    if isinstance(remote, list):
+        _comment_templates = _merge_system_rows(_default_comment_templates(), remote)
+    return ''
+
+
 def _save_comment_tags():
     _write_json(COMMENT_TAGS_FILE, _comment_tags)
     if USE_SUPABASE:
@@ -6613,7 +6628,7 @@ def index():
 
 @app.route('/api/health')
 def api_health():
-    return jsonify({
+    payload = {
         'ok': True,
         'features': {
             'staff_cookie_optional': True,
@@ -6624,8 +6639,13 @@ def api_health():
             'facebook_publish_diagnostics_v1': True,
             'staggered_publish_queue_v1': True,
             'facebook_auto_reference_metrics_v1': True,
+            'comment_templates_live_refresh_v1': True,
         },
-    })
+    }
+    render_commit = str(os.environ.get('RENDER_GIT_COMMIT') or '').strip()
+    if render_commit:
+        payload['deploy_commit'] = render_commit
+    return jsonify(payload)
 
 
 @app.route('/api/auth/status')
@@ -6785,7 +6805,19 @@ def _fetch_group_feed(gid: str, limit: int):
 def _fetch_page_feed(page_id: str, limit: int):
     page_name = next((item.get('channel_name') for item in _managed_channels if str(item.get('target_id') or '') == page_id), '')
     try:
-        page_token = _page_token_from_cache(page_id)
+        page_token, token_source, token_warning = _page_token_lookup(page_id)
+        if not page_token:
+            display = page_name or (_pages_cache.get(page_id) or {}).get('name') or page_id
+            return [], {
+                'group_id': page_id,
+                'target_type': 'page',
+                'target_id': page_id,
+                'group_name': display,
+                'ok': False,
+                'count': 0,
+                'source': 'facebook_page_graph',
+                'error': _missing_page_token_message(token_source, token_warning),
+            }
         posts = get_api(DEFAULT_GROUP).get_page_posts(page_id, page_token, limit)
     except Exception:
         posts = None
@@ -8921,13 +8953,20 @@ def facebook_post_comments_collect(record_id):
 
 @app.route('/api/comment-templates', methods=['GET'])
 def comment_templates_get():
+    refresh_warning = _refresh_comment_templates_from_storage()
     rows = sorted(_comment_templates, key=lambda item: (not bool(item.get('system')), str(item.get('title') or '')))
-    return jsonify({'ok': True, 'templates': rows})
+    payload = {'ok': True, 'templates': rows}
+    if refresh_warning:
+        payload['warning'] = refresh_warning
+    return jsonify(payload)
 
 
 @app.route('/api/comment-templates', methods=['POST'])
 def comment_templates_create():
     global _comment_templates
+    refresh_warning = _refresh_comment_templates_from_storage()
+    if refresh_warning:
+        return jsonify({'ok': False, 'error': f'Không đọc được mẫu comment từ Supabase: {refresh_warning}'}), 503
     body = request.get_json() or {}
     title = str(body.get('title') or '').strip()[:80]
     text = str(body.get('text') or '').strip()[:1600]
@@ -8957,6 +8996,9 @@ def comment_templates_create():
 @app.route('/api/comment-templates/<template_id>', methods=['PUT', 'DELETE'])
 def comment_templates_update(template_id):
     global _comment_templates
+    refresh_warning = _refresh_comment_templates_from_storage()
+    if refresh_warning:
+        return jsonify({'ok': False, 'error': f'Không đọc được mẫu comment từ Supabase: {refresh_warning}'}), 503
     template_id = str(template_id or '').strip()
     current = next((item for item in _comment_templates if str(item.get('id') or '') == template_id), None)
     if not current:
