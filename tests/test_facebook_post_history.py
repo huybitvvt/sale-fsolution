@@ -5,6 +5,60 @@ import app as backend
 
 
 class FacebookPostHistoryTests(unittest.TestCase):
+    def test_load_merges_legacy_kv_history_with_partial_remote_table(self):
+        legacy_rows = [
+            {
+                'id': 'legacy-only',
+                'external_key': 'chrome:old:group:1',
+                'content': 'Bài cũ từ app_kv',
+                'created_at': '2026-08-20T10:00:00Z',
+            },
+            {
+                'id': 'shared-old-id',
+                'external_key': 'chrome:shared:group:2',
+                'status': 'failed',
+                'created_at': '2026-08-20T11:00:00Z',
+            },
+        ]
+        remote_rows = [
+            {
+                'id': 'shared-new-id',
+                'external_key': 'chrome:shared:group:2',
+                'status': 'success',
+                'post_url': 'https://www.facebook.com/groups/2/posts/3/',
+                'created_at': '2026-08-20T11:00:00Z',
+            },
+            {
+                'id': 'remote-only',
+                'external_key': 'chrome:new:group:3',
+                'content': 'Bài mới trong bảng',
+                'created_at': '2026-08-21T10:00:00Z',
+            },
+        ]
+        response = Mock(status_code=200)
+        response.json.return_value = remote_rows
+
+        with (
+            patch.object(backend, '_facebook_posts', legacy_rows.copy()),
+            patch.object(backend, 'USE_SUPABASE', True),
+            patch.object(backend, 'SUPABASE_URL', 'https://example.supabase.co'),
+            patch.object(backend, 'SUPABASE_KEY', 'test-key'),
+            patch.object(backend._req, 'get', return_value=response),
+        ):
+            rows, warning = backend._load_facebook_posts()
+
+        self.assertEqual(warning, '')
+        self.assertEqual(len(rows), 3)
+        self.assertEqual({row['external_key'] for row in rows}, {
+            'chrome:old:group:1',
+            'chrome:shared:group:2',
+            'chrome:new:group:3',
+        })
+        shared = next(row for row in rows if row['external_key'] == 'chrome:shared:group:2')
+        self.assertEqual(shared['id'], 'shared-new-id')
+        self.assertEqual(shared['status'], 'success')
+        self.assertTrue(shared['post_url'])
+
     def test_keeps_synthetic_legacy_rows_and_marks_them_unverified(self):
         row = {
             'source': 'chrome_extension',

@@ -894,6 +894,41 @@ def _save_facebook_post(row: dict) -> tuple[dict, str]:
     return item, warning
 
 
+def _facebook_post_storage_key(row: dict) -> str:
+    item = row or {}
+    external_key = str(item.get('external_key') or '').strip()
+    if external_key:
+        return f'external:{external_key}'
+    row_id = str(item.get('id') or '').strip()
+    if row_id:
+        return f'id:{row_id}'
+    return '|'.join((
+        str(item.get('source') or '').strip(),
+        str(item.get('source_post_id') or '').strip(),
+        str(item.get('target_type') or '').strip(),
+        str(item.get('target_id') or '').strip(),
+        str(item.get('created_at') or '').strip(),
+    ))
+
+
+def _merge_facebook_post_storage_rows(cached_rows: list[dict], remote_rows: list[dict]) -> list[dict]:
+    """Merge legacy app_kv history with the canonical table; table values win."""
+    merged: dict[str, dict] = {}
+    for row in cached_rows or []:
+        if isinstance(row, dict):
+            merged[_facebook_post_storage_key(row)] = dict(row)
+    for row in remote_rows or []:
+        if not isinstance(row, dict):
+            continue
+        key = _facebook_post_storage_key(row)
+        merged[key] = {**merged.get(key, {}), **row}
+    return sorted(
+        merged.values(),
+        key=lambda row: str(row.get('created_at') or row.get('published_at') or ''),
+        reverse=True,
+    )[:1000]
+
+
 def _load_facebook_posts() -> tuple[list[dict], str]:
     global _facebook_posts
     warning = ''
@@ -909,7 +944,11 @@ def _load_facebook_posts() -> tuple[list[dict], str]:
                 remote = response.json()
                 if isinstance(remote, list):
                     with _facebook_posts_lock:
-                        _facebook_posts = remote
+                        # `_facebook_posts` starts with the shared legacy
+                        # app_kv value. Replacing it with the dedicated table
+                        # made older cross-device history disappear whenever
+                        # that newer table contained only a partial migration.
+                        _facebook_posts = _merge_facebook_post_storage_rows(_facebook_posts, remote)
             else:
                 warning = response.text[:300]
         except Exception as exc:
