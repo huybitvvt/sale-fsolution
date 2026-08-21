@@ -134,6 +134,42 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertEqual(backend._facebook_dom_metric(-5), 0)
         self.assertIsNone(backend._facebook_dom_metric('không rõ'))
 
+    def test_browser_sync_upgrades_opaque_share_link_to_real_permalink(self):
+        row = {
+            'id': 'history-1',
+            'facebook_post_id': 'opaque-code',
+            'target_type': 'group',
+            'target_id': '123',
+            'post_url': 'https://www.facebook.com/share/p/opaque-code/',
+            'content': 'Bài test ngắn',
+        }
+
+        with backend.app.test_request_context(
+            '/api/facebook-posts/history-1/browser-sync',
+            method='POST',
+            json={
+                'post_url': 'https://www.facebook.com/groups/123/posts/456/',
+                'reaction_count': 0,
+                'comment_count': 0,
+                'share_count': 0,
+                'comments': [],
+            },
+        ):
+            with (
+                patch.object(backend, '_facebook_post_by_id', return_value=row),
+                patch.object(backend, '_current_staff', return_value={'id': 'sale-1'}),
+                patch.object(backend, '_save_facebook_post', side_effect=lambda value: (value, '')) as save_mock,
+                patch.object(backend, '_store_post_comment_rows', return_value=('local', '')),
+            ):
+                response = backend.facebook_post_browser_sync('history-1')
+
+        payload = response.get_json()
+        self.assertTrue(payload['ok'])
+        saved = save_mock.call_args.args[0]
+        self.assertEqual(saved['facebook_post_id'], '123_456')
+        self.assertEqual(saved['post_url'], 'https://www.facebook.com/groups/123/posts/456/')
+        self.assertEqual(saved['total_interactions'], 0)
+
     def test_success_requires_post_id_or_confirmed_published_outcome(self):
         saved = []
 

@@ -817,6 +817,11 @@
       || Boolean(postIdFromUrl(url));
   }
 
+  function isOpaqueFacebookShareId(value) {
+    const text = String(value || '').trim();
+    return Boolean(text && !/^\d+$/.test(text) && !/^pfbid/i.test(text));
+  }
+
   function isBrowsablePostUrl(url) {
     try {
       const parsed = new URL(String(url || ''), window.location.href);
@@ -1245,12 +1250,16 @@
     const expectedPostId = String(payload?.post_id || postIdFromUrl(payload?.post_url) || '').trim();
     const expectedContent = String(payload?.content || '').trim();
     let postArticle = null;
+    let matchedByReference = false;
+    let matchedByContent = false;
     for (let attempt = 0; attempt < 24; attempt += 1) {
       const articles = [...document.querySelectorAll('[role="article"]')].filter(isVisible);
       postArticle = articles.find((article) => [...article.querySelectorAll('a[href]')]
         .some((anchor) => postIdFromUrl(anchor.href || '') === expectedPostId));
+      matchedByReference = Boolean(postArticle);
       if (!postArticle && expectedContent) {
         postArticle = articles.find((article) => captionOrSignatureMatches(article.innerText || article.textContent || '', expectedContent));
+        matchedByContent = Boolean(postArticle);
       }
       if (!postArticle) {
         postArticle = articles.find((article) => /bình luận|comment|chia sẻ|share/i.test(normalize(article.innerText || article.textContent || '')));
@@ -1259,13 +1268,21 @@
       await sleep(500);
     }
     if (!postArticle) return { ok: false, final: true, error: 'Extension không nhận diện được khung bài viết Facebook.' };
+    const currentPostId = postIdFromUrl(window.location.href);
+    const trustedOpenedPermalink = Boolean(expectedPostId && currentPostId && (
+      currentPostId === expectedPostId || isOpaqueFacebookShareId(expectedPostId)
+    ));
+    let warning = '';
     if (!facebookPostContentMatches(postArticle, expectedContent)) {
-      return {
-        ok: false,
-        final: true,
-        contentMismatch: true,
-        error: 'Permalink đang mở là một bài khác, nội dung không khớp lịch sử. Hệ thống đã từ chối gắn/đồng bộ để tránh sai dữ liệu.',
-      };
+      if (!matchedByReference && !matchedByContent && !trustedOpenedPermalink) {
+        return {
+          ok: false,
+          final: true,
+          contentMismatch: true,
+          error: 'Permalink đang mở là một bài khác, nội dung không khớp lịch sử. Hệ thống đã từ chối gắn/đồng bộ để tránh sai dữ liệu.',
+        };
+      }
+      warning = 'Caption trên Facebook lệch nhẹ so với lịch sử; extension vẫn đồng bộ vì permalink/post id đang mở khớp.';
     }
 
     await expandFacebookComments();
@@ -1296,6 +1313,7 @@
       commentCount: metrics.commentCount ?? uniqueComments.length,
       shareCount: metrics.shareCount ?? 0,
       comments: uniqueComments,
+      warning,
     };
   }
 

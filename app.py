@@ -8449,6 +8449,11 @@ def _facebook_post_id_candidates(row: dict, post_url: str = '') -> list[str]:
     return candidates
 
 
+def _is_opaque_facebook_share_id(value: str) -> bool:
+    value = str(value or '').strip()
+    return bool(value and not value.isdigit() and not value.lower().startswith('pfbid'))
+
+
 def _facebook_group_id_from_url(value: str) -> str:
     try:
         parsed = urlsplit(str(value or '').strip())
@@ -8721,7 +8726,12 @@ def facebook_post_browser_sync(record_id):
     stored_object_id = stored_post_id.rsplit('_', 1)[-1] if stored_post_id else ''
     if not stored_object_id or not url_post_id:
         return jsonify({'ok': False, 'error': 'Thiếu permalink/Post ID Facebook hợp lệ'}), 400
-    if stored_object_id != url_post_id:
+    # Facebook share links (/share/p/...) often contain an opaque temporary id.
+    # After Chrome opens the link, Facebook can redirect to the real permalink
+    # with the canonical post id. Accept that upgrade, but still reject ordinary
+    # numeric/pfbid mismatches to avoid attaching the wrong post.
+    upgraded_from_share_link = stored_object_id != url_post_id and _is_opaque_facebook_share_id(stored_object_id)
+    if stored_object_id != url_post_id and not upgraded_from_share_link:
         return jsonify({'ok': False, 'error': 'Link Facebook extension đọc không khớp bài trong lịch sử'}), 400
     link_group_id = _facebook_group_id_from_url(post_url)
     target_group_id = str(row.get('target_id') or '').strip() if row.get('target_type') == 'group' else ''
@@ -8744,8 +8754,14 @@ def facebook_post_browser_sync(record_id):
     merged_comment_count = comment_count if comment_count is not None else row.get('comment_count')
     merged_share_count = share_count if share_count is not None else row.get('share_count')
     merged_known = [value for value in (merged_reaction_count, merged_comment_count, merged_share_count) if value is not None]
+    next_post_id = stored_post_id
+    if upgraded_from_share_link:
+        candidates = _facebook_post_id_candidates({**row, 'facebook_post_id': url_post_id, 'post_url': post_url}, post_url)
+        next_post_id = candidates[0] if candidates else url_post_id
+
     updated, warning = _save_facebook_post({
         **row,
+        'facebook_post_id': next_post_id or row.get('facebook_post_id'),
         'post_url': post_url,
         'reaction_count': merged_reaction_count,
         'comment_count': merged_comment_count,
