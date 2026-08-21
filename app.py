@@ -299,8 +299,9 @@ def _write_json(path, data):
     try:
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False)
+        return True
     except Exception:
-        pass
+        return False
 
 
 def _default_ai_config():
@@ -983,13 +984,24 @@ def _merge_system_rows(defaults: list[dict], rows: list[dict]) -> list[dict]:
     return list(by_id.values())
 
 
-def _save_comment_templates():
-    _write_json(COMMENT_TEMPLATES_FILE, _comment_templates)
+def _save_comment_templates(rows: list[dict] | None = None) -> str:
+    """Persist templates and return an error without claiming a volatile save succeeded."""
+    templates = _comment_templates if rows is None else rows
     if USE_SUPABASE:
         try:
-            sb.kv_set('comment_templates', _comment_templates)
+            sb.kv_set('comment_templates', templates)
         except Exception as e:
             print(f'[supabase] save comment_templates failed: {e}')
+            return (
+                'Không lưu được mẫu comment vào Supabase. '
+                'Dữ liệu chưa được thay đổi; kiểm tra cấu hình app_kv/quyền RLS.'
+            )
+        # A local copy is only a cache when Supabase is configured.
+        _write_json(COMMENT_TEMPLATES_FILE, templates)
+        return ''
+    if not _write_json(COMMENT_TEMPLATES_FILE, templates):
+        return 'Không lưu được mẫu comment vào bộ nhớ bền vững.'
+    return ''
 
 
 def _save_comment_tags():
@@ -8906,8 +8918,11 @@ def comment_templates_create():
         'created_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
         'system': False,
     }
-    _comment_templates = [*(_comment_templates or []), row]
-    _save_comment_templates()
+    next_templates = [*(_comment_templates or []), row]
+    save_error = _save_comment_templates(next_templates)
+    if save_error:
+        return jsonify({'ok': False, 'error': save_error}), 503
+    _comment_templates = next_templates
     return jsonify({'ok': True, 'template': row, 'templates': _comment_templates})
 
 
@@ -8921,16 +8936,26 @@ def comment_templates_update(template_id):
     if current.get('system') and request.method == 'DELETE':
         return jsonify({'ok': False, 'error': 'Không xoá mẫu câu hệ thống'}), 400
     if request.method == 'DELETE':
-        _comment_templates = [item for item in _comment_templates if str(item.get('id') or '') != template_id]
-        _save_comment_templates()
+        next_templates = [item for item in _comment_templates if str(item.get('id') or '') != template_id]
+        save_error = _save_comment_templates(next_templates)
+        if save_error:
+            return jsonify({'ok': False, 'error': save_error}), 503
+        _comment_templates = next_templates
         return jsonify({'ok': True, 'templates': _comment_templates})
     body = request.get_json() or {}
-    current['title'] = str(body.get('title') or current.get('title') or '').strip()[:80]
-    current['trigger'] = re.sub(r'[^A-Za-z0-9_\\-À-ỹ]', '', str(body.get('trigger') or current.get('trigger') or '').strip().lstrip('/').lower())[:40]
-    current['text'] = str(body.get('text') or current.get('text') or '').strip()[:1600]
-    current['updated_at'] = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
-    _save_comment_templates()
-    return jsonify({'ok': True, 'template': current, 'templates': _comment_templates})
+    updated = {
+        **current,
+        'title': str(body.get('title') or current.get('title') or '').strip()[:80],
+        'trigger': re.sub(r'[^A-Za-z0-9_\\-À-ỹ]', '', str(body.get('trigger') or current.get('trigger') or '').strip().lstrip('/').lower())[:40],
+        'text': str(body.get('text') or current.get('text') or '').strip()[:1600],
+        'updated_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+    }
+    next_templates = [updated if item is current else item for item in _comment_templates]
+    save_error = _save_comment_templates(next_templates)
+    if save_error:
+        return jsonify({'ok': False, 'error': save_error}), 503
+    _comment_templates = next_templates
+    return jsonify({'ok': True, 'template': updated, 'templates': _comment_templates})
 
 
 @app.route('/api/comment-tags', methods=['GET'])
