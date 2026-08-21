@@ -6684,6 +6684,54 @@ def api_health():
     render_commit = str(os.environ.get('RENDER_GIT_COMMIT') or '').strip()
     if render_commit:
         payload['deploy_commit'] = render_commit
+    if str(request.args.get('diagnostics') or '').strip() == 'facebook-history':
+        legacy_rows = []
+        remote_rows = []
+        errors = []
+        if USE_SUPABASE:
+            try:
+                loaded = sb.kv_get('facebook_posts', [])
+                legacy_rows = loaded if isinstance(loaded, list) else []
+            except Exception as exc:
+                errors.append(f'legacy_kv: {str(exc)[:160]}')
+            try:
+                response = _req.get(
+                    f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_FACEBOOK_POST_TABLE}",
+                    headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+                    params={
+                        'select': 'id,external_key,created_by_staff_id,created_by_staff_username,source,status,created_at',
+                        'limit': '1000',
+                    },
+                    timeout=20,
+                )
+                if response.status_code == 200:
+                    loaded = response.json()
+                    remote_rows = loaded if isinstance(loaded, list) else []
+                else:
+                    errors.append(f'table: HTTP {response.status_code}')
+            except Exception as exc:
+                errors.append(f'table: {str(exc)[:160]}')
+
+        def _diagnostic_summary(rows: list[dict]) -> dict:
+            owners: dict[str, int] = {}
+            for row in rows:
+                owner_id = str(row.get('created_by_staff_id') or '').strip()
+                owner_key = hashlib.sha256(owner_id.encode('utf-8')).hexdigest()[:10] if owner_id else 'blank'
+                owners[owner_key] = owners.get(owner_key, 0) + 1
+            return {
+                'count': len(rows),
+                'owner_counts': sorted(owners.values(), reverse=True),
+                'blank_owner_count': owners.get('blank', 0),
+            }
+
+        merged_rows = _merge_facebook_post_storage_rows(legacy_rows, remote_rows)
+        payload['facebook_history_diagnostics'] = {
+            'legacy_app_kv': _diagnostic_summary(legacy_rows),
+            'facebook_posts_table': _diagnostic_summary(remote_rows),
+            'merged': _diagnostic_summary(merged_rows),
+            'content_pipeline_posts': len(_content_pipeline.get('posts') or []),
+            'errors': errors,
+        }
     return jsonify(payload)
 
 
