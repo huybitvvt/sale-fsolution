@@ -8385,15 +8385,21 @@ def _facebook_post_id_from_url(value: str) -> str:
         return ''
     if '/my_pending_content' in parsed.path.lower() or '/pending_posts' in parsed.path.lower():
         return ''
-    for pattern in (r'/posts/(pfbid[a-z0-9]+|\d+)', r'/permalink/(pfbid[a-z0-9]+|\d+)'):
+    for pattern in (r'/posts/(pfbid[a-z0-9]+|\d+)', r'/permalink/(pfbid[a-z0-9]+|\d+)', r'/multi_permalinks/(pfbid[a-z0-9]+|\d+)'):
         match = re.search(pattern, parsed.path, re.I)
         if match:
             return match.group(1)
-    share_match = re.search(r'/share/p/([a-z0-9_-]+)', parsed.path, re.I)
+    share_match = re.search(r'/share/[pvr]/([a-z0-9_-]+)', parsed.path, re.I)
     if share_match:
         return share_match.group(1)
+    reel_match = re.search(r'/(?:reel|videos)/([a-z0-9_-]+)', parsed.path, re.I)
+    if reel_match:
+        return reel_match.group(1)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    return str(query.get('story_fbid') or query.get('fbid') or '').strip() if str(query.get('story_fbid') or query.get('fbid') or '').strip().isdigit() else ''
+    candidate = str(query.get('story_fbid') or query.get('fbid') or query.get('multi_permalinks') or query.get('v') or '').strip()
+    if candidate and (candidate.isdigit() or candidate.startswith('pfbid') or len(candidate) >= 8):
+        return candidate
+    return ''
 
 
 def _facebook_post_owner_id_from_url(value: str) -> str:

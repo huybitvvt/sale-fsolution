@@ -966,11 +966,15 @@
     'a[href*="story_fbid="]',
     'a[href*="/permalink/"]',
     'a[href*="fbid="]',
+    'a[href*="multi_permalinks="]',
+    'a[href*="/multi_permalinks/"]',
     'a[href*="/share/p/"]',
     'a[href*="/share/v/"]',
     'a[href*="/share/r/"]',
     'a[href*="/reel/"]',
     'a[href*="/videos/"]',
+    'a[href*="permalink.php"]',
+    'a[href*="story.php"]',
   ].join(', ');
 
   function findMatchingPublishedArticle(expectedMessage) {
@@ -1211,23 +1215,34 @@
     const expected = String(payload?.content || '').trim();
     if (!expected) return { ok: false, final: true, error: 'Lịch sử không có nội dung để đối chiếu bài Facebook.' };
     let matchedArticleWaits = 0;
-    for (let attempt = 0; attempt < 18; attempt += 1) {
+    for (let attempt = 0; attempt < 24; attempt += 1) {
       const matches = [];
       let matchingArticleVisible = false;
       for (const article of document.querySelectorAll('[role="article"]')) {
-        if (!isVisible(article) || !captionOrSignatureMatches(article.innerText || article.textContent || '', expected, true)) continue;
+        if (!isVisible(article) || isPendingArticle(article)) continue;
+        const text = article.innerText || article.textContent || '';
+        if (!captionOrSignatureMatches(text, expected, true)) continue;
         matchingArticleVisible = true;
-        const anchors = [...article.querySelectorAll('a[href]')]
-          .filter((anchor) => isPostReferenceUrl(anchor.href || ''));
-        const anchor = anchors[0];
-        if (anchor?.href) matches.push({ postId: postIdFromUrl(anchor.href), postUrl: anchor.href });
+        const ref = referenceFromArticle(article);
+        if (ref.postId && ref.postUrl) {
+          matches.push(ref);
+        } else if (ref.postUrl) {
+          const extractedId = postIdFromUrl(ref.postUrl);
+          if (extractedId) matches.push({ postId: extractedId, postUrl: ref.postUrl });
+        }
+        for (const anchor of article.querySelectorAll('a[href]')) {
+          const href = anchor.href || '';
+          if (!isBrowsablePostUrl(href)) continue;
+          const postId = postIdFromUrl(href);
+          if (postId) matches.push({ postId, postUrl: href });
+        }
       }
       const unique = [...new Map(matches.map((item) => [item.postId, item])).values()].filter((item) => item.postId);
       if (unique.length === 1) return { ok: true, ...unique[0], method: 'facebook_dom_match' };
       if (unique.length > 1) {
         return { ok: false, final: true, ambiguous: true, error: 'Facebook hiển thị nhiều bài trùng nội dung; cần chọn link thủ công để tránh gắn nhầm.' };
       }
-      if (matchingArticleVisible && matchedArticleWaits < 4) {
+      if (matchingArticleVisible && matchedArticleWaits < 6) {
         matchedArticleWaits += 1;
         await sleep(700);
         continue;

@@ -512,7 +512,11 @@ export function MarketingPipelinePanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           request_id: reqId,
-          content: [row.title, row.content].filter(Boolean).join('\n\n'),
+          content: buildFacebookPostMessage({
+            title: row.title,
+            content: row.content,
+            hashtags: row.hashtags,
+          }),
           hashtags: row.hashtags,
           media_urls: row.mediaUrls?.length ? row.mediaUrls : row.mediaUrl ? [row.mediaUrl] : [],
           targets: row.targets,
@@ -539,7 +543,11 @@ export function MarketingPipelinePanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           request_id: snapshot.requestId,
-          content: [snapshot.title, snapshot.content].filter(Boolean).join('\n\n'),
+          content: buildFacebookPostMessage({
+            title: snapshot.title,
+            content: snapshot.content,
+            hashtags: snapshot.hashtags,
+          }),
           hashtags: snapshot.hashtags,
           media_urls: snapshot.mediaUrls,
           targets: snapshot.targets,
@@ -926,7 +934,7 @@ export function MarketingPipelinePanel({
     const response = await new Promise<ExtensionQueueResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.41 và tải lại trang.' });
+        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.45 và tải lại trang.' });
       }, 6000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -987,7 +995,7 @@ export function MarketingPipelinePanel({
       const response = await new Promise<ExtensionQueueResponse>((resolve) => {
         const timer = window.setTimeout(() => {
           window.removeEventListener('message', handleResponse);
-          resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.41 và tải lại trang.' });
+          resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.45 và tải lại trang.' });
         }, 6000);
         function handleResponse(event: MessageEvent) {
           if (event.source !== window) return;
@@ -1287,7 +1295,7 @@ export function MarketingPipelinePanel({
     return new Promise<ExtensionMetricsResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.41 và tải lại tab F-Solution/Facebook.' });
+        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.45 và tải lại tab F-Solution/Facebook.' });
       }, 60000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -1313,7 +1321,7 @@ export function MarketingPipelinePanel({
     return new Promise<ExtensionReferenceResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.41 và tải lại tab F-Solution/Facebook.' });
+        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.45 và tải lại tab F-Solution/Facebook.' });
       }, 60000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -1401,7 +1409,11 @@ export function MarketingPipelinePanel({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         request_id: reqId,
-        content: [row.title, row.content].filter(Boolean).join('\n\n'),
+        content: buildFacebookPostMessage({
+          title: row.title,
+          content: row.content,
+          hashtags: row.hashtags,
+        }),
         hashtags: row.hashtags,
         media_urls: row.mediaUrls?.length ? row.mediaUrls : row.mediaUrl ? [row.mediaUrl] : [],
         targets: row.targets,
