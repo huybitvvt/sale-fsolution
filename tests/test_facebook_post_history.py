@@ -5,7 +5,7 @@ import app as backend
 
 
 class FacebookPostHistoryTests(unittest.TestCase):
-    def test_hides_synthetic_failed_rows_without_a_facebook_reference(self):
+    def test_keeps_synthetic_legacy_rows_and_marks_them_unverified(self):
         row = {
             'source': 'chrome_extension',
             'status': 'failed',
@@ -17,7 +17,20 @@ class FacebookPostHistoryTests(unittest.TestCase):
 
         self.assertTrue(backend._is_synthetic_untrackable_facebook_post(row))
         with patch.object(backend, '_is_admin', return_value=True):
-            self.assertEqual(backend._visible_facebook_post_rows([row]), [])
+            self.assertEqual(backend._visible_facebook_post_rows([row]), [row])
+        self.assertTrue(backend._facebook_post_history_row(row)['legacy_unverified'])
+
+    def test_does_not_mark_a_real_publish_failure_as_legacy_unverified(self):
+        row = {
+            'source': 'chrome_extension',
+            'status': 'failed',
+            'delivery': 'confirmation_timeout',
+            'error_message': 'Không xác nhận được caption trong hộp soạn bài Facebook.',
+            'facebook_post_id': None,
+            'post_url': '',
+        }
+
+        self.assertNotIn('legacy_unverified', backend._facebook_post_history_row(row))
 
     def test_keeps_real_publish_failures_for_diagnostics(self):
         row = {
@@ -43,6 +56,29 @@ class FacebookPostHistoryTests(unittest.TestCase):
         }
 
         self.assertFalse(backend._is_synthetic_untrackable_facebook_post(row))
+
+    def test_extension_result_skips_cancelled_targets_but_keeps_real_results(self):
+        body = {
+            'request_id': 'queue-1',
+            'content': 'Bài đăng thử nghiệm',
+            'targets': [
+                {'type': 'group', 'id': 'group-1', 'name': 'Nhóm 1'},
+                {'type': 'group', 'id': 'group-2', 'name': 'Nhóm 2'},
+            ],
+            'results': [
+                {'ok': True, 'type': 'group', 'id': 'group-1', 'delivery': 'published'},
+                {'ok': False, 'type': 'group', 'id': 'group-2', 'delivery': 'cancelled'},
+            ],
+        }
+        with backend.app.test_request_context('/api/facebook-posts/extension-result', method='POST', json=body):
+            with patch.object(backend, '_record_publish_results', return_value=[]) as record_mock:
+                response = backend.facebook_posts_extension_result()
+
+        self.assertTrue(response.get_json()['ok'])
+        saved_targets = record_mock.call_args.args[1]
+        saved_results = record_mock.call_args.args[2]['results']
+        self.assertEqual([item['id'] for item in saved_targets], ['group-1'])
+        self.assertEqual([item['id'] for item in saved_results], ['group-1'])
 
     def test_extracts_post_id_only_from_facebook_permalink(self):
         self.assertEqual(

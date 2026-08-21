@@ -8277,18 +8277,30 @@ def _is_synthetic_untrackable_facebook_post(row: dict) -> bool:
 
 
 def _visible_facebook_post_rows(rows: list[dict]) -> list[dict]:
-    rows = [row for row in rows if not _is_synthetic_untrackable_facebook_post(row)]
     if _is_admin():
         return rows
     staff_id = _current_staff_id()
     return [row for row in rows if str(row.get('created_by_staff_id') or '') == str(staff_id)]
 
 
+def _facebook_post_history_row(row: dict) -> dict:
+    """Expose legacy untracked rows without changing the stored Supabase record."""
+    item = dict(row or {})
+    if _is_synthetic_untrackable_facebook_post(item):
+        item['legacy_unverified'] = True
+    return item
+
+
 @app.route('/api/facebook-posts', methods=['GET'])
 def facebook_posts_get():
     rows, warning = _load_facebook_posts()
     rows = _visible_facebook_post_rows(rows)
-    payload = {'ok': True, 'posts': rows[:500], 'count': len(rows), 'storage': 'supabase' if USE_SUPABASE and not warning else 'local'}
+    payload = {
+        'ok': True,
+        'posts': [_facebook_post_history_row(row) for row in rows[:500]],
+        'count': len(rows),
+        'storage': 'supabase' if USE_SUPABASE and not warning else 'local',
+    }
     if warning:
         payload['warning'] = warning
     return jsonify(payload)
@@ -8304,7 +8316,8 @@ def facebook_posts_extension_result():
         return jsonify({'ok': False, 'error': 'Thiếu request_id hoặc danh sách nơi đăng'}), 400
     results_by_target = {
         f"{'page' if item.get('type') == 'page' else 'group'}:{str(item.get('id') or '')}": item
-        for item in raw_results if isinstance(item, dict)
+        for item in raw_results
+        if isinstance(item, dict) and str(item.get('delivery') or '').strip().lower() != 'cancelled'
     }
     # The queue payload always contains every originally selected target, even
     # before any target starts and after the user cancels. Persist only targets

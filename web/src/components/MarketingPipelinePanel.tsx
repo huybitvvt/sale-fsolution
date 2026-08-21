@@ -216,6 +216,7 @@ function displayPostStatus(status: string) {
 
 function deliveryLabel(result?: PublishResult) {
   if (!result) return 'Đang chờ';
+  if (result.delivery === 'legacy_unverified') return 'Chưa có link/Post ID để xác minh';
   if (result.delivery === 'cancelled') return 'Đã hủy';
   if (!result.ok) return `Lỗi: ${result.error || 'không xác định'}`;
   if (result.delivery === 'auto_resolved') return 'Đã tự tìm và gắn bài';
@@ -256,6 +257,7 @@ function findFacebookRecordForHistory(row: HistoryRow, posts: FacebookPublishedP
 
 function publishResultPerformance(result?: PublishResult) {
   if (!result) return 'pending';
+  if (result.delivery === 'legacy_unverified') return 'pending';
   if (result.delivery === 'cancelled') return 'cancelled';
   if (!result.ok) return 'failed';
   if (!result.delivery || result.post_id || ['published', 'pending_review', 'submitted'].includes(result.delivery)) {
@@ -267,8 +269,25 @@ function publishResultPerformance(result?: PublishResult) {
 function historyPillClass(status: string) {
   const value = status.toLowerCase();
   if (value.includes('lỗi') || value.includes('failed') || value.includes('chưa xác nhận') || value.includes('hủy')) return 'pill-danger';
-  if (value.includes('đang') || value.includes('chờ') || value.includes('khởi tạo') || value.includes('pending')) return 'pill-pending';
+  if (value.includes('đang') || value.includes('chờ') || value.includes('khởi tạo') || value.includes('pending') || value.includes('chưa xác minh')) return 'pill-pending';
   return 'pill-ok';
+}
+
+function recoverableFacebookHistoryResults(row: HistoryRow): PublishResult[] {
+  if (!row.id.startsWith('chrome-')) return [];
+  const transientDeliveries = new Set(['opening', 'awaiting_user', 'submitting', 'cancelled']);
+  return (row.results || []).filter((result) => {
+    if (!result.target?.id) return false;
+    const delivery = String(result.delivery || '').trim().toLowerCase();
+    if (transientDeliveries.has(delivery)) return false;
+    if (result.post_id || result.post_url) return true;
+    if (['published', 'pending_review', 'submitted', 'confirmation_timeout', 'failed'].includes(delivery)) return true;
+    return result.ok === false && Boolean(String(result.error || '').trim());
+  });
+}
+
+function facebookHistoryTargetKey(requestId: string, target: Pick<PublishTarget, 'type' | 'id'>) {
+  return `${requestId}|${target.type}:${target.id}`;
 }
 
 function canCancelFacebookQueue(row: HistoryRow) {
@@ -446,6 +465,7 @@ export function MarketingPipelinePanel({
   const [historyExportError, setHistoryExportError] = useState('');
   const assistedQueueRequestRef = useRef('');
   const assistedQueuePayloadRef = useRef<{ requestId: string; title: string; content: string; hashtags: string; mediaUrls: string[]; targets: PublishTarget[] } | null>(null);
+  const localFacebookHistoryRecoveryRef = useRef<Set<string>>(new Set());
   const persistAssistedHistoryRef = useRef<(status: string, results?: PublishResult[], error?: string) => Promise<FacebookPublishedPost[]>>(async () => []);
   const resolveAndSyncFacebookPostRef = useRef<(record: FacebookPublishedPost, options?: { automatic?: boolean; allowManualFallback?: boolean; forceReference?: boolean }) => Promise<void>>(async () => {});
 
@@ -490,6 +510,54 @@ export function MarketingPipelinePanel({
       // The pipeline/local history remains available when the migration is not installed yet.
     }
   }
+
+  useEffect(() => {
+    const persistedTargets = new Set(
+      facebookPosts
+        .filter((item) => item.source === 'chrome_extension' && item.source_post_id)
+        .map((item) => facebookHistoryTargetKey(String(item.source_post_id), {
+          type: item.target_type,
+          id: item.target_id,
+        })),
+    );
+    const recoveries = history.map((row) => {
+      const requestId = row.id.startsWith('chrome-') ? row.id.slice('chrome-'.length) : '';
+      const results = recoverableFacebookHistoryResults(row).filter((result) => {
+        const key = facebookHistoryTargetKey(requestId, result.target);
+        return requestId && !persistedTargets.has(key) && !localFacebookHistoryRecoveryRef.current.has(key);
+      });
+      return { row, requestId, results };
+    }).filter((item) => item.requestId && item.results.length).slice(0, 5);
+
+    recoveries.forEach(({ row, requestId, results }) => {
+      const recoveryKeys = results.map((result) => facebookHistoryTargetKey(requestId, result.target));
+      recoveryKeys.forEach((key) => localFacebookHistoryRecoveryRef.current.add(key));
+      void api('/api/facebook-posts/extension-result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_id: requestId,
+          content: buildFacebookPostMessage({ title: row.title, content: row.content, hashtags: row.hashtags }),
+          hashtags: row.hashtags,
+          media_urls: row.mediaUrls?.length ? row.mediaUrls : row.mediaUrl ? [row.mediaUrl] : [],
+          targets: results.map((result) => result.target),
+          status: 'recovered',
+          results: results.map((item) => ({ ...item, ...item.target, target: undefined })),
+        }),
+      }).then(async (response) => {
+        const payload = await response.json().catch(() => ({ posts: [] }));
+        const saved = safeList<FacebookPublishedPost>(payload.posts);
+        if (response.ok && payload.ok && saved.length) {
+          const savedIds = new Set(saved.map((item) => item.id));
+          setFacebookPosts((prev) => [...saved, ...prev.filter((item) => !savedIds.has(item.id))]);
+          return;
+        }
+        recoveryKeys.forEach((key) => localFacebookHistoryRecoveryRef.current.delete(key));
+      }).catch(() => {
+        recoveryKeys.forEach((key) => localFacebookHistoryRecoveryRef.current.delete(key));
+      });
+    });
+  }, [facebookPosts, history]);
 
   async function persistAssistedHistory(status: string, results: PublishResult[] = [], error = ''): Promise<FacebookPublishedPost[]> {
     const snapshot = assistedQueuePayloadRef.current;
@@ -699,13 +767,13 @@ export function MarketingPipelinePanel({
     hashtags: '',
     scheduledAt: '',
     targets: [{ type: post.target_type, id: post.target_id, name: post.target_name || post.target_id }],
-    status: post.status,
+    status: post.legacy_unverified ? 'Chưa xác minh · lịch sử cũ' : post.status,
     results: [{
-      ok: post.status !== 'failed',
+      ok: post.legacy_unverified ? false : post.status !== 'failed',
       target: { type: post.target_type, id: post.target_id, name: post.target_name || post.target_id },
       post_id: post.facebook_post_id || undefined,
       error: post.error_message || undefined,
-      delivery: post.delivery,
+      delivery: post.legacy_unverified ? 'legacy_unverified' : post.delivery,
     }],
     publisherName: post.created_by_staff_name || post.created_by_staff_username || 'Không xác định',
     createdAt: post.published_at || post.created_at || '',
@@ -2228,7 +2296,9 @@ export function MarketingPipelinePanel({
                         <span>💬 {row.facebookRecord.comment_count ?? '—'}</span>
                         <span>↗ {row.facebookRecord.share_count ?? '—'}</span>
                         <b>Tổng {row.facebookRecord.total_interactions ?? '—'}</b>
-                        <small>{row.facebookRecord.metrics_updated_at ? `Cập nhật ${formatDateTime(row.facebookRecord.metrics_updated_at)}` : 'Chưa đồng bộ'}</small>
+                        <small>{row.facebookRecord.legacy_unverified
+                          ? 'Lịch sử cũ chưa có link/Post ID'
+                          : row.facebookRecord.metrics_updated_at ? `Cập nhật ${formatDateTime(row.facebookRecord.metrics_updated_at)}` : 'Chưa đồng bộ'}</small>
                       </div>
                     ) : (
                       <div className="facebook-metrics-cell">

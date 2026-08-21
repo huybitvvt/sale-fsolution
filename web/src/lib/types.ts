@@ -216,6 +216,7 @@ export type FacebookPublishedPost = {
   published_at?: string | null;
   created_at?: string;
   updated_at?: string;
+  legacy_unverified?: boolean;
 };
 
 export type ReplySuggestion = {
