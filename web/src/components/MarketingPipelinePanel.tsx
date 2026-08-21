@@ -108,6 +108,9 @@ type HistoryRow = {
 
 const HISTORY_KEY = 'seeding-post-history-v2';
 const PUBLISH_INTERVAL_MINUTES = 5;
+const FACEBOOK_AUTO_SYNC_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const FACEBOOK_AUTO_SYNC_RETRY_MS = 2 * 60 * 1000;
+const FACEBOOK_HISTORY_POLL_MS = 60 * 1000;
 const VIETNAM_TIME_ZONE = 'Asia/Ho_Chi_Minh';
 const historyDateKeyFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone: VIETNAM_TIME_ZONE,
@@ -429,7 +432,7 @@ export function MarketingPipelinePanel({
   const [historyExportError, setHistoryExportError] = useState('');
   const assistedQueueRequestRef = useRef('');
   const assistedQueuePayloadRef = useRef<{ requestId: string; title: string; content: string; hashtags: string; mediaUrls: string[]; targets: PublishTarget[] } | null>(null);
-  const automaticFacebookSyncAttemptedRef = useRef<Set<string>>(new Set());
+  const automaticFacebookSyncAttemptsRef = useRef<Map<string, number>>(new Map());
   const persistAssistedHistoryRef = useRef<(status: string, results?: PublishResult[], error?: string) => Promise<FacebookPublishedPost[]>>(async () => []);
   const resolveAndSyncFacebookPostRef = useRef<(record: FacebookPublishedPost, options?: { automatic?: boolean; allowManualFallback?: boolean; forceReference?: boolean }) => Promise<void>>(async () => {});
 
@@ -450,6 +453,20 @@ export function MarketingPipelinePanel({
   useEffect(() => {
     void loadFacebookHistory();
   }, [data.posts]);
+
+  useEffect(() => {
+    const refreshHistory = () => {
+      if (document.visibilityState === 'visible') void loadFacebookHistory();
+    };
+    const timer = window.setInterval(refreshHistory, FACEBOOK_HISTORY_POLL_MS);
+    window.addEventListener('focus', refreshHistory);
+    document.addEventListener('visibilitychange', refreshHistory);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshHistory);
+      document.removeEventListener('visibilitychange', refreshHistory);
+    };
+  }, []);
 
   async function loadFacebookHistory() {
     try {
@@ -496,16 +513,18 @@ export function MarketingPipelinePanel({
   persistAssistedHistoryRef.current = persistAssistedHistory;
 
   useEffect(() => {
-    const cutoff = Date.now() - 30 * 60 * 1000;
+    const now = Date.now();
+    const cutoff = now - FACEBOOK_AUTO_SYNC_WINDOW_MS;
     const recent = facebookPosts
       .filter((record) => {
         const created = new Date(record.created_at || record.published_at || '').getTime();
-        return Number.isFinite(created) && created >= cutoff && record.status !== 'failed';
+        const needsSync = !record.facebook_post_id || !record.metrics_updated_at;
+        return Number.isFinite(created) && created >= cutoff && record.status !== 'failed' && needsSync;
       })
-      .filter((record) => !automaticFacebookSyncAttemptedRef.current.has(record.id))
-      .slice(0, 3);
+      .filter((record) => now - (automaticFacebookSyncAttemptsRef.current.get(record.id) || 0) >= FACEBOOK_AUTO_SYNC_RETRY_MS)
+      .slice(0, 1);
     recent.forEach((record) => {
-      automaticFacebookSyncAttemptedRef.current.add(record.id);
+      automaticFacebookSyncAttemptsRef.current.set(record.id, now);
       void resolveAndSyncFacebookPostRef.current(record, { automatic: true, allowManualFallback: false });
     });
   }, [facebookPosts]);
@@ -602,7 +621,7 @@ export function MarketingPipelinePanel({
         updateHistory(`Hoàn tất ${completed}/${total} · kiểm tra trạng thái từng nơi`, undefined, finalResults);
         void persistAssistedHistoryRef.current('done', finalResults).then((saved) => {
           saved.forEach((record) => {
-            automaticFacebookSyncAttemptedRef.current.add(record.id);
+            automaticFacebookSyncAttemptsRef.current.set(record.id, Date.now());
             void resolveAndSyncFacebookPostRef.current(record, { automatic: true, allowManualFallback: false });
           });
         });
@@ -1338,7 +1357,11 @@ export function MarketingPipelinePanel({
     if (!record.post_url) throw new Error('Bài chưa có permalink Facebook để extension mở.');
     const extension = await requestFacebookPostDataFromExtension(record);
     if (!extension.ok) throw new Error(extension.error || 'Extension không đọc được dữ liệu bài Facebook');
-    return saveFacebookBrowserData(record, extension);
+    let resolved = record;
+    if (!resolved.facebook_post_id && extension.postUrl) {
+      resolved = await saveFacebookReference(resolved, extension.postUrl, 'extension_reference');
+    }
+    return saveFacebookBrowserData(resolved, extension);
   }
 
   async function resolveAndSyncFacebookPost(
@@ -1371,9 +1394,15 @@ export function MarketingPipelinePanel({
       }
 
       if (!resolved.facebook_post_id) {
-        const extensionResult = await requestFacebookReferenceFromExtension(record);
+        const extensionResult = automatic
+          ? await findFacebookReferenceWithExtension(record)
+          : await requestFacebookReferenceFromExtension(record);
         if (extensionResult.ok && extensionResult.postUrl) {
-          resolved = await saveFacebookReference(record, extensionResult.postUrl);
+          resolved = await saveFacebookReference(
+            record,
+            extensionResult.postUrl,
+            automatic ? 'auto_resolved' : 'manual_reference',
+          );
           errors.length = 0;
         } else if (extensionResult.error) {
           errors.push(extensionResult.error);
@@ -2162,8 +2191,8 @@ export function MarketingPipelinePanel({
                             ? 'Đang tự tìm...'
                             : row.facebookRecord.facebook_post_id ? 'Tìm lại link' : 'Tự tìm & gắn link'}
                         </button>
-                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || !row.facebookRecord.facebook_post_id} onClick={() => void refreshFacebookMetrics(row.facebookRecord!)}>Cập nhật tương tác</button>
-                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || !row.facebookRecord.facebook_post_id} onClick={() => void collectFacebookComments(row.facebookRecord!)}>Xem comment</button>
+                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void refreshFacebookMetrics(row.facebookRecord!)}>Cập nhật tương tác</button>
+                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void collectFacebookComments(row.facebookRecord!)}>Xem comment</button>
                       </div>
                     ) : '—'}
                   </td>
