@@ -8,6 +8,38 @@ import app as backend
 
 
 class PostPublishingTests(unittest.TestCase):
+    def test_page_token_can_be_loaded_from_environment_json(self):
+        previous_cache = deepcopy(backend._pages_cache)
+        try:
+            backend._pages_cache = {}
+            with patch.dict(os.environ, {'FB_PAGE_TOKENS': '{"123456789012345":"page-token"}'}, clear=False):
+                self.assertEqual(backend._page_token_from_cache('123456789012345'), 'page-token')
+                self.assertEqual(backend._pages_cache['123456789012345']['access_token'], 'page-token')
+        finally:
+            backend._pages_cache = previous_cache
+
+    def test_page_publish_uses_environment_page_token(self):
+        previous_cache = deepcopy(backend._pages_cache)
+        api = Mock(last_graph_error='')
+        api.create_page_post.return_value = {'id': 'page-1_post-1'}
+        try:
+            backend._pages_cache = {}
+            with (
+                patch.dict(os.environ, {'FB_PAGE_TOKENS': '123456789012345=page-token'}, clear=False),
+                patch.object(backend, 'get_api', return_value=api),
+            ):
+                result = backend._publish_content_pipeline_post(
+                    {'content': 'Nội dung Page'},
+                    [{'type': 'page', 'id': '123456789012345', 'name': 'Page 1'}],
+                )
+
+            self.assertTrue(result['ok'])
+            api.create_page_post.assert_called_once()
+            self.assertEqual(api.create_page_post.call_args.args[0], '123456789012345')
+            self.assertEqual(api.create_page_post.call_args.args[2], 'page-token')
+        finally:
+            backend._pages_cache = previous_cache
+
     def test_publish_uses_each_targets_ai_caption(self):
         api_one = Mock(last_graph_error='')
         api_one.create_post.return_value = {'id': 'group-1_post-1'}

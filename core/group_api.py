@@ -141,9 +141,11 @@ class FacebookGroupAPI:
 
     def _call(self, method: str, url: str, **kwargs) -> Optional[dict]:
         self.last_graph_error = ''
+        params = kwargs.setdefault('params', {})
+        supplied_access_token = bool(params.get('access_token'))
         for attempt in range(2):
             try:
-                kwargs.setdefault('params', {})['access_token'] = self.access_token
+                params.setdefault('access_token', self.access_token)
                 kwargs.setdefault('timeout', 30)
                 resp = getattr(requests, method)(url, **kwargs)
                 data = resp.json()
@@ -160,7 +162,8 @@ class FacebookGroupAPI:
                     continue
                 return None
             if self._should_refresh_access_token(data):
-                if attempt == 0 and self._refresh_access_token():
+                if not supplied_access_token and attempt == 0 and self._refresh_access_token():
+                    params['access_token'] = self.access_token
                     continue
                 if self._is_expired(data):
                     print('Khong the refresh token - kiem tra lai cookie')
@@ -394,6 +397,7 @@ class FacebookGroupAPI:
         if data is None:
             return None
         if data.get('error'):
+            self._remember_graph_error(data)
             return None
 
         total_count = ((data.get('summary') or {}).get('total_count') or 0)
@@ -453,6 +457,8 @@ class FacebookGroupAPI:
                 resp = requests.get(f'{GRAPH_URL}/{target_ids[0]}/reactions', params=dict(params), timeout=30)
                 data = resp.json()
         if data is None or data.get('error'):
+            if data and data.get('error'):
+                self._remember_graph_error(data)
             return None
 
         total_count = ((data.get('summary') or {}).get('total_count') or 0)
@@ -490,6 +496,48 @@ class FacebookGroupAPI:
             if data and not data.get('error'):
                 shares = data.get('shares') or {}
                 return int(shares.get('count') or 0)
+            if data and data.get('error'):
+                self._remember_graph_error(data)
+        return None
+
+    def get_post_engagement(self, post_ids, access_token: str = None) -> Optional[dict]:
+        """Read all post counters in one Graph request, trying canonical ID variants."""
+        if isinstance(post_ids, str):
+            post_ids = [post_ids]
+        candidates = []
+        for value in post_ids or []:
+            value = str(value or '').strip()
+            if value and value not in candidates:
+                candidates.append(value)
+        if not candidates:
+            self.last_graph_error = 'Thiếu Facebook Post ID.'
+            return None
+
+        errors = []
+        fields = 'id,permalink_url,reactions.limit(1).summary(true),comments.limit(1).summary(true),shares'
+        for post_id in candidates:
+            params = {'fields': fields}
+            if access_token:
+                params['access_token'] = access_token
+            data = self._call('get', f'{GRAPH_URL}/{post_id}', params=params, timeout=30)
+            if data and not data.get('error'):
+                reactions = data.get('reactions') if isinstance(data.get('reactions'), dict) else None
+                comments = data.get('comments') if isinstance(data.get('comments'), dict) else None
+                shares = data.get('shares') if isinstance(data.get('shares'), dict) else None
+                reaction_count = ((reactions or {}).get('summary') or {}).get('total_count') if reactions is not None else None
+                comment_count = ((comments or {}).get('summary') or {}).get('total_count') if comments is not None else None
+                share_count = (shares or {}).get('count') if shares is not None else 0
+                return {
+                    'facebook_post_id': str(data.get('id') or post_id),
+                    'post_url': str(data.get('permalink_url') or ''),
+                    'reaction_count': int(reaction_count) if reaction_count is not None else None,
+                    'comment_count': int(comment_count) if comment_count is not None else None,
+                    'share_count': int(share_count) if share_count is not None else None,
+                }
+            error = self.last_graph_error or str((data or {}).get('error', {}).get('message') or '').strip()
+            if error and error not in errors:
+                errors.append(error)
+        self.last_graph_error = '; '.join(errors[:3]) or 'Facebook không trả dữ liệu tương tác cho Post ID này.'
         return None
 
     def resolve_slug(self, slug: str) -> Optional[dict]:

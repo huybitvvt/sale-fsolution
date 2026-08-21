@@ -108,6 +108,60 @@
       return;
     }
 
+    if (data.type === 'STREAL_FACEBOOK_POST_METRICS_REQUEST') {
+      chrome.runtime.sendMessage(
+        {
+          type: 'STREAL_EXTENSION_COLLECT_FACEBOOK_POST_METRICS',
+          requestId: data.requestId,
+          payload: data.payload || {},
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            postToPage({
+              type: 'STREAL_FACEBOOK_POST_METRICS_RESPONSE',
+              requestId: data.requestId,
+              ok: false,
+              error: chrome.runtime.lastError.message || 'Extension khong phan hoi',
+            });
+            return;
+          }
+          postToPage({
+            type: 'STREAL_FACEBOOK_POST_METRICS_RESPONSE',
+            requestId: data.requestId,
+            ...(response || { ok: false, error: 'Extension khong doc duoc tuong tac Facebook' }),
+          });
+        },
+      );
+      return;
+    }
+
+    if (data.type === 'STREAL_FACEBOOK_POST_REFERENCE_REQUEST') {
+      chrome.runtime.sendMessage(
+        {
+          type: 'STREAL_EXTENSION_FIND_FACEBOOK_POST_REFERENCE',
+          requestId: data.requestId,
+          payload: data.payload || {},
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            postToPage({
+              type: 'STREAL_FACEBOOK_POST_REFERENCE_RESPONSE',
+              requestId: data.requestId,
+              ok: false,
+              error: chrome.runtime.lastError.message || 'Extension khong phan hoi',
+            });
+            return;
+          }
+          postToPage({
+            type: 'STREAL_FACEBOOK_POST_REFERENCE_RESPONSE',
+            requestId: data.requestId,
+            ...(response || { ok: false, error: 'Extension khong tim thay bai Facebook' }),
+          });
+        },
+      );
+      return;
+    }
+
     if (data.type === 'STREAL_TIKTOK_COLLECT_VIDEOS_REQUEST') {
       chrome.runtime.sendMessage(
         {

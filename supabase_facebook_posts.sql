@@ -54,9 +54,29 @@ before update on public.facebook_posts
 for each row execute function public.set_facebook_posts_updated_at();
 
 alter table public.facebook_posts enable row level security;
-drop policy if exists "facebook_posts_app_all" on public.facebook_posts;
-create policy "facebook_posts_app_all" on public.facebook_posts
-for all to anon, authenticated using (true) with check (true);
 
-grant select, insert, update, delete on public.facebook_posts to anon, authenticated, service_role;
+-- Remove old permissive policy
+drop policy if exists "facebook_posts_app_all" on public.facebook_posts;
+
+-- Anon: read-only (frontend dashboard display)
+create policy "facebook_posts_anon_read" on public.facebook_posts
+  for select to anon using (true);
+
+-- Authenticated: read all + insert + update own records
+create policy "facebook_posts_auth_read" on public.facebook_posts
+  for select to authenticated using (true);
+create policy "facebook_posts_auth_insert" on public.facebook_posts
+  for insert to authenticated with check (true);
+create policy "facebook_posts_auth_update" on public.facebook_posts
+  for update to authenticated
+  using (created_by_staff_id = auth.uid()::text);
+
+-- Service role (backend): full access (bypasses RLS by default, grant for completeness)
+-- Note: service_role bypasses RLS in Supabase, these grants are belt-and-suspenders.
+
+-- Restrict grants: anon gets SELECT only, authenticated gets SELECT/INSERT/UPDATE (no DELETE)
+revoke all on public.facebook_posts from anon, authenticated;
+grant select on public.facebook_posts to anon;
+grant select, insert, update on public.facebook_posts to authenticated;
+grant select, insert, update, delete on public.facebook_posts to service_role;
 notify pgrst, 'reload schema';

@@ -935,6 +935,12 @@ def _record_publish_results(post: dict, targets: list[dict], result: dict, *, so
         facebook_post_id = str(publish_result.get('post_id') or '').strip()
         delivery = str(publish_result.get('delivery') or '')
         ok = bool(publish_result.get('ok')) and bool(facebook_post_id or delivery == 'published')
+        metric_values = {
+            key: publish_result.get(key)
+            for key in ('reaction_count', 'comment_count', 'share_count')
+            if publish_result.get(key) is not None
+        }
+        known_metrics = [int(value) for value in metric_values.values()]
         stable_seed = request_id or source_post_id or uuid.uuid4().hex
         external_key = f'{source}:{stable_seed}:{target_type}:{target_id or index}'
         row, _ = _save_facebook_post({
@@ -957,6 +963,8 @@ def _record_publish_results(post: dict, targets: list[dict], result: dict, *, so
             'created_by_staff_username': staff.get('username') or '',
             'published_at': now if ok else None,
             'created_at': now,
+            **metric_values,
+            **({'total_interactions': sum(known_metrics), 'metrics_updated_at': now} if known_metrics else {}),
         })
         saved.append(row)
     return saved
@@ -1112,14 +1120,27 @@ def _is_direct_video_url(url: str) -> bool:
     return bool(url and _VIDEO_EXT_RE.search(url))
 
 def _page_token_from_cache(page_id: str) -> str:
+    token, _, _ = _page_token_lookup(page_id)
+    return token
+
+
+def _page_token_lookup(page_id: str) -> tuple[str, str, str]:
     global _pages_cache
     page_id = str(page_id or '').strip()
     if not page_id:
-        return ''
+        return '', 'none', ''
     cached = (_pages_cache.get(page_id) or {}).get('access_token') or ''
     if cached:
-        return cached
-    pages, _, _ = _load_facebook_pages_for_active_cookie()
+        return cached, 'cache', ''
+    configured = _page_token_from_env(page_id)
+    if configured:
+        prev = _pages_cache.get(page_id) or {}
+        _pages_cache[page_id] = {
+            'name': prev.get('name', ''),
+            'access_token': configured,
+        }
+        return configured, 'env', ''
+    pages, warning, source = _load_facebook_pages_for_active_cookie()
     for p in pages:
         if p.get('id'):
             prev = _pages_cache.get(str(p.get('id'))) or {}
@@ -1127,7 +1148,52 @@ def _page_token_from_cache(page_id: str) -> str:
                 'name': p.get('name', '') or prev.get('name', ''),
                 'access_token': p.get('access_token', '') or prev.get('access_token', ''),
             }
-    return (_pages_cache.get(page_id) or {}).get('access_token') or ''
+    token = (_pages_cache.get(page_id) or {}).get('access_token') or ''
+    return token, source or 'graph', warning or ''
+
+
+def _page_token_from_env(page_id: str) -> str:
+    page_id = str(page_id or '').strip()
+    if not page_id:
+        return ''
+    raw = str(os.environ.get('FB_PAGE_TOKENS') or os.environ.get('FACEBOOK_PAGE_TOKENS') or '').strip()
+    if not raw:
+        return ''
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return str(data.get(page_id) or '').strip()
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get('page_id') or item.get('id') or '').strip() == page_id:
+                    return str(item.get('access_token') or item.get('token') or '').strip()
+    except Exception:
+        pass
+    for part in re.split(r'[\r\n,]+', raw):
+        if '=' not in part:
+            continue
+        key, value = part.split('=', 1)
+        if key.strip() == page_id:
+            return value.strip()
+    return ''
+
+
+def _missing_page_token_message(source: str = '', warning: str = '') -> str:
+    message = (
+        'Không lấy được Page token. Cookie/token hiện tại không có quyền Page, hoặc Page chỉ được đồng bộ bằng HTML. '
+        'Cần Page access token có quyền pages_show_list, pages_read_engagement và pages_manage_posts; '
+        'có thể cấu hình biến môi trường FB_PAGE_TOKENS={"PAGE_ID":"PAGE_ACCESS_TOKEN"}.'
+    )
+    details = []
+    if source:
+        details.append(f'nguồn thử: {source}')
+    if warning:
+        details.append(str(warning))
+    if details:
+        message = f"{message} ({'; '.join(details)})"
+    return message
 
 
 def _extract_post_media(post: dict) -> tuple[str, str]:
@@ -1242,9 +1308,9 @@ def _publish_content_pipeline_post(post: dict, targets: list[dict], dry_run: boo
                 })
                 continue
             if target_type == 'page':
-                page_token = _page_token_from_cache(target_id)
+                page_token, page_token_source, page_token_warning = _page_token_lookup(target_id)
                 if not page_token:
-                    raise RuntimeError('Không lấy được Page token')
+                    raise RuntimeError(_missing_page_token_message(page_token_source, page_token_warning))
                 target_api = get_api(DEFAULT_GROUP)
                 result = target_api.create_page_post(
                     target_id,
@@ -1278,6 +1344,7 @@ def _publish_content_pipeline_post(post: dict, targets: list[dict], dry_run: boo
                     'post_id': result.get('id'),
                     'delivery': delivery,
                     'native_video_error': (result or {}).get('_native_video_error'),
+                    **({'page_token_source': page_token_source} if target_type == 'page' and page_token_source else {}),
                 })
             else:
                 api_error = getattr(target_api, 'last_graph_error', '') if target_api else ''
@@ -6938,9 +7005,9 @@ def api_create_page_post():
     if not page_id or (not message and not media_urls):
         return jsonify({'ok': False, 'error': 'Thiếu page_id hoặc nội dung/ảnh/video'}), 400
     try:
-        page_token = _page_token_from_cache(page_id)
+        page_token, page_token_source, page_token_warning = _page_token_lookup(page_id)
         if not page_token:
-            error = 'Không lấy được Page token. Kiểm tra quyền quản trị Page/cookie.'
+            error = _missing_page_token_message(page_token_source, page_token_warning)
             history = _record_publish_results(body, [{'type': 'page', 'id': page_id}], {'ok': False, 'results': [{'ok': False, 'type': 'page', 'id': page_id, 'error': error}]}, source='api_page_post', request_id=f'api_{uuid.uuid4().hex}')
             return jsonify({'ok': False, 'error': error, 'history': history}), 400
         result = get_api(DEFAULT_GROUP).create_page_post(
@@ -6961,6 +7028,7 @@ def api_create_page_post():
                 'delivery': delivery,
                 'media_count': len(media_urls),
                 'native_video_error': (result or {}).get('_native_video_error'),
+                'page_token_source': page_token_source,
                 'target': {'type': 'page', 'id': page_id},
                 'history': history,
             })
@@ -8187,6 +8255,9 @@ def facebook_posts_extension_result():
             'post_url': current.get('post_url') or '',
             'delivery': current.get('delivery') or body.get('delivery') or 'submitting',
             'error': current.get('error') or body.get('error') or '',
+            'reaction_count': current.get('reaction_count'),
+            'comment_count': current.get('comment_count'),
+            'share_count': current.get('share_count'),
         })
     saved = _record_publish_results(
         {'content': str(body.get('content') or ''), 'hashtags': str(body.get('hashtags') or ''), 'media_urls': body.get('media_urls') or []},
@@ -8195,6 +8266,105 @@ def facebook_posts_extension_result():
         source='chrome_extension', source_post_id=request_id, request_id=request_id,
     )
     return jsonify({'ok': True, 'posts': saved})
+
+
+@app.route('/api/facebook-posts/backfill', methods=['POST'])
+def facebook_posts_backfill():
+    """Import lịch sử bài đăng cũ lên server (chỉ Admin)."""
+    if not _is_admin():
+        return jsonify({'ok': False, 'error': 'Chỉ Admin được import lịch sử cũ'}), 403
+    body = request.get_json(silent=True) or {}
+    posts = body.get('posts') or []
+    if not isinstance(posts, list) or not posts:
+        return jsonify({'ok': False, 'error': 'Danh sách bài đăng trống'}), 400
+    if len(posts) > 2000:
+        return jsonify({'ok': False, 'error': 'Tối đa 2000 bài mỗi lần import'}), 400
+    staff = _current_staff() or _active_staff()
+    imported, skipped, errors = 0, 0, []
+    for item in posts:
+        if not isinstance(item, dict):
+            continue
+        target_type = 'page' if str(item.get('target_type') or item.get('type') or 'group') == 'page' else 'group'
+        target_id = str(item.get('target_id') or item.get('id') or '').strip()
+        published_at = str(item.get('published_at') or item.get('created_at') or item.get('timestamp') or '').strip()
+        staff_id = str(item.get('staff_id') or item.get('created_by_staff_id') or staff.get('id') or '').strip()
+        staff_name = str(item.get('staff_name') or item.get('created_by_staff_name') or staff.get('name') or '').strip()
+        content = str(item.get('content') or item.get('message') or '').strip()
+        external_key = f"backfill:{staff_id}:{target_type}:{target_id}:{published_at or uuid.uuid4().hex[:8]}"
+        try:
+            row, warning = _save_facebook_post({
+                'external_key': external_key,
+                'source': 'backfill',
+                'source_post_id': str(item.get('source_post_id') or item.get('request_id') or ''),
+                'facebook_post_id': str(item.get('facebook_post_id') or item.get('post_id') or '') or None,
+                'target_type': target_type,
+                'target_id': target_id,
+                'target_name': str(item.get('target_name') or item.get('name') or target_id),
+                'facebook_page_id': item.get('facebook_page_id') or (target_id if target_type == 'page' else None),
+                'post_url': str(item.get('post_url') or item.get('url') or ''),
+                'content': content,
+                'media_urls': item.get('media_urls') or [],
+                'status': str(item.get('status') or 'success'),
+                'delivery': 'backfill',
+                'error_message': '',
+                'created_by_staff_id': staff_id,
+                'created_by_staff_name': staff_name,
+                'created_by_staff_username': str(item.get('staff_username') or item.get('created_by_staff_username') or ''),
+                'published_at': published_at or None,
+                'created_at': published_at or _utc_iso(),
+            })
+            imported += 1
+        except Exception as exc:
+            err = str(exc).lower()
+            if 'unique' in err or 'duplicate' in err or 'conflict' in err:
+                skipped += 1
+            else:
+                errors.append(str(exc)[:120])
+    return jsonify({'ok': True, 'imported': imported, 'skipped': skipped, 'errors': errors[:10], 'total': len(posts)})
+
+
+@app.route('/api/facebook-posts/metrics-summary', methods=['GET'])
+def facebook_posts_metrics_summary():
+    """Tổng hợp reaction/comment/share theo nhân viên trong khoảng thời gian."""
+    from_date = (request.args.get('from') or '').strip()
+    to_date = (request.args.get('to') or '').strip()
+    rows, warning = _load_facebook_posts()
+    rows = [r for r in rows if r.get('status') == 'success']
+    if from_date:
+        rows = [r for r in rows if str(r.get('published_at') or r.get('created_at') or '') >= from_date]
+    if to_date:
+        to_end = to_date + 'T23:59:59' if len(to_date) == 10 else to_date
+        rows = [r for r in rows if str(r.get('published_at') or r.get('created_at') or '') <= to_end]
+    summary: dict[str, dict] = {}
+    for row in rows:
+        staff_id = str(row.get('created_by_staff_id') or 'unknown')
+        if staff_id not in summary:
+            summary[staff_id] = {
+                'staff_id': staff_id,
+                'staff_name': row.get('created_by_staff_name') or '',
+                'post_count': 0,
+                'total_reactions': 0,
+                'total_comments': 0,
+                'total_shares': 0,
+                'total_interactions': 0,
+                'posts_with_metrics': 0,
+            }
+        s = summary[staff_id]
+        s['post_count'] += 1
+        rc = int(row.get('reaction_count') or 0)
+        cc = int(row.get('comment_count') or 0)
+        sc = int(row.get('share_count') or 0)
+        if any(row.get(key) is not None for key in ('reaction_count', 'comment_count', 'share_count')):
+            s['posts_with_metrics'] += 1
+        s['total_reactions'] += rc
+        s['total_comments'] += cc
+        s['total_shares'] += sc
+        s['total_interactions'] += rc + cc + sc
+    result = sorted(summary.values(), key=lambda x: x.get('staff_name') or '')
+    payload: dict = {'ok': True, 'summary': result, 'total_posts': len(rows)}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
 
 
 def _facebook_post_by_id(record_id: str) -> dict | None:
@@ -8219,6 +8389,61 @@ def _facebook_post_id_from_url(value: str) -> str:
     return str(query.get('story_fbid') or query.get('fbid') or '').strip() if str(query.get('story_fbid') or query.get('fbid') or '').strip().isdigit() else ''
 
 
+def _facebook_post_owner_id_from_url(value: str) -> str:
+    raw = str(value or '').strip()
+    try:
+        parsed = urlsplit(raw)
+    except Exception:
+        return ''
+    host = parsed.netloc.lower().split(':')[0]
+    if host != 'facebook.com' and not host.endswith('.facebook.com'):
+        return ''
+    group_match = re.search(r'/groups/(\d+)(?:/|$)', parsed.path, re.I)
+    if group_match:
+        return group_match.group(1)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query_owner = str(query.get('id') or '').strip()
+    return query_owner if query_owner.isdigit() else ''
+
+
+def _is_facebook_post_url(value: str) -> bool:
+    raw = str(value or '').strip()
+    try:
+        parsed = urlsplit(raw)
+    except Exception:
+        return False
+    host = parsed.netloc.lower().split(':')[0]
+    if parsed.scheme != 'https' or (host != 'facebook.com' and not host.endswith('.facebook.com')):
+        return False
+    if _facebook_post_id_from_url(raw):
+        return True
+    return bool(re.search(r'/(?:share/(?:p|v|r)|reel|videos)/[^/]+', parsed.path, re.I))
+
+
+def _facebook_post_id_candidates(row: dict, post_url: str = '') -> list[str]:
+    """Return canonical and object-only IDs used by different Graph post edges."""
+    stored_id = str((row or {}).get('facebook_post_id') or '').strip()
+    url = str(post_url or (row or {}).get('post_url') or '').strip()
+    object_id = _facebook_post_id_from_url(url) or (stored_id.rsplit('_', 1)[-1] if stored_id else '')
+    owner_id = (
+        _facebook_post_owner_id_from_url(url)
+        or str((row or {}).get('facebook_page_id') or '').strip()
+        or str((row or {}).get('target_id') or '').strip()
+    )
+    candidates: list[str] = []
+
+    def add(value: str):
+        value = str(value or '').strip()
+        if value and value not in candidates:
+            candidates.append(value)
+
+    if owner_id.isdigit() and object_id.isdigit() and owner_id != object_id:
+        add(f'{owner_id}_{object_id}')
+    add(stored_id)
+    add(object_id)
+    return candidates
+
+
 @app.route('/api/facebook-posts/<record_id>/reference', methods=['POST'])
 def facebook_post_reference_save(record_id):
     row = _facebook_post_by_id(record_id)
@@ -8226,15 +8451,17 @@ def facebook_post_reference_save(record_id):
         return jsonify({'ok': False, 'error': 'Không tìm thấy bài Facebook'}), 404
     body = request.get_json(silent=True) or {}
     post_url = str(body.get('post_url') or '').strip()
-    post_id = _facebook_post_id_from_url(post_url)
-    if not post_id:
-        return jsonify({'ok': False, 'error': 'Link chưa phải permalink có Post ID. Hãy bấm thời gian đăng để mở riêng bài viết rồi sao chép URL trên thanh địa chỉ; không dùng link /share/.'}), 400
+    if not _is_facebook_post_url(post_url):
+        return jsonify({'ok': False, 'error': 'Link chưa phải link bài viết hợp lệ trên facebook.com'}), 400
+    raw_post_id = _facebook_post_id_from_url(post_url)
+    candidates = _facebook_post_id_candidates({**row, 'facebook_post_id': raw_post_id, 'post_url': post_url}, post_url)
+    post_id = candidates[0] if candidates else str(row.get('facebook_post_id') or '').strip()
     updated, warning = _save_facebook_post({
         **row,
-        'facebook_post_id': post_id,
+        'facebook_post_id': post_id or None,
         'post_url': post_url,
         'status': 'success',
-        'delivery': 'manual_reference',
+        'delivery': str(body.get('delivery') or 'manual_reference'),
         'error_message': '',
         'published_at': row.get('published_at') or _utc_iso(),
     })
@@ -8253,27 +8480,66 @@ def facebook_post_refresh(record_id):
     if not post_id:
         return jsonify({'ok': False, 'error': 'Bài này chưa có Facebook Post ID nên không thể đồng bộ'}), 400
     last_updated = _parse_iso_datetime(row.get('metrics_updated_at'))
-    if last_updated and (datetime.now(timezone.utc) - last_updated).total_seconds() < 60:
+    has_cached_metrics = any(row.get(key) is not None for key in ('reaction_count', 'comment_count', 'share_count'))
+    if has_cached_metrics and last_updated and (datetime.now(timezone.utc) - last_updated).total_seconds() < 60:
         return jsonify({'ok': True, 'post': row, 'cached': True, 'note': 'Dùng metrics vừa đồng bộ để tránh gọi Facebook lặp lại.'})
-    page_id = str(row.get('facebook_page_id') or '').strip()
-    target_id = str(row.get('target_id') or '').strip()
     try:
-        page_token = _page_token_from_cache(page_id) if page_id else ''
-        client = get_api(DEFAULT_GROUP if page_id else (target_id or DEFAULT_GROUP))
-        reactions = client.get_post_reactions(post_id, limit=1, access_token=page_token or None)
-        comments = client.get_post_comments(post_id, limit=1, access_token=page_token or None)
-        shares = client.get_post_share_count(post_id, access_token=page_token or None)
-        reaction_count = int((reactions or {}).get('total_count') or 0) if reactions is not None else None
-        comment_count = int((comments or {}).get('total_count') or 0) if comments is not None else None
-        share_count = int(shares) if shares is not None else None
-        known = [value for value in (reaction_count, comment_count, share_count) if value is not None]
-        updated, warning = _save_facebook_post({**row, 'reaction_count': reaction_count, 'comment_count': comment_count, 'share_count': share_count, 'total_interactions': sum(known) if known else None, 'metrics_updated_at': _utc_iso()})
+        previous_updated_at = str(row.get('metrics_updated_at') or '')
+        updated, warning = _refresh_single_post_metrics(row)
+        if str(updated.get('metrics_updated_at') or '') == previous_updated_at:
+            return jsonify({
+                'ok': False,
+                'error': warning or 'Facebook không trả dữ liệu tương tác. Hãy cập nhật extension để dùng chế độ đọc trực tiếp trên bài viết.',
+                'extension_fallback': True,
+                'post': row,
+            }), 502
         payload = {'ok': True, 'post': updated}
         if warning:
             payload['warning'] = warning
         return jsonify(payload)
     except Exception as exc:
         return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/facebook-posts/<record_id>/extension-metrics', methods=['POST'])
+def facebook_post_extension_metrics_save(record_id):
+    row = _facebook_post_by_id(record_id)
+    if not row:
+        return jsonify({'ok': False, 'error': 'Không tìm thấy bài Facebook'}), 404
+    body = request.get_json(silent=True) or {}
+    counts: dict[str, int | None] = {}
+    for key in ('reaction_count', 'comment_count', 'share_count'):
+        raw = body.get(key)
+        if raw is None or raw == '':
+            counts[key] = None
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'error': f'{key} không hợp lệ'}), 400
+        if value < 0:
+            return jsonify({'ok': False, 'error': f'{key} không được âm'}), 400
+        counts[key] = value
+    known = [value for value in counts.values() if value is not None]
+    if not known:
+        return jsonify({'ok': False, 'error': 'Extension không đọc được số tương tác nào từ bài Facebook'}), 400
+    updated, warning = _save_facebook_post({
+        **row,
+        **{key: value if value is not None else row.get(key) for key, value in counts.items()},
+        'total_interactions': sum(
+            int(value or 0)
+            for value in (
+                counts.get('reaction_count') if counts.get('reaction_count') is not None else row.get('reaction_count'),
+                counts.get('comment_count') if counts.get('comment_count') is not None else row.get('comment_count'),
+                counts.get('share_count') if counts.get('share_count') is not None else row.get('share_count'),
+            )
+        ),
+        'metrics_updated_at': _utc_iso(),
+    })
+    payload = {'ok': True, 'post': updated, 'source': 'chrome_dom'}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
 
 
 @app.route('/api/facebook-posts/<record_id>/comments', methods=['POST'])
@@ -8289,9 +8555,15 @@ def facebook_post_comments_collect(record_id):
     try:
         page_token = _page_token_from_cache(page_id) if page_id else ''
         client = get_api(DEFAULT_GROUP if page_id else (target_id or DEFAULT_GROUP))
-        loaded = client.get_post_comments(post_id, limit=500, access_token=page_token or None)
+        loaded = None
+        for candidate in _facebook_post_id_candidates(row):
+            loaded = client.get_post_comments(candidate, limit=500, access_token=page_token or None)
+            if loaded is not None:
+                post_id = candidate
+                break
         if loaded is None:
-            return jsonify({'ok': False, 'error': 'Facebook không trả comment; kiểm tra quyền Page/Group'}), 502
+            detail = getattr(client, 'last_graph_error', '') or 'Facebook không trả comment; kiểm tra quyền Page/Group'
+            return jsonify({'ok': False, 'error': detail}), 502
         post = {'id': post_id, 'message': row.get('content') or '', 'permalink_url': row.get('post_url') or '', '_page_id': page_id, '_group_id': '' if page_id else target_id, '_page_name': row.get('target_name') or '', '_group_name': row.get('target_name') or ''}
         rows = _flatten_facebook_comment_rows(post, loaded.get('comments') or [], [], _utc_iso(), _current_staff())
         storage, warning = _store_post_comment_rows(rows)
@@ -11952,11 +12224,11 @@ def ai_summarize_comments():
             return jsonify({'ok': False, 'error': 'Chưa cấu hình API key — thêm GEMINI_API_KEY vào .env hoặc key trong UI'}), 400
 
         if page_id:
-            page_token = _page_token_from_cache(page_id)
+            page_token, page_token_source, page_token_warning = _page_token_lookup(page_id)
             if not page_token:
                 return jsonify({
                     'ok': False,
-                    'error': 'Chưa có token Page. Bấm Tải lại bài viết hoặc kiểm tra cookie nhân sự và quyền quản trị Page.',
+                    'error': _missing_page_token_message(page_token_source, page_token_warning),
                 }), 502
             loaded = get_api(DEFAULT_GROUP).get_post_comments(post_id, limit=500, access_token=page_token)
         else:
@@ -12209,7 +12481,12 @@ def api_integration_capabilities():
         'ok': True,
         'facebook': {
             'fanpage': {'publish_text': True, 'publish_link_preview': True, 'publish_native_video_file_url': True, 'tested': True},
-            'group': {'publish_text': True, 'publish_link_preview': True, 'publish_native_video_file_url': True, 'tested_link_preview': True},
+            'group': {
+                'publish_text': False,
+                'publish_link_preview': False,
+                'publish_native_video_file_url': False,
+                'reason': 'Meta deprecated and removed Facebook Groups API / publish_to_groups; spacing posts out does not restore Graph API group publishing.',
+            },
             'video_rule': 'Only direct .mp4/.mov/.webm URLs are native video. YouTube/TikTok/Facebook watch URLs are link previews.',
         },
         'tiktok': {
@@ -12607,10 +12884,86 @@ def _scheduled_posts_worker():
         time_module.sleep(interval)
 
 
+METRICS_REFRESH_INTERVAL_SECONDS = max(0, int(os.environ.get('METRICS_REFRESH_INTERVAL_SECONDS', '3600')))
+
+
+def _refresh_single_post_metrics(row: dict) -> tuple[dict, str]:
+    """Refresh metrics for a single facebook_posts row. Returns (updated_row, warning)."""
+    post_id = str(row.get('facebook_post_id') or '').strip()
+    if not post_id:
+        return row, 'Bài này chưa có Facebook Post ID'
+    page_id = str(row.get('facebook_page_id') or '').strip()
+    target_id = str(row.get('target_id') or '').strip()
+    page_token = _page_token_from_cache(page_id) if page_id else ''
+    client = get_api(DEFAULT_GROUP if page_id else (target_id or DEFAULT_GROUP))
+    candidates = _facebook_post_id_candidates(row)
+    metrics = client.get_post_engagement(candidates, access_token=page_token or None)
+    if not metrics:
+        detail = getattr(client, 'last_graph_error', '') or 'Facebook không trả dữ liệu tương tác cho bài này.'
+        if page_id and not page_token:
+            detail = f'{detail} {_missing_page_token_message()}'
+        return row, detail
+    reaction_count = metrics.get('reaction_count')
+    comment_count = metrics.get('comment_count')
+    share_count = metrics.get('share_count')
+    known = [v for v in (reaction_count, comment_count, share_count) if v is not None]
+    if not known:
+        return row, 'Facebook trả bài viết nhưng không cấp các trường reaction/comment/share.'
+    return _save_facebook_post({
+        **row,
+        'facebook_post_id': metrics.get('facebook_post_id') or post_id,
+        'post_url': metrics.get('post_url') or row.get('post_url') or '',
+        'reaction_count': reaction_count,
+        'comment_count': comment_count,
+        'share_count': share_count,
+        'total_interactions': sum(known) if known else None,
+        'metrics_updated_at': _utc_iso(),
+    })
+
+
+def _metrics_refresh_worker():
+    """Background worker: tự động đồng bộ like/comment/share cho bài đăng 7 ngày gần nhất."""
+    interval = max(300, METRICS_REFRESH_INTERVAL_SECONDS)
+    time_module.sleep(30)
+    while True:
+        try:
+            with app.app_context():
+                rows, _ = _load_facebook_posts()
+                cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+                eligible = [
+                    r for r in rows
+                    if r.get('facebook_post_id')
+                    and r.get('status') == 'success'
+                    and _parse_iso_datetime(r.get('published_at') or r.get('created_at'))
+                    and _parse_iso_datetime(r.get('published_at') or r.get('created_at')) > cutoff
+                ]
+                refreshed = 0
+                for row in eligible[:50]:
+                    last = _parse_iso_datetime(row.get('metrics_updated_at'))
+                    if last and (datetime.now(timezone.utc) - last).total_seconds() < interval:
+                        continue
+                    try:
+                        updated, warning = _refresh_single_post_metrics(row)
+                        if str(updated.get('metrics_updated_at') or '') != str(row.get('metrics_updated_at') or ''):
+                            refreshed += 1
+                        elif warning:
+                            print(f"[metrics] skip {row.get('id')}: {warning[:180]}")
+                        time_module.sleep(2)
+                    except Exception:
+                        pass
+                if refreshed:
+                    print(f'[metrics] auto-refreshed {refreshed} post(s)')
+        except Exception as e:
+            print(f'[metrics] worker error: {e}')
+        time_module.sleep(interval)
+
+
 _load_state()
 threading.Thread(target=_poll_telegram, daemon=True).start()
 if SCHEDULED_POST_WORKER_INTERVAL_SECONDS > 0:
     threading.Thread(target=_scheduled_posts_worker, daemon=True).start()
+if METRICS_REFRESH_INTERVAL_SECONDS > 0:
+    threading.Thread(target=_metrics_refresh_worker, daemon=True).start()
 
 if __name__ == '__main__':
     print(f'[server] supabase={"on" if USE_SUPABASE else "off"} | staff cookie optional | http://localhost:{PORT}')

@@ -952,10 +952,124 @@ async function shouldStopFacebookQueue(requestId) {
   return !current || current.requestId !== requestId || current.status === 'cancelled';
 }
 
+function facebookTargetUrl(task, recentFirst = false) {
+  const targetType = task?.type === 'page' ? 'page' : 'group';
+  const targetId = encodeURIComponent(String(task?.id || ''));
+  if (targetType === 'page') return `https://www.facebook.com/${targetId}${recentFirst ? '/?sk=posts' : ''}`;
+  return `https://www.facebook.com/groups/${targetId}${recentFirst ? '/?sorting_setting=CHRONOLOGICAL' : ''}`;
+}
+
+function assignKnownFacebookMetrics(target, source) {
+  const mappings = [
+    ['reaction_count', 'reaction_count'],
+    ['comment_count', 'comment_count'],
+    ['share_count', 'share_count'],
+  ];
+  for (const [targetKey, sourceKey] of mappings) {
+    const value = source?.[sourceKey];
+    if (value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) >= 0) {
+      target[targetKey] = Math.trunc(Number(value));
+    }
+  }
+}
+
+async function resolveMissingFacebookQueueReferences(queue) {
+  const missing = (queue.results || []).filter((item) => item?.ok && !item.post_id && !item.post_url);
+  if (!missing.length || !queue.facebookTabId) return queue;
+  queue.status = 'resolving_references';
+  await storageSet(FACEBOOK_QUEUE_STORAGE_KEY, queue);
+  if (queue.originTabId) {
+    try { await chrome.tabs.update(queue.originTabId, { active: true }); } catch {}
+  }
+  await notifyFacebookQueue(queue, 'resolving_references', { missingCount: missing.length });
+
+  for (const result of missing) {
+    if (await shouldStopFacebookQueue(queue.requestId)) break;
+    const task = (queue.tasks || []).find((item) => item.type === result.type && String(item.id) === String(result.id));
+    if (!task) continue;
+    try {
+      await chrome.tabs.update(queue.facebookTabId, { url: facebookTargetUrl(task, true), active: false });
+      await waitForTabLoaded(queue.facebookTabId, 45000);
+      await sleep(1200);
+      const resolved = await sendTabMessage(queue.facebookTabId, {
+        type: 'STREAL_FACEBOOK_FIND_PUBLISHED_POST',
+        payload: { message: task.message, targetType: task.type, targetId: task.id },
+      });
+      if (!resolved?.ok || !resolved.postUrl) continue;
+      if (resolved.postId) result.post_id = String(resolved.postId);
+      result.post_url = String(resolved.postUrl || '');
+      result.delivery = 'published';
+      result.reference_method = 'facebook_feed_match';
+      assignKnownFacebookMetrics(result, resolved);
+      await persistFacebookQueueHistory(queue, 'resolving_references');
+    } catch {
+      // Keep the published result; the backend/UI can retry reference discovery later.
+    }
+  }
+  return queue;
+}
+
+async function collectFacebookPostMetrics(message) {
+  const payload = message?.payload || {};
+  const postUrl = String(payload.postUrl || payload.post_url || '').trim();
+  let parsed = null;
+  try {
+    parsed = new URL(postUrl);
+  } catch {
+    return { ok: false, error: 'Link bài Facebook không hợp lệ.' };
+  }
+  if (parsed.protocol !== 'https:' || (parsed.hostname !== 'facebook.com' && !parsed.hostname.endsWith('.facebook.com'))) {
+    return { ok: false, error: 'Chỉ hỗ trợ permalink trên facebook.com.' };
+  }
+
+  let tab = null;
+  try {
+    tab = await chrome.tabs.create({ url: postUrl, active: false });
+    await waitForTabLoaded(tab.id, 45000);
+    await sleep(1500);
+    const result = await sendTabMessage(tab.id, {
+      type: 'STREAL_FACEBOOK_READ_POST_METRICS',
+      payload: { message: String(payload.message || payload.content || '') },
+    });
+    return result?.ok ? result : { ok: false, error: result?.error || 'Không đọc được tương tác từ Facebook.' };
+  } finally {
+    if (tab?.id) {
+      try { await chrome.tabs.remove(tab.id); } catch {}
+    }
+  }
+}
+
+async function findFacebookPostReference(message) {
+  const payload = message?.payload || {};
+  const task = {
+    type: payload.targetType === 'page' || payload.target_type === 'page' ? 'page' : 'group',
+    id: String(payload.targetId || payload.target_id || '').trim(),
+    message: String(payload.message || payload.content || '').trim(),
+  };
+  if (!task.id || !task.message) return { ok: false, error: 'Thiếu nơi đăng hoặc nội dung bài để dò link.' };
+  let tab = null;
+  try {
+    tab = await chrome.tabs.create({ url: facebookTargetUrl(task, true), active: false });
+    await waitForTabLoaded(tab.id, 45000);
+    await sleep(1500);
+    const result = await sendTabMessage(tab.id, {
+      type: 'STREAL_FACEBOOK_FIND_PUBLISHED_POST',
+      payload: { message: task.message, targetType: task.type, targetId: task.id },
+    });
+    return result?.ok ? result : { ok: false, error: result?.error || 'Không tìm thấy bài khớp nội dung trên Facebook.' };
+  } finally {
+    if (tab?.id) {
+      try { await chrome.tabs.remove(tab.id); } catch {}
+    }
+  }
+}
+
 async function openCurrentFacebookQueueTask(queue) {
   if (await shouldStopFacebookQueue(queue?.requestId)) return { ok: true, cancelled: true };
   const task = queue?.tasks?.[queue.index];
   if (!task) {
+    await resolveMissingFacebookQueueReferences(queue);
+    queue.status = 'done';
     await persistFacebookQueueHistory(queue, 'done');
     await notifyFacebookQueue(queue, 'done', { results: queue.results || [] });
     if (queue?.originTabId) {
@@ -966,9 +1080,7 @@ async function openCurrentFacebookQueueTask(queue) {
   }
 
   const targetType = task.type === 'page' ? 'page' : 'group';
-  const targetUrl = targetType === 'page'
-    ? `https://www.facebook.com/${encodeURIComponent(task.id)}`
-    : `https://www.facebook.com/groups/${encodeURIComponent(task.id)}`;
+  const targetUrl = facebookTargetUrl(task);
   await notifyFacebookQueue(queue, 'opening', {
     targetType,
     targetId: task.id,
@@ -1184,7 +1296,7 @@ async function handleFacebookQueueEvent(message, sender) {
     return { ok: true };
   }
 
-  queue.results = [...(queue.results || []), {
+  const confirmedResult = {
     ok: true,
     type: task.type,
     id: task.id,
@@ -1194,7 +1306,13 @@ async function handleFacebookQueueEvent(message, sender) {
     post_id: message.postId || '',
     post_url: message.postUrl || '',
     method: message.automatic ? 'auto-chrome-composer' : 'user-confirmed-chrome',
-  }];
+  };
+  assignKnownFacebookMetrics(confirmedResult, {
+    reaction_count: message.reactionCount,
+    comment_count: message.commentCount,
+    share_count: message.shareCount,
+  });
+  queue.results = [...(queue.results || []), confirmedResult];
   queue.index += 1;
   queue.status = queue.index >= queue.tasks.length ? 'done' : 'advancing';
   await storageSet(FACEBOOK_QUEUE_STORAGE_KEY, queue);
@@ -1208,6 +1326,9 @@ async function handleFacebookQueueEvent(message, sender) {
     outcome: ['published', 'pending_review'].includes(message.outcome) ? message.outcome : 'submitted',
     postId: message.postId || '',
     postUrl: message.postUrl || '',
+    reactionCount: message.reactionCount,
+    commentCount: message.commentCount,
+    shareCount: message.shareCount,
   });
   if (await shouldStopFacebookQueue(queue.requestId)) {
     return { ok: true, cancelled: true, completedCount: queue.index, targetCount: queue.tasks.length };
@@ -1241,6 +1362,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'STREAL_EXTENSION_CANCEL_FACEBOOK_GROUP_QUEUE') {
     cancelFacebookGroupQueue(message)
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+  if (message?.type === 'STREAL_EXTENSION_COLLECT_FACEBOOK_POST_METRICS') {
+    collectFacebookPostMetrics(message)
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+  if (message?.type === 'STREAL_EXTENSION_FIND_FACEBOOK_POST_REFERENCE') {
+    findFacebookPostReference(message)
       .then((response) => sendResponse(response))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;
@@ -1280,4 +1413,57 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     .then((response) => sendResponse(response))
     .catch((error) => sendResponse({ ok: false, final: true, error: error?.message || String(error) }));
   return true;
+});
+
+// ── Auto-backfill local publish history on extension update ──
+chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason !== 'update' && details.reason !== 'install') return;
+  try {
+    const stored = await chrome.storage.local.get([STREAL_API_ORIGIN_KEY, 'strealPublishHistory']);
+    const origin = String(stored?.[STREAL_API_ORIGIN_KEY] || '');
+    const history = stored?.strealPublishHistory;
+    if (!isAllowedApiOrigin(origin) || !Array.isArray(history) || !history.length) return;
+    // Convert local history items to server backfill format
+    const posts = history
+      .filter((item) => item && (item.target_id || item.targetId || item.id))
+      .map((item) => ({
+        target_type: item.target_type || item.targetType || item.type || 'group',
+        target_id: String(item.target_id || item.targetId || item.id || ''),
+        target_name: item.target_name || item.targetName || item.name || '',
+        content: item.content || item.message || '',
+        media_urls: item.media_urls || item.mediaUrls || [],
+        post_url: item.post_url || item.postUrl || item.url || '',
+        facebook_post_id: item.facebook_post_id || item.facebookPostId || item.post_id || item.postId || '',
+        staff_id: item.staff_id || item.staffId || item.created_by_staff_id || '',
+        staff_name: item.staff_name || item.staffName || item.created_by_staff_name || '',
+        published_at: item.published_at || item.publishedAt || item.created_at || item.createdAt || item.timestamp || '',
+        source_post_id: item.source_post_id || item.sourcePostId || item.request_id || item.requestId || '',
+        status: item.status || 'success',
+      }));
+    if (!posts.length) return;
+    const tabs = await chrome.tabs.query({ url: `${origin}/*` });
+    const tab = tabs.find((t) => Number.isInteger(t.id));
+    if (tab?.id) {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id }, world: 'MAIN', args: [posts],
+        func: async (items) => {
+          await fetch('/api/facebook-posts/backfill', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ posts: items }),
+          });
+        },
+      });
+    } else {
+      await fetch(`${origin}/api/facebook-posts/backfill`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ posts }),
+      });
+    }
+    // Mark as synced so we don't re-upload
+    await chrome.storage.local.set({ strealPublishHistorySynced: true });
+  } catch {
+    // Silently ignore backfill errors; server will deduplicate via external_key
+  }
 });

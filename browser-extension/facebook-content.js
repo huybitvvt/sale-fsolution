@@ -725,8 +725,8 @@
     );
     state.preSubmitPostUrls = new Set(
       [...document.querySelectorAll('[role="article"] a[href]')]
-        .map((anchor) => anchor.href || '')
-        .filter((href) => isPostReferenceUrl(href)),
+        .map((anchor) => canonicalPostReferenceUrl(anchor.href || ''))
+        .filter((href) => isBrowsablePostUrl(href)),
     );
     state.preSubmitPostIds = new Set([...state.preSubmitPostUrls].map(postIdFromUrl).filter(Boolean));
     startPostReferenceObserver();
@@ -814,6 +814,29 @@
       || Boolean(postIdFromUrl(url));
   }
 
+  function isBrowsablePostUrl(url) {
+    try {
+      const parsed = new URL(String(url || ''), window.location.href);
+      if (parsed.protocol !== 'https:' || (parsed.hostname !== 'facebook.com' && !parsed.hostname.endsWith('.facebook.com'))) return false;
+      return isPostReferenceUrl(parsed.href)
+        || /\/(?:share\/(?:p|v|r)|reel|videos)\//i.test(parsed.pathname)
+        || (/\/(?:photo|permalink)\.php$/i.test(parsed.pathname) && Boolean(parsed.searchParams.get('fbid') || parsed.searchParams.get('story_fbid')));
+    } catch {
+      return false;
+    }
+  }
+
+  function canonicalPostReferenceUrl(url) {
+    try {
+      const parsed = new URL(String(url || ''), window.location.href);
+      parsed.hash = '';
+      for (const key of ['__cft__', '__tn__', 'mibextid', 'ref', 'refid']) parsed.searchParams.delete(key);
+      return parsed.href;
+    } catch {
+      return String(url || '').trim();
+    }
+  }
+
   const PUBLISHED_REFERENCE_PHRASES = [
     'xem bài viết',
     'view post',
@@ -834,10 +857,13 @@
   }
 
   function rememberPostReference(url, score = 0) {
-    const postUrl = String(url || '').trim();
+    const postUrl = canonicalPostReferenceUrl(url);
     const postId = postIdFromUrl(postUrl);
-    if (!postId || state.preSubmitPostIds.has(postId)) return;
-    const existing = state.postReferenceCandidates.find((candidate) => candidate.postId === postId);
+    if (!isBrowsablePostUrl(postUrl)) return;
+    if (state.preSubmitPostUrls.has(postUrl) || (postId && state.preSubmitPostIds.has(postId))) return;
+    const existing = state.postReferenceCandidates.find((candidate) => (
+      postId ? candidate.postId === postId : candidate.postUrl === postUrl
+    ));
     if (existing) {
       existing.score = Math.max(existing.score, score);
       if (score >= existing.score) existing.postUrl = postUrl;
@@ -853,7 +879,7 @@
     if (element.matches?.('a[href]')) anchors.push(element);
     anchors.push(...element.querySelectorAll?.('a[href]') || []);
     for (const anchor of anchors) {
-      if (!isPostReferenceUrl(anchor.href || '')) continue;
+      if (!isBrowsablePostUrl(anchor.href || '')) continue;
       rememberPostReference(anchor.href, postReferenceScore(anchor));
     }
   }
@@ -880,26 +906,121 @@
     });
   }
 
+  const POST_REFERENCE_SELECTOR = [
+    'a[href*="/posts/"]',
+    'a[href*="story_fbid="]',
+    'a[href*="/permalink/"]',
+    'a[href*="fbid="]',
+    'a[href*="/share/p/"]',
+    'a[href*="/share/v/"]',
+    'a[href*="/share/r/"]',
+    'a[href*="/reel/"]',
+    'a[href*="/videos/"]',
+  ].join(', ');
+
+  function findMatchingPublishedArticle(expectedMessage) {
+    return Array.from(document.querySelectorAll('[role="article"]'))
+      .find((article) => isVisible(article) && captionTextMatches(article.innerText || article.textContent || '', expectedMessage)) || null;
+  }
+
+  function engagementMetricsFromArticle(article) {
+    if (!article) return { reaction_count: null, comment_count: null, share_count: null };
+    const values = [];
+    for (const line of String(article.innerText || '').split(/\r?\n/)) {
+      const text = normalize(line);
+      if (text && text.length <= 240) values.push(text);
+    }
+    for (const node of article.querySelectorAll('[aria-label], [role="button"], a, span')) {
+      const label = normalize(node.getAttribute?.('aria-label') || '');
+      const text = normalize(node.innerText || node.textContent || '');
+      if (label && label.length <= 240) values.push(label);
+      const peopleCount = label.match(/^(\d[\d.,]*\s*(?:k|m|n|tr|nghìn|ngan|triệu|trieu)?)\s+(?:người|people)(?:\s+khác)?$/i);
+      if (peopleCount) values.push(`${peopleCount[1]} cảm xúc`);
+      if (text && text.length <= 240) values.push(text);
+    }
+    const metrics = globalThis.STREALFacebookEngagementUtils?.extractEngagementMetrics(values)
+      || { reaction_count: null, comment_count: null, share_count: null };
+    const articleText = normalize(article.innerText || article.textContent || '').toLowerCase();
+    const controlsLoaded = (articleText.includes('thích') || articleText.includes('like'))
+      && (articleText.includes('bình luận') || articleText.includes('comment'));
+    if (controlsLoaded) {
+      for (const key of ['reaction_count', 'comment_count', 'share_count']) {
+        if (metrics[key] === null) metrics[key] = 0;
+      }
+    }
+    return metrics;
+  }
+
+  function referenceFromArticle(article) {
+    if (!article) return { postId: '', postUrl: '' };
+    let urlOnlyReference = '';
+    for (const anchor of article.querySelectorAll(POST_REFERENCE_SELECTOR)) {
+      const postUrl = canonicalPostReferenceUrl(anchor.href || '');
+      if (!isBrowsablePostUrl(postUrl)) continue;
+      const postId = postIdFromUrl(postUrl);
+      if (postId) return { postId, postUrl };
+      if (!urlOnlyReference) urlOnlyReference = postUrl;
+    }
+    return { postId: '', postUrl: urlOnlyReference };
+  }
+
   async function findNewPublishedPostReference() {
-    const selector = 'a[href*="/posts/"], a[href*="story_fbid="], a[href*="/permalink/"], a[href*="fbid="]';
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const currentPostId = postIdFromUrl(window.location.href);
       if (currentPostId && !state.preSubmitPostIds.has(currentPostId)) {
-        return { postId: currentPostId, postUrl: window.location.href };
+        const article = findMatchingPublishedArticle(state.message);
+        return { postId: currentPostId, postUrl: window.location.href, ...engagementMetricsFromArticle(article) };
       }
       for (const article of document.querySelectorAll('[role="article"]')) {
         if (!isVisible(article) || !captionTextMatches(article.innerText || '', state.message)) continue;
-        for (const anchor of article.querySelectorAll(selector)) rememberPostReference(anchor.href, 120);
+        for (const anchor of article.querySelectorAll(POST_REFERENCE_SELECTOR)) rememberPostReference(anchor.href, 120);
       }
       for (const notice of document.querySelectorAll('[role="alert"], [role="status"]')) {
         if (!isVisible(notice)) continue;
-        for (const anchor of notice.querySelectorAll(selector)) rememberPostReference(anchor.href, postReferenceScore(anchor));
+        for (const anchor of notice.querySelectorAll(POST_REFERENCE_SELECTOR)) rememberPostReference(anchor.href, postReferenceScore(anchor));
       }
       const best = [...state.postReferenceCandidates].sort((a, b) => b.score - a.score || b.detectedAt - a.detectedAt)[0];
-      if (best?.score >= 100) return { postId: best.postId, postUrl: best.postUrl };
+      if (best?.score >= 100) {
+        const article = findMatchingPublishedArticle(state.message);
+        return { postId: best.postId, postUrl: best.postUrl, ...engagementMetricsFromArticle(article) };
+      }
       await sleep(750);
     }
     return { postId: '', postUrl: '' };
+  }
+
+  async function resolvePublishedPostFromFeed(payload) {
+    const expectedMessage = String(payload?.message || '').trim();
+    if (!expectedMessage) return { ok: false, error: 'Thiếu nội dung để đối chiếu bài vừa đăng.' };
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const article = findMatchingPublishedArticle(expectedMessage);
+      if (article) {
+        const reference = referenceFromArticle(article);
+        if (reference.postUrl) return { ok: true, ...reference, ...engagementMetricsFromArticle(article) };
+      }
+      if (attempt === 4 || attempt === 8) window.scrollBy({ top: 700, behavior: 'instant' });
+      await sleep(700);
+    }
+    return { ok: false, error: 'Chưa thấy bài vừa đăng trên feed Facebook.' };
+  }
+
+  async function readCurrentPostMetrics(payload) {
+    const expectedMessage = String(payload?.message || '').trim();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const article = (expectedMessage && findMatchingPublishedArticle(expectedMessage))
+        || Array.from(document.querySelectorAll('[role="article"]')).find(isVisible)
+        || null;
+      if (article) {
+        const metrics = engagementMetricsFromArticle(article);
+        if (Object.values(metrics).some((value) => value !== null)) {
+          const reference = referenceFromArticle(article);
+          return { ok: true, ...reference, ...metrics };
+        }
+      }
+      await sleep(500);
+    }
+    return { ok: false, error: 'Facebook chưa hiển thị số tương tác trên bài viết.' };
   }
 
   function collectPostFailures() {
@@ -977,6 +1098,9 @@
             outcome,
             postId: reference.postId,
             postUrl: reference.postUrl,
+            reactionCount: reference.reaction_count,
+            commentCount: reference.comment_count,
+            shareCount: reference.share_count,
             automatic: state.submissionAutomatic,
           });
         }, 800);
@@ -1031,6 +1155,18 @@
       showStatus('Đã hủy hàng đợi đăng Facebook. Bài chưa đăng sẽ không tự chuyển sang nơi khác.', 'error');
       sendResponse({ ok: true, cancelled: true });
       return false;
+    }
+    if (message?.type === 'STREAL_FACEBOOK_FIND_PUBLISHED_POST') {
+      resolvePublishedPostFromFeed(message.payload || {})
+        .then((response) => sendResponse(response))
+        .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+      return true;
+    }
+    if (message?.type === 'STREAL_FACEBOOK_READ_POST_METRICS') {
+      readCurrentPostMetrics(message.payload || {})
+        .then((response) => sendResponse(response))
+        .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+      return true;
     }
     if (message?.type !== 'STREAL_FACEBOOK_PREPARE_GROUP_POST') return false;
     preparePost(message.payload || {})

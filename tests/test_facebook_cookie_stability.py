@@ -160,6 +160,52 @@ class FacebookCookieStabilityTests(unittest.TestCase):
         self.assertEqual(get_mock.call_count, 2)
         refresh_mock.assert_called_once()
 
+    def test_graph_call_keeps_explicit_page_access_token(self):
+        api = group_api.FacebookGroupAPI.__new__(group_api.FacebookGroupAPI)
+        api.access_token = 'user-token'
+        api.last_graph_error = ''
+
+        with patch.object(
+            group_api.requests,
+            'get',
+            return_value=FakeResponse({'id': 'page_post'}),
+        ) as get_mock:
+            payload = api._call(
+                'get',
+                'https://graph.facebook.com/page_post',
+                params={'access_token': 'page-token', 'fields': 'id'},
+            )
+
+        self.assertEqual(payload['id'], 'page_post')
+        self.assertEqual(get_mock.call_args.kwargs['params']['access_token'], 'page-token')
+
+    def test_get_post_engagement_uses_next_id_and_parses_counters(self):
+        api = group_api.FacebookGroupAPI.__new__(group_api.FacebookGroupAPI)
+        api.access_token = 'user-token'
+        api.last_graph_error = ''
+        with patch.object(
+            api,
+            '_call',
+            side_effect=[
+                {'error': {'code': 100, 'message': 'Unknown object'}},
+                {
+                    'id': '123_456',
+                    'permalink_url': 'https://www.facebook.com/groups/123/posts/456/',
+                    'reactions': {'summary': {'total_count': 12}},
+                    'comments': {'summary': {'total_count': 3}},
+                    'shares': {'count': 2},
+                },
+            ],
+        ) as call_mock:
+            result = api.get_post_engagement(['456', '123_456'], access_token='page-token')
+
+        self.assertEqual(result['facebook_post_id'], '123_456')
+        self.assertEqual(result['reaction_count'], 12)
+        self.assertEqual(result['comment_count'], 3)
+        self.assertEqual(result['share_count'], 2)
+        self.assertEqual(call_mock.call_count, 2)
+        self.assertEqual(call_mock.call_args.kwargs['params']['access_token'], 'page-token')
+
 
 if __name__ == '__main__':
     unittest.main()

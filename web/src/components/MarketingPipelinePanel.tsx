@@ -47,6 +47,19 @@ type ExtensionQueueResponse = {
   alreadyStopped?: boolean;
 };
 
+type ExtensionMetricsResponse = {
+  ok?: boolean;
+  error?: string;
+  reaction_count?: number | null;
+  comment_count?: number | null;
+  share_count?: number | null;
+};
+
+type ExtensionReferenceResponse = ExtensionMetricsResponse & {
+  postId?: string;
+  postUrl?: string;
+};
+
 type PostMediaItem = { url: string; type?: 'image' | 'video'; name?: string };
 
 type HistoryRow = {
@@ -441,6 +454,9 @@ export function MarketingPipelinePanel({
           ? 'đang chờ kiểm duyệt'
           : outcome === 'published' ? 'đã đăng' : 'đã gửi thao tác đăng';
         setLocalStatus(`Đã ghi nhận ${targetName}: ${outcomeText} (${completed}/${total}). Đang chuyển nơi tiếp theo...`);
+      } else if (payload.status === 'resolving_references') {
+        updateHistory(`Đang tự tìm link cho ${Number(payload.missingCount || 0)} bài`, undefined);
+        setLocalStatus(`Đã đăng xong; extension đang tự mở lại nơi đăng để gắn link cho ${Number(payload.missingCount || 0)} bài còn thiếu.`);
       } else if (payload.status === 'done') {
         const finalResults: PublishResult[] = safeList<Record<string, unknown>>(payload.results).map((item) => ({
           ok: item.ok !== false,
@@ -719,7 +735,7 @@ export function MarketingPipelinePanel({
     const response = await new Promise<ExtensionQueueResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.35 và tải lại trang.' });
+        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.36 và tải lại trang.' });
       }, 6000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -780,7 +796,7 @@ export function MarketingPipelinePanel({
       const response = await new Promise<ExtensionQueueResponse>((resolve) => {
         const timer = window.setTimeout(() => {
           window.removeEventListener('message', handleResponse);
-          resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.35 và tải lại trang.' });
+          resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.36 và tải lại trang.' });
         }, 6000);
         function handleResponse(event: MessageEvent) {
           if (event.source !== window) return;
@@ -878,22 +894,33 @@ export function MarketingPipelinePanel({
           header('Nơi đăng'),
           header('Trạng thái'),
           header('Kết quả từng nơi'),
+          header('Reaction'),
+          header('Comment'),
+          header('Share'),
+          header('Tổng tương tác'),
         ],
-        ...filteredHistory.map((row, index) => [
-          numberCell(index + 1),
-          textCell(formatDateTime(row.createdAt)),
-          textCell(row.publisherName || 'Không xác định'),
-          textCell(row.title || 'Bài đăng', true),
-          textCell(row.content || '', true),
-          textCell(row.mediaUrls?.length ? `${row.mediaUrls.length} media` : row.mediaUrl || ''),
-          textCell(formatDateTime(row.scheduledAt)),
-          textCell(row.targets.map((target) => target.name || target.id).join(', '), true),
-          textCell(displayPostStatus(row.status), true),
-          textCell(row.targets.map((target) => {
-            const result = row.results?.find((item) => targetKey(item.target) === targetKey(target));
-            return `${target.name || target.id}: ${deliveryLabel(result)}`;
-          }).join(' · '), true),
-        ]),
+        ...filteredHistory.map((row, index) => {
+          const fbMatch = row.facebookRecord || facebookPosts.find((post) => `facebook-${post.id}` === row.id);
+          return [
+            numberCell(index + 1),
+            textCell(formatDateTime(row.createdAt)),
+            textCell(row.publisherName || 'Không xác định'),
+            textCell(row.title || 'Bài đăng', true),
+            textCell(row.content || '', true),
+            textCell(row.mediaUrls?.length ? `${row.mediaUrls.length} media` : row.mediaUrl || ''),
+            textCell(formatDateTime(row.scheduledAt)),
+            textCell(row.targets.map((target) => target.name || target.id).join(', '), true),
+            textCell(displayPostStatus(row.status), true),
+            textCell(row.targets.map((target) => {
+              const result = row.results?.find((item) => targetKey(item.target) === targetKey(target));
+              return `${target.name || target.id}: ${deliveryLabel(result)}`;
+            }).join(' · '), true),
+            fbMatch?.reaction_count != null ? numberCell(fbMatch.reaction_count) : textCell('—'),
+            fbMatch?.comment_count != null ? numberCell(fbMatch.comment_count) : textCell('—'),
+            fbMatch?.share_count != null ? numberCell(fbMatch.share_count) : textCell('—'),
+            fbMatch?.total_interactions != null ? numberCell(fbMatch.total_interactions) : textCell('—'),
+          ];
+        }),
       ];
 
       type PublisherStats = {
@@ -905,6 +932,9 @@ export function MarketingPipelinePanel({
         failedTargets: number;
         cancelledTargets: number;
         pendingTargets: number;
+        totalReactions: number;
+        totalComments: number;
+        totalShares: number;
       };
       const statsByPublisher = new Map<string, PublisherStats>();
       filteredHistory.forEach((row) => {
@@ -919,6 +949,9 @@ export function MarketingPipelinePanel({
           failedTargets: 0,
           cancelledTargets: 0,
           pendingTargets: 0,
+          totalReactions: 0,
+          totalComments: 0,
+          totalShares: 0,
         };
         stats.posts += 1;
         stats.targets += row.targets.length;
@@ -938,6 +971,15 @@ export function MarketingPipelinePanel({
           }
         });
         if (rowSuccessfulTargets > 0 || /^(đã đăng|hoàn tất)/i.test(row.status.trim())) stats.completedPosts += 1;
+
+        // Accumulate metrics from matched facebook posts
+        const fbMatch = row.facebookRecord || facebookPosts.find((post) => `facebook-${post.id}` === row.id);
+        if (fbMatch) {
+          stats.totalReactions += fbMatch.reaction_count ?? 0;
+          stats.totalComments += fbMatch.comment_count ?? 0;
+          stats.totalShares += fbMatch.share_count ?? 0;
+        }
+
         statsByPublisher.set(key, stats);
       });
       const publisherStats = [...statsByPublisher.values()].sort((left, right) => left.name.localeCompare(right.name, 'vi'));
@@ -949,6 +991,9 @@ export function MarketingPipelinePanel({
         failedTargets: sum.failedTargets + item.failedTargets,
         cancelledTargets: sum.cancelledTargets + item.cancelledTargets,
         pendingTargets: sum.pendingTargets + item.pendingTargets,
+        totalReactions: sum.totalReactions + item.totalReactions,
+        totalComments: sum.totalComments + item.totalComments,
+        totalShares: sum.totalShares + item.totalShares,
       }), {
         posts: 0,
         completedPosts: 0,
@@ -957,6 +1002,9 @@ export function MarketingPipelinePanel({
         failedTargets: 0,
         cancelledTargets: 0,
         pendingTargets: 0,
+        totalReactions: 0,
+        totalComments: 0,
+        totalShares: 0,
       });
       const performanceSheet: SheetData = [
         [
@@ -969,6 +1017,10 @@ export function MarketingPipelinePanel({
           header('Nơi đã hủy'),
           header('Nơi đang chờ'),
           header('Tỷ lệ thành công'),
+          header('Tổng Reaction'),
+          header('Tổng Comment'),
+          header('Tổng Share'),
+          header('TB tương tác/bài'),
         ],
         ...publisherStats.map((item) => [
           textCell(item.name),
@@ -980,6 +1032,10 @@ export function MarketingPipelinePanel({
           numberCell(item.cancelledTargets, '#FEF3C7'),
           numberCell(item.pendingTargets),
           percentageCell(item.targets ? item.successfulTargets / item.targets : 0),
+          numberCell(item.totalReactions),
+          numberCell(item.totalComments),
+          numberCell(item.totalShares),
+          numberCell(item.posts ? Math.round((item.totalReactions + item.totalComments + item.totalShares) / item.posts) : 0),
         ]),
         [
           { ...textCell('TỔNG'), fontWeight: 'bold' as const, backgroundColor: '#DBEAFE' },
@@ -991,6 +1047,10 @@ export function MarketingPipelinePanel({
           numberCell(totals.cancelledTargets, '#FEF3C7'),
           numberCell(totals.pendingTargets, '#DBEAFE'),
           percentageCell(totals.targets ? totals.successfulTargets / totals.targets : 0),
+          numberCell(totals.totalReactions, '#DBEAFE'),
+          numberCell(totals.totalComments, '#DBEAFE'),
+          numberCell(totals.totalShares, '#DBEAFE'),
+          numberCell(totals.posts ? Math.round((totals.totalReactions + totals.totalComments + totals.totalShares) / totals.posts) : 0, '#DBEAFE'),
         ],
       ];
 
@@ -1001,6 +1061,7 @@ export function MarketingPipelinePanel({
           columns: [
             { width: 7 }, { width: 21 }, { width: 24 }, { width: 32 }, { width: 55 },
             { width: 30 }, { width: 21 }, { width: 42 }, { width: 28 }, { width: 60 },
+            { width: 14 }, { width: 14 }, { width: 12 }, { width: 18 },
           ],
           stickyRowsCount: 1,
           orientation: 'landscape' as const,
@@ -1012,6 +1073,7 @@ export function MarketingPipelinePanel({
           columns: [
             { width: 28 }, { width: 14 }, { width: 16 }, { width: 18 }, { width: 18 },
             { width: 14 }, { width: 16 }, { width: 16 }, { width: 20 },
+            { width: 16 }, { width: 16 }, { width: 14 }, { width: 20 },
           ],
           stickyRowsCount: 1,
           orientation: 'landscape' as const,
@@ -1028,38 +1090,152 @@ export function MarketingPipelinePanel({
     }
   }
 
+  async function collectFacebookMetricsWithExtension(record: FacebookPublishedPost): Promise<ExtensionMetricsResponse> {
+    if (!record.post_url) return { ok: false, error: 'Bài chưa có permalink Facebook để extension mở.' };
+    const requestId = `facebook_metrics_${record.id}_${Date.now()}`;
+    return new Promise<ExtensionMetricsResponse>((resolve) => {
+      const timer = window.setTimeout(() => {
+        window.removeEventListener('message', handleResponse);
+        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.36 và tải lại tab F-Solution/Facebook.' });
+      }, 60000);
+      function handleResponse(event: MessageEvent) {
+        if (event.source !== window) return;
+        const payload = event.data || {};
+        if (payload.source !== 'streal-tiktok-extension') return;
+        if (payload.type !== 'STREAL_FACEBOOK_POST_METRICS_RESPONSE' || payload.requestId !== requestId) return;
+        window.clearTimeout(timer);
+        window.removeEventListener('message', handleResponse);
+        resolve(payload);
+      }
+      window.addEventListener('message', handleResponse);
+      window.postMessage({
+        source: 'streal-web-page',
+        type: 'STREAL_FACEBOOK_POST_METRICS_REQUEST',
+        requestId,
+        payload: { postUrl: record.post_url, message: record.content || '' },
+      }, window.location.origin);
+    });
+  }
+
+  async function findFacebookReferenceWithExtension(record: FacebookPublishedPost): Promise<ExtensionReferenceResponse> {
+    const requestId = `facebook_reference_${record.id}_${Date.now()}`;
+    return new Promise<ExtensionReferenceResponse>((resolve) => {
+      const timer = window.setTimeout(() => {
+        window.removeEventListener('message', handleResponse);
+        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.36 và tải lại tab F-Solution/Facebook.' });
+      }, 60000);
+      function handleResponse(event: MessageEvent) {
+        if (event.source !== window) return;
+        const payload = event.data || {};
+        if (payload.source !== 'streal-tiktok-extension') return;
+        if (payload.type !== 'STREAL_FACEBOOK_POST_REFERENCE_RESPONSE' || payload.requestId !== requestId) return;
+        window.clearTimeout(timer);
+        window.removeEventListener('message', handleResponse);
+        resolve(payload);
+      }
+      window.addEventListener('message', handleResponse);
+      window.postMessage({
+        source: 'streal-web-page',
+        type: 'STREAL_FACEBOOK_POST_REFERENCE_REQUEST',
+        requestId,
+        payload: {
+          targetType: record.target_type,
+          targetId: record.target_id,
+          message: record.content || '',
+        },
+      }, window.location.origin);
+    });
+  }
+
+  async function saveFacebookReference(record: FacebookPublishedPost, postUrl: string, delivery: string) {
+    const response = await api(`/api/facebook-posts/${encodeURIComponent(record.id)}/reference`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ post_url: postUrl, delivery }),
+    });
+    const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
+    if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không gắn được link bài Facebook');
+    setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? payload.post : item));
+    return payload.post as FacebookPublishedPost;
+  }
+
   async function refreshFacebookMetrics(record: FacebookPublishedPost) {
     setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: true }));
     setLocalStatus('Đang cập nhật tương tác từ Facebook...');
+    let activeRecord = record;
+    if (!activeRecord.post_url) {
+      try {
+        setLocalStatus('Đang tự tìm bài đã đăng trên Facebook để gắn permalink...');
+        const reference = await findFacebookReferenceWithExtension(activeRecord);
+        if (!reference.ok || !reference.postUrl) throw new Error(reference.error || 'Không tìm thấy link bài Facebook');
+        activeRecord = await saveFacebookReference(activeRecord, reference.postUrl, 'extension_reference');
+      } catch (error) {
+        setLocalStatus(`Không tự tìm được link bài Facebook: ${formatFetchError(error)}`);
+        setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: false }));
+        return;
+      }
+    }
+    let graphError = '';
     try {
       const response = await api(`/api/facebook-posts/${encodeURIComponent(record.id)}/refresh`, { method: 'POST' });
       const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
       if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không cập nhật được tương tác');
       setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? payload.post : item));
-      setLocalStatus('Đã cập nhật like/reaction, comment và share từ dữ liệu Facebook hiện có.');
+      setLocalStatus('Đã cập nhật like/reaction, comment và share từ Facebook Graph.');
+      setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: false }));
+      return;
     } catch (error) {
-      setLocalStatus(`Không cập nhật được tương tác: ${formatFetchError(error)}`);
+      graphError = formatFetchError(error);
+    }
+
+    try {
+      setLocalStatus('Graph không đọc được bài này; extension đang mở permalink trong tab nền để lấy số tương tác...');
+      const extensionResult = await collectFacebookMetricsWithExtension(activeRecord);
+      if (!extensionResult.ok) throw new Error(extensionResult.error || 'Extension không đọc được tương tác');
+      const response = await api(`/api/facebook-posts/${encodeURIComponent(record.id)}/extension-metrics`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reaction_count: extensionResult.reaction_count,
+          comment_count: extensionResult.comment_count,
+          share_count: extensionResult.share_count,
+        }),
+      });
+      const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không lưu được số tương tác');
+      setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? payload.post : item));
+      setLocalStatus('Đã cập nhật tương tác trực tiếp từ bài Facebook bằng Chrome Extension.');
+    } catch (error) {
+      setLocalStatus(`Không cập nhật được tương tác. Graph: ${graphError}. Extension: ${formatFetchError(error)}`);
     } finally {
       setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: false }));
     }
   }
 
   async function attachFacebookReference(record: FacebookPublishedPost) {
-    const postUrl = window.prompt('Dán permalink Facebook: bấm vào thời gian đăng để mở riêng bài viết, rồi sao chép URL trên thanh địa chỉ (không dùng link /share/)');
+    const postUrl = window.prompt('Dán link bài Facebook (permalink hoặc link /share/):');
     if (!postUrl?.trim()) return;
     setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: true }));
     try {
-      const response = await api(`/api/facebook-posts/${encodeURIComponent(record.id)}/reference`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ post_url: postUrl.trim() }),
-      });
-      const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
-      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không gắn được link bài Facebook');
-      setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? payload.post : item));
-      setLocalStatus('Đã xác nhận Post ID từ permalink Facebook. Bạn có thể cập nhật tương tác và lấy comment.');
+      await saveFacebookReference(record, postUrl.trim(), 'manual_reference');
+      setLocalStatus('Đã gắn link bài Facebook. Bạn có thể cập nhật tương tác.');
     } catch (error) {
       setLocalStatus(`Không gắn được link: ${formatFetchError(error)}`);
+    } finally {
+      setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: false }));
+    }
+  }
+
+  async function autoAttachFacebookReference(record: FacebookPublishedPost) {
+    setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: true }));
+    setLocalStatus('Đang tự tìm bài khớp nội dung trên Facebook...');
+    try {
+      const reference = await findFacebookReferenceWithExtension(record);
+      if (!reference.ok || !reference.postUrl) throw new Error(reference.error || 'Không tìm thấy link bài Facebook');
+      await saveFacebookReference(record, reference.postUrl, 'extension_reference');
+      setLocalStatus('Đã tự tìm và gắn link bài Facebook.');
+    } catch (error) {
+      setLocalStatus(`Không tự tìm được link: ${formatFetchError(error)}`);
     } finally {
       setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: false }));
     }
@@ -1722,8 +1898,9 @@ export function MarketingPipelinePanel({
                         {row.facebookRecord.post_url
                           ? <a href={row.facebookRecord.post_url} target="_blank" rel="noreferrer">Xem bài Facebook</a>
                           : <a href={facebookDestinationUrl(row.facebookRecord)} target="_blank" rel="noreferrer">Mở nơi đăng</a>}
+                        {!row.facebookRecord.post_url ? <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id]} onClick={() => void autoAttachFacebookReference(row.facebookRecord!)}>Tự tìm link</button> : null}
                         {!row.facebookRecord.facebook_post_id ? <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id]} onClick={() => void attachFacebookReference(row.facebookRecord!)}>Gắn link thủ công</button> : null}
-                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || !row.facebookRecord.facebook_post_id} onClick={() => void refreshFacebookMetrics(row.facebookRecord!)}>Cập nhật tương tác</button>
+                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || !row.facebookRecord.content || !row.facebookRecord.target_id} onClick={() => void refreshFacebookMetrics(row.facebookRecord!)}>Cập nhật tương tác</button>
                         <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || !row.facebookRecord.facebook_post_id} onClick={() => void collectFacebookComments(row.facebookRecord!)}>Xem comment</button>
                       </div>
                     ) : '—'}
