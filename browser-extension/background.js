@@ -1377,6 +1377,7 @@ async function handleFacebookQueueEvent(message, sender) {
     post_id: message.postId || '',
     post_url: message.postUrl || '',
     method: message.automatic ? 'auto-chrome-composer' : 'user-confirmed-chrome',
+    reference_method: message.referenceMethod || '',
   };
   assignKnownFacebookMetrics(confirmedResult, {
     reaction_count: message.reactionCount,
@@ -1387,6 +1388,7 @@ async function handleFacebookQueueEvent(message, sender) {
   queue.index += 1;
   queue.status = queue.index >= queue.tasks.length ? 'done' : 'advancing';
   await storageSet(FACEBOOK_QUEUE_STORAGE_KEY, queue);
+  await persistFacebookQueueHistory(queue, queue.status === 'done' ? 'done' : 'progress');
   await notifyFacebookQueue(queue, 'confirmed', {
     targetType: task.type,
     targetId: task.id,

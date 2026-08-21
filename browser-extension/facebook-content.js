@@ -21,6 +21,7 @@
     preSubmitPostIds: new Set(),
     postReferenceObserver: null,
     postReferenceCandidates: [],
+    networkReferenceMethod: '',
     preparedKey: '',
     mediaAttachedCount: 0,
     cancelledRequestIds: new Set(),
@@ -78,6 +79,26 @@
       ...extra,
     });
   }
+
+  function setNetworkReferenceCapture(active) {
+    window.postMessage({
+      source: 'streal-facebook-content',
+      type: active ? 'STREAL_FACEBOOK_POST_CAPTURE_START' : 'STREAL_FACEBOOK_POST_CAPTURE_STOP',
+      requestId: state.requestId,
+      taskId: state.taskId,
+      targetType: state.targetType,
+      targetId: state.groupId,
+    }, window.location.origin);
+  }
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const data = event.data || {};
+    if (data.source !== 'streal-facebook-main' || data.type !== 'STREAL_FACEBOOK_POST_REFERENCE_CAPTURED') return;
+    if (!state.postClickedAt || data.requestId !== state.requestId || data.taskId !== state.taskId) return;
+    state.networkReferenceMethod = String(data.method || 'facebook_graphql');
+    rememberPostReference(data.postUrl || '', 300);
+  });
 
   const COMPOSER_TITLES = ['tạo bài viết', 'create post', 'đăng bài'];
   const COMPOSER_TRIGGER_PHRASES = [
@@ -571,6 +592,7 @@
     state.mediaAttachedCount = 0;
     state.postClickedAt = 0;
     state.submissionAutomatic = false;
+    setNetworkReferenceCapture(false);
     stopPostReferenceObserver();
     state.preSubmitPostUrls = new Set();
     state.preSubmitPostIds = new Set();
@@ -639,6 +661,7 @@
 
     state.preparedKey = preparedKey;
     state.mediaAttachedCount = mediaResult.attachedCount;
+    setNetworkReferenceCapture(true);
 
     const mediaHint = mediaResult.attachedCount
       ? ` và chọn ${mediaResult.attachedCount} media`
@@ -710,6 +733,7 @@
   function failAutomaticSubmission(preparedKey, error) {
     if (state.preparedKey !== preparedKey || state.cancelledRequestIds.has(state.requestId)) return;
     stopPostReferenceObserver();
+    setNetworkReferenceCapture(false);
     state.preparedKey = '';
     state.postClickedAt = 0;
     state.submissionAutomatic = false;
@@ -732,6 +756,8 @@
     );
     state.preSubmitPostIds = new Set([...state.preSubmitPostUrls].map(postIdFromUrl).filter(Boolean));
     startPostReferenceObserver();
+    state.networkReferenceMethod = '';
+    setNetworkReferenceCapture(true);
     showStatus(`Đang chờ Facebook xác nhận bài tại ${state.groupName}...`);
     sendProgress('submitting', { automatic });
     watchForCompletion();
@@ -1139,6 +1165,7 @@
         clearInterval(state.completionTimer);
         state.completionTimer = null;
         stopPostReferenceObserver();
+        setNetworkReferenceCapture(false);
         state.postClickedAt = 0;
         state.preparedKey = '';
         const error = `Facebook từ chối đăng: ${facebookFailure}`;
@@ -1154,6 +1181,7 @@
           const delayedFailure = detectPostFailure();
           if (delayedFailure) {
             stopPostReferenceObserver();
+            setNetworkReferenceCapture(false);
             state.preparedKey = '';
             const error = `Facebook từ chối đăng: ${delayedFailure}`;
             showStatus(`${error}\nHàng đợi đã dừng.`, 'error');
@@ -1164,6 +1192,7 @@
           showStatus(`Facebook đã đóng hộp đăng tại ${state.groupName}. Đang tự tìm link bài viết...`);
           const reference = await findNewPublishedPostReference();
           stopPostReferenceObserver();
+          setNetworkReferenceCapture(false);
           if (reference.isPending || outcome === 'pending_review') {
             outcome = 'pending_review';
           } else if (reference.postUrl && outcome === 'submitted') {
@@ -1181,6 +1210,7 @@
             reactionCount: reference.reaction_count,
             commentCount: reference.comment_count,
             shareCount: reference.share_count,
+            referenceMethod: state.networkReferenceMethod || (reference.postUrl ? 'facebook_dom' : ''),
             automatic: state.submissionAutomatic,
           });
         }, 800);
@@ -1190,6 +1220,7 @@
         clearInterval(state.completionTimer);
         state.completionTimer = null;
         stopPostReferenceObserver();
+        setNetworkReferenceCapture(false);
         state.postClickedAt = 0;
         state.preparedKey = '';
         const error = 'Facebook chưa xác nhận đăng xong sau 45 giây.';
@@ -1420,6 +1451,7 @@
       state.preSubmitPostUrls = new Set();
       state.preSubmitPostIds = new Set();
       stopPostReferenceObserver();
+      setNetworkReferenceCapture(false);
       state.postReferenceCandidates = [];
       showStatus('Đã hủy hàng đợi đăng Facebook. Bài chưa đăng sẽ không tự chuyển sang nơi khác.', 'error');
       sendResponse({ ok: true, cancelled: true });

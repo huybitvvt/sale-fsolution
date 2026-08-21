@@ -239,6 +239,46 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertIn('Unsupported get request', warning)
         save_mock.assert_not_called()
 
+    def test_group_resolve_requires_extension_without_calling_graph(self):
+        row = {'id': 'history-1', 'target_type': 'group', 'target_id': '123', 'facebook_post_id': None}
+        with backend.app.test_request_context('/api/facebook-posts/history-1/resolve', method='POST', json={}):
+            with (
+                patch.object(backend, '_facebook_post_by_id', return_value=row),
+                patch.object(backend, 'get_api') as get_api_mock,
+            ):
+                response, status = backend.facebook_post_reference_resolve('history-1')
+
+        self.assertEqual(status, 409)
+        self.assertTrue(response.get_json()['extension_required'])
+        get_api_mock.assert_not_called()
+
+    def test_group_metrics_and_comments_require_extension_without_graph(self):
+        row = {
+            'id': 'history-1',
+            'target_type': 'group',
+            'target_id': '123',
+            'facebook_post_id': '123_456',
+        }
+        with patch.object(backend, '_facebook_post_by_id', return_value=row):
+            with backend.app.test_request_context('/api/facebook-posts/history-1/refresh', method='POST'):
+                refresh_response, refresh_status = backend.facebook_post_refresh('history-1')
+            with backend.app.test_request_context('/api/facebook-posts/history-1/comments', method='POST'):
+                comments_response, comments_status = backend.facebook_post_comments_collect('history-1')
+
+        self.assertEqual(refresh_status, 409)
+        self.assertTrue(refresh_response.get_json()['extension_required'])
+        self.assertEqual(comments_status, 409)
+        self.assertTrue(comments_response.get_json()['extension_required'])
+
+    def test_background_metrics_helper_skips_groups_without_graph(self):
+        row = {'id': 'history-1', 'target_type': 'group', 'facebook_post_id': '123_456'}
+        with patch.object(backend, 'get_api') as get_api_mock:
+            updated, warning = backend._refresh_single_post_metrics(row)
+
+        self.assertIs(updated, row)
+        self.assertIn('Chrome Extension', warning)
+        get_api_mock.assert_not_called()
+
     def test_metrics_refresh_persists_real_zero_counts(self):
         row = {
             'id': 'history-1',

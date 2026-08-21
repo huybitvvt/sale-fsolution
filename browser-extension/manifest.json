@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Seeding Fsolution Bridge",
-  "version": "0.1.45",
+  "version": "0.1.46",
   "description": "Ket noi Seeding Fsolution voi phien dang nhap Chrome that cho Facebook/TikTok.",
   "permissions": ["tabs", "scripting", "cookies", "storage"],
   "host_permissions": [
@@ -18,6 +18,12 @@
     "service_worker": "background.js"
   },
   "content_scripts": [
+    {
+      "matches": ["https://www.facebook.com/*", "https://*.facebook.com/*"],
+      "js": ["facebook-network-capture.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": ["https://*.vercel.app/*", "http://localhost/*", "http://127.0.0.1/*"],
       "js": ["web-bridge.js"],

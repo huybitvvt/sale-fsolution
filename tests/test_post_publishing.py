@@ -40,14 +40,14 @@ class PostPublishingTests(unittest.TestCase):
         finally:
             backend._pages_cache = previous_cache
 
-    def test_publish_uses_each_targets_ai_caption(self):
+    def test_group_publish_requires_extension_without_calling_graph(self):
         api_one = Mock(last_graph_error='')
         api_one.create_post.return_value = {'id': 'group-1_post-1'}
         api_two = Mock(last_graph_error='')
         api_two.create_post.return_value = {'id': 'group-2_post-2'}
         clients = {'group-1': api_one, 'group-2': api_two}
 
-        with patch.object(backend, 'get_api', side_effect=lambda group_id: clients[group_id]):
+        with patch.object(backend, 'get_api', side_effect=lambda group_id: clients[group_id]) as get_api_mock:
             result = backend._publish_content_pipeline_post(
                 {'content': 'Nội dung chung'},
                 [
@@ -56,10 +56,10 @@ class PostPublishingTests(unittest.TestCase):
                 ],
             )
 
-        self.assertTrue(result['ok'])
-        self.assertEqual(result['success_count'], 2)
-        self.assertEqual(api_one.create_post.call_args.args[0], 'Caption riêng 1')
-        self.assertEqual(api_two.create_post.call_args.args[0], 'Caption riêng 2')
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['failed_count'], 2)
+        self.assertTrue(all(item['extension_required'] for item in result['results']))
+        get_api_mock.assert_not_called()
 
     def test_generic_group_error_explains_meta_groups_api_limit(self):
         message, diagnostics = backend._facebook_publish_error({
@@ -75,6 +75,31 @@ class PostPublishingTests(unittest.TestCase):
         self.assertIn('Facebook #1', message)
         self.assertEqual(diagnostics['facebook_error_code'], 1)
         self.assertEqual(diagnostics['facebook_trace_id'], 'trace-123')
+
+    def test_legacy_group_post_endpoint_requires_extension_without_graph(self):
+        with backend.app.test_request_context('/api/post', method='POST', json={
+            'group_id': 'group-1',
+            'message': 'Nội dung Group',
+        }):
+            with patch.object(backend, 'get_api') as get_api_mock:
+                response, status = backend.api_create_post()
+
+        self.assertEqual(status, 409)
+        self.assertTrue(response.get_json()['extension_required'])
+        get_api_mock.assert_not_called()
+
+    def test_cannot_create_a_background_schedule_for_group(self):
+        with backend.app.test_request_context('/api/content-pipeline/posts', method='POST', json={
+            'title': 'Bài Group',
+            'content': 'Nội dung Group',
+            'scheduled_at': '2026-08-22T10:00:00Z',
+            'status': 'scheduled',
+            'targets': [{'type': 'group', 'id': 'group-1'}],
+        }):
+            response, status = backend.content_pipeline_post_create()
+
+        self.assertEqual(status, 409)
+        self.assertTrue(response.get_json()['extension_required'])
 
     def test_server_groq_key_is_used_when_saved_provider_has_no_key(self):
         config = {

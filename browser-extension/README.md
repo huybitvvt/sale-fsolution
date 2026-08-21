@@ -21,7 +21,7 @@ Khi source có thay đổi extension:
 
 1. Mở `chrome://extensions`.
 2. Bấm nút reload trên `Seeding Fsolution Bridge` hoặc bấm `Update`.
-3. Đảm bảo version hiện tại là `0.1.45` trở lên.
+3. Đảm bảo version hiện tại là `0.1.46` trở lên.
 4. Tải lại web Seeding Fsolution trước khi test lại `TikTok CMT`.
 
 ## Lưu ý vận hành
@@ -43,6 +43,7 @@ Khi source có thay đổi extension:
 - Bản 0.1.40 nhận diện link bài dạng `/share/p/...` và cho phép dò caption ngắn bên trong khung kết quả tìm kiếm mà không cuộn qua bài đúng.
 - Bản 0.1.41 nhận diện chính xác bài viết đang chờ phê duyệt/kiểm duyệt trong Group, không báo nhầm là "Đã đăng" và từ chối các URL thuộc `my_pending_content`.
 - Bản 0.1.45 chuẩn hóa nội dung bài viết và nhận diện đầy đủ link tìm kiếm (`multi_permalinks`, `story_fbid=pfbid`, `permalink.php`, `/share/`), bắt link ngay tại bài đầu tiên trên kết quả tìm kiếm mà không cuộn trôi qua bài.
+- Bản 0.1.46 bắt permalink/Post ID ngay trong phản hồi GraphQL khi đăng, dùng DOM làm dự phòng, lưu từng kết quả về backend trước khi chuyển nơi tiếp theo; Group chỉ đọc tương tác/comment trực tiếp qua extension.
 - Bản 0.1.32 kiểm tra caption trên mọi editor hiện tại và chuẩn hóa ký tự ẩn/khoảng trắng do Facebook Lexical tạo ra, tránh dừng nhầm với lỗi `Không xác nhận được caption` nhưng vẫn chặn caption thiếu hoặc bị nhân đôi.
 - Bản 0.1.33 chờ và cuộn nhẹ qua phần ảnh bìa Group để Facebook tải vùng thảo luận trước khi tìm ô tạo bài, đồng thời nhận thêm các nhãn composer mới nhưng vẫn loại trừ ô bình luận.
 - Caption và file ảnh/video công khai đã upload trên màn `Bài viết` được điền/chọn tự động. Extension chỉ thao tác trong dialog `Tạo bài viết`, không dùng ô bình luận làm phương án dự phòng, ưu tiên paste tương thích Facebook Lexical và không chèn lại caption khi nhận retry. Bản 0.1.29 tự bấm `Đăng` sau khi xác nhận caption, preview media và nút đăng đều sẵn sàng, rồi chuyển sang nơi tiếp theo sau khi dialog đóng. Nút `Hủy hàng đợi` trên lịch sử sẽ dừng các nơi chưa xử lý. Extension sẽ dừng và báo lỗi nếu Facebook chặn, không xác nhận, hoặc không tải/gắn được media.

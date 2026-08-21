@@ -1374,32 +1374,29 @@ def _publish_content_pipeline_post(post: dict, targets: list[dict], dry_run: boo
                     'native_video_url': native_video_url,
                 })
                 continue
-            if target_type == 'page':
-                page_token, page_token_source, page_token_warning = _page_token_lookup(target_id)
-                if not page_token:
-                    raise RuntimeError(_missing_page_token_message(page_token_source, page_token_warning))
-                target_api = get_api(DEFAULT_GROUP)
-                result = target_api.create_page_post(
-                    target_id,
-                    message,
-                    page_token,
-                    '' if media_urls else media_url,
-                    '' if media_urls else native_video_url,
-                    media_urls=media_urls,
-                )
-            else:
-                if not target_id:
-                    raise RuntimeError('Thiếu group_id')
-                page_id = str((target or {}).get('page_id') or '').strip()
-                page_token = _page_token_from_cache(page_id) if page_id else None
-                target_api = get_api(target_id)
-                result = target_api.create_post(
-                    message,
-                    page_token,
-                    '' if media_urls else media_url,
-                    '' if media_urls else native_video_url,
-                    media_urls=media_urls,
-                )
+            if target_type != 'page':
+                results.append({
+                    'ok': False,
+                    'type': 'group',
+                    'id': target_id,
+                    'name': target_name,
+                    'delivery': 'chrome_extension_required',
+                    'extension_required': True,
+                    'error': 'Facebook Groups API đã ngừng hỗ trợ. Hãy dùng Đăng qua Chrome.',
+                })
+                continue
+            page_token, page_token_source, page_token_warning = _page_token_lookup(target_id)
+            if not page_token:
+                raise RuntimeError(_missing_page_token_message(page_token_source, page_token_warning))
+            target_api = get_api(DEFAULT_GROUP)
+            result = target_api.create_page_post(
+                target_id,
+                message,
+                page_token,
+                '' if media_urls else media_url,
+                '' if media_urls else native_video_url,
+                media_urls=media_urls,
+            )
             delivery = (result or {}).get('_delivery') or delivery
             if result and result.get('id'):
                 ok_count += 1
@@ -7026,41 +7023,14 @@ def api_create_post():
     body = request.get_json() or {}
     group_id = body.get('group_id', '').strip()
     message = body.get('message', '').strip()
-    page_id = body.get('page_id', '').strip()
-    media_url, native_video_url = _extract_post_media(body)
     media_urls = _extract_media_urls(body)
     if not group_id or (not message and not media_urls):
         return jsonify({'ok': False, 'error': 'Thiếu group_id hoặc nội dung/ảnh/video'}), 400
-    try:
-        page_token = _pages_cache.get(page_id, {}).get('access_token') if page_id else None
-        target_api = get_api(group_id)
-        result = target_api.create_post(
-            message,
-            page_token,
-            '' if media_urls else media_url,
-            '' if media_urls else native_video_url,
-            media_urls=media_urls,
-        )
-        delivery = (result or {}).get('_delivery') or ('native_video' if native_video_url else ('link_preview' if media_url else ('native_media' if media_urls else 'text')))
-        if result and 'id' in result:
-            publish_result = {'ok': True, 'type': 'group', 'id': group_id, 'post_id': result['id'], 'delivery': delivery}
-            history = _record_publish_results(body, [{'type': 'group', 'id': group_id, 'page_id': page_id}], {'ok': True, 'results': [publish_result]}, source='api_post', request_id=f'api_{uuid.uuid4().hex}')
-            return jsonify({
-                'ok': True,
-                'post_id': result['id'],
-                'delivery': delivery,
-                'media_count': len(media_urls),
-                'native_video_error': (result or {}).get('_native_video_error'),
-                'target': {'type': 'group', 'id': group_id},
-                'history': history,
-            })
-        err, diagnostics = _facebook_publish_error(result, 'group', getattr(target_api, 'last_graph_error', ''))
-        history = _record_publish_results(body, [{'type': 'group', 'id': group_id, 'page_id': page_id}], {'ok': False, 'results': [{'ok': False, 'type': 'group', 'id': group_id, 'delivery': delivery, 'error': err}]}, source='api_post', request_id=f'api_{uuid.uuid4().hex}')
-        return jsonify({'ok': False, 'error': err, 'delivery': delivery, 'native_video_error': (result or {}).get('_native_video_error'), 'target': {'type': 'group', 'id': group_id}, 'history': history, **diagnostics})
-    except Exception as e:
-        error = friendly_graph_error(e)
-        history = _record_publish_results(body, [{'type': 'group', 'id': group_id, 'page_id': page_id}], {'ok': False, 'results': [{'ok': False, 'type': 'group', 'id': group_id, 'error': error}]}, source='api_post', request_id=f'api_{uuid.uuid4().hex}')
-        return jsonify({'ok': False, 'error': error, 'target': {'type': 'group', 'id': group_id}, 'history': history}), 500
+    return jsonify({
+        'ok': False,
+        'error': 'Facebook Groups API đã ngừng hỗ trợ đăng bài. Hãy dùng Đăng qua Chrome.',
+        'extension_required': True,
+    }), 409
 
 
 @app.route('/api/publish', methods=['POST'])
@@ -7095,6 +7065,12 @@ def api_publish_targets():
         return jsonify({'ok': False, 'error': 'Danh sách target không hợp lệ'}), 400
 
     dry_run = bool(body.get('dry_run') or body.get('dryRun'))
+    if not dry_run and any(target.get('type') == 'group' for target in targets):
+        return jsonify({
+            'ok': False,
+            'error': 'Target có Facebook Group. Group chỉ đăng được qua Chrome Extension; Page vẫn có thể đăng qua API.',
+            'extension_required': True,
+        }), 409
     interval_minutes = _normalize_publish_interval_minutes(
         body.get('stagger_minutes') or body.get('interval_minutes') or body.get('publish_interval_minutes')
     )
@@ -8753,6 +8729,12 @@ def facebook_post_reference_resolve(record_id):
     force = body.get('force') is True
     if row.get('facebook_post_id') and not force:
         return jsonify({'ok': True, 'post': row, 'already_resolved': True})
+    if row.get('target_type') == 'group':
+        return jsonify({
+            'ok': False,
+            'error': 'Facebook Groups API không còn hỗ trợ đọc feed để dò bài. Hãy dùng extension hoặc dán permalink.',
+            'extension_required': True,
+        }), 409
 
     target_id = str(row.get('target_id') or '').strip()
     page_id = str(row.get('facebook_page_id') or (target_id if row.get('target_type') == 'page' else '')).strip()
@@ -8850,6 +8832,12 @@ def facebook_post_refresh(record_id):
     row = _facebook_post_by_id(record_id)
     if not row:
         return jsonify({'ok': False, 'error': 'Không tìm thấy bài Facebook'}), 404
+    if row.get('target_type') == 'group':
+        return jsonify({
+            'ok': False,
+            'error': 'Tương tác Group phải được đọc trực tiếp bằng extension.',
+            'extension_required': True,
+        }), 409
     post_id = str(row.get('facebook_post_id') or '').strip()
     if not post_id:
         return jsonify({'ok': False, 'error': 'Bài này chưa có Facebook Post ID nên không thể đồng bộ'}), 400
@@ -9044,6 +9032,12 @@ def facebook_post_comments_collect(record_id):
     row = _facebook_post_by_id(record_id)
     if not row:
         return jsonify({'ok': False, 'error': 'Không tìm thấy bài Facebook'}), 404
+    if row.get('target_type') == 'group':
+        return jsonify({
+            'ok': False,
+            'error': 'Comment Group phải được đọc trực tiếp bằng extension.',
+            'extension_required': True,
+        }), 409
     post_id = str(row.get('facebook_post_id') or '').strip()
     if not post_id:
         return jsonify({'ok': False, 'error': 'Bài này chưa có Facebook Post ID'}), 400
@@ -13140,6 +13134,12 @@ def content_pipeline_post_create():
         return jsonify({'ok': False, 'error': 'Thời gian lên lịch không hợp lệ'}), 400
     if targets and not isinstance(targets, list):
         return jsonify({'ok': False, 'error': 'Danh sách nơi đăng không hợp lệ'}), 400
+    if status == 'scheduled' and any(isinstance(item, dict) and item.get('type') != 'page' for item in targets):
+        return jsonify({
+            'ok': False,
+            'error': 'Không thể đặt lịch nền cho Facebook Group. Hãy đăng Group qua Chrome khi tài khoản Facebook đang mở.',
+            'extension_required': True,
+        }), 409
     staff = _current_staff()
     now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
     post = {
@@ -13240,6 +13240,12 @@ def content_pipeline_post_schedule(post_id):
         return jsonify({'ok': False, 'error': 'Thời gian lên lịch không hợp lệ'}), 400
     if not isinstance(targets, list) or not targets:
         return jsonify({'ok': False, 'error': 'Chọn ít nhất một Page hoặc nhóm để lên lịch'}), 400
+    if any(isinstance(item, dict) and item.get('type') != 'page' for item in targets):
+        return jsonify({
+            'ok': False,
+            'error': 'Không thể đặt lịch nền cho Facebook Group. Hãy đăng Group qua Chrome khi tài khoản Facebook đang mở.',
+            'extension_required': True,
+        }), 409
     for post in _content_pipeline.get('posts') or []:
         if str(post.get('id')) == str(post_id):
             post['status'] = 'scheduled'
@@ -13409,6 +13415,8 @@ METRICS_REFRESH_INTERVAL_SECONDS = max(0, int(os.environ.get('METRICS_REFRESH_IN
 
 def _refresh_single_post_metrics(row: dict) -> tuple[dict, str]:
     """Refresh metrics for a single facebook_posts row. Returns (updated_row, warning)."""
+    if row.get('target_type') == 'group':
+        return row, 'Tương tác Group chỉ được đọc trực tiếp bằng Chrome Extension.'
     post_id = str(row.get('facebook_post_id') or '').strip()
     if not post_id:
         return row, 'Bài này chưa có Facebook Post ID'
@@ -13453,6 +13461,7 @@ def _metrics_refresh_worker():
                 eligible = [
                     r for r in rows
                     if r.get('facebook_post_id')
+                    and r.get('target_type') == 'page'
                     and r.get('status') == 'success'
                     and _parse_iso_datetime(r.get('published_at') or r.get('created_at'))
                     and _parse_iso_datetime(r.get('published_at') or r.get('created_at')) > cutoff
