@@ -86,6 +86,51 @@ class FacebookPostHistoryTests(unittest.TestCase):
 
         self.assertNotIn('legacy_unverified', backend._facebook_post_history_row(row))
 
+    def test_history_includes_recreated_staff_with_same_username(self):
+        rows = [
+            {'id': 'old', 'created_by_staff_id': 'old-id', 'created_by_staff_username': 'khach-test'},
+            {'id': 'other', 'created_by_staff_id': 'other-id', 'created_by_staff_username': 'other'},
+        ]
+        current = {'id': 'new-id', 'username': 'Khach-Test', 'role': 'staff'}
+        with (
+            patch.object(backend, '_current_staff', return_value=current),
+            patch.object(backend, '_staff_accounts', return_value=[current]),
+        ):
+            visible = backend._visible_facebook_post_rows(rows)
+
+        self.assertEqual([row['id'] for row in visible], ['old'])
+
+    def test_history_includes_staff_sharing_the_same_facebook_account(self):
+        current = {
+            'id': 'current-id',
+            'username': 'current',
+            'role': 'staff',
+            'facebook_user_id': '123456',
+        }
+        same_facebook = {
+            'id': 'old-machine-id',
+            'username': 'old-machine',
+            'role': 'staff',
+            'facebook_cookies': [{'id': 'fb-1', 'cookie': 'c_user=123456; xs=abc'}],
+        }
+        different_facebook = {
+            'id': 'other-id',
+            'username': 'other',
+            'role': 'staff',
+            'facebook_user_id': '999999',
+        }
+        rows = [
+            {'id': 'shared', 'created_by_staff_id': 'old-machine-id', 'created_by_staff_username': 'old-machine'},
+            {'id': 'private', 'created_by_staff_id': 'other-id', 'created_by_staff_username': 'other'},
+        ]
+        with (
+            patch.object(backend, '_current_staff', return_value=current),
+            patch.object(backend, '_staff_accounts', return_value=[current, same_facebook, different_facebook]),
+        ):
+            visible = backend._visible_facebook_post_rows(rows)
+
+        self.assertEqual([row['id'] for row in visible], ['shared'])
+
     def test_keeps_real_publish_failures_for_diagnostics(self):
         row = {
             'source': 'chrome_extension',

@@ -8315,11 +8315,42 @@ def _is_synthetic_untrackable_facebook_post(row: dict) -> bool:
     )
 
 
+def _staff_facebook_identity_ids(staff: dict) -> set[str]:
+    row = staff or {}
+    identities = {
+        str(row.get('facebook_user_id') or '').strip(),
+        str(row.get('active_facebook_user_id') or '').strip(),
+        str(_extract_cookie_user(row.get('cookie', '')) or '').strip(),
+    }
+    for item in _normalize_staff_facebook_cookies(row.get('facebook_cookies'), row.get('cookie', '')):
+        identities.add(str(item.get('facebook_user_id') or _extract_cookie_user(item.get('cookie', '')) or '').strip())
+    return {identity for identity in identities if identity}
+
+
+def _facebook_history_owner_ids_for_staff(staff: dict) -> set[str]:
+    owner_ids = {str((staff or {}).get('id') or '').strip()}
+    facebook_ids = _staff_facebook_identity_ids(staff)
+    if facebook_ids:
+        for candidate in _staff_accounts():
+            if facebook_ids.intersection(_staff_facebook_identity_ids(candidate)):
+                owner_ids.add(str(candidate.get('id') or '').strip())
+    return {owner_id for owner_id in owner_ids if owner_id}
+
+
 def _visible_facebook_post_rows(rows: list[dict]) -> list[dict]:
     if _is_admin():
         return rows
-    staff_id = _current_staff_id()
-    return [row for row in rows if str(row.get('created_by_staff_id') or '') == str(staff_id)]
+    staff = _current_staff()
+    owner_ids = _facebook_history_owner_ids_for_staff(staff)
+    username = str(staff.get('username') or '').strip().casefold()
+    return [
+        row for row in rows
+        if str(row.get('created_by_staff_id') or '').strip() in owner_ids
+        or (
+            username
+            and str(row.get('created_by_staff_username') or '').strip().casefold() == username
+        )
+    ]
 
 
 def _facebook_post_history_row(row: dict) -> dict:
