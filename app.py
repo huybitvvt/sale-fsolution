@@ -6610,6 +6610,7 @@ def api_health():
             'per_target_ai_captions_v1': True,
             'facebook_publish_diagnostics_v1': True,
             'staggered_publish_queue_v1': True,
+            'facebook_auto_reference_metrics_v1': True,
         },
     })
 
