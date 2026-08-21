@@ -978,6 +978,15 @@
       .find((article) => isVisible(article) && !isPendingArticle(article) && captionTextMatches(article.innerText || article.textContent || '', expectedMessage)) || null;
   }
 
+  function findLikelyPublishedArticle(expectedMessage) {
+    return Array.from(document.querySelectorAll('[role="article"]'))
+      .find((article) => (
+        isVisible(article)
+        && !isPendingArticle(article)
+        && captionOrSignatureMatches(article.innerText || article.textContent || '', expectedMessage, true)
+      )) || null;
+  }
+
   function engagementMetricsFromArticle(article) {
     if (!article) return { reaction_count: null, comment_count: null, share_count: null };
     const values = [];
@@ -1057,7 +1066,7 @@
     if (!expectedMessage) return { ok: false, error: 'Thiếu nội dung để đối chiếu bài vừa đăng.' };
     window.scrollTo({ top: 0, behavior: 'instant' });
     for (let attempt = 0; attempt < 12; attempt += 1) {
-      const article = findMatchingPublishedArticle(expectedMessage);
+      const article = findMatchingPublishedArticle(expectedMessage) || findLikelyPublishedArticle(expectedMessage);
       if (article) {
         const reference = referenceFromArticle(article);
         if (reference.postUrl) return { ok: true, ...reference, ...engagementMetricsFromArticle(article) };
