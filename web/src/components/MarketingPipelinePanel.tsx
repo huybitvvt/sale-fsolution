@@ -430,7 +430,6 @@ export function MarketingPipelinePanel({
   const [historyExportError, setHistoryExportError] = useState('');
   const assistedQueueRequestRef = useRef('');
   const assistedQueuePayloadRef = useRef<{ requestId: string; title: string; content: string; hashtags: string; mediaUrls: string[]; targets: PublishTarget[] } | null>(null);
-  const localFacebookHistoryRecoveryRef = useRef<Set<string>>(new Set());
   const persistAssistedHistoryRef = useRef<(status: string, results?: PublishResult[], error?: string) => Promise<FacebookPublishedPost[]>>(async () => []);
   const resolveAndSyncFacebookPostRef = useRef<(record: FacebookPublishedPost, options?: { automatic?: boolean; allowManualFallback?: boolean; forceReference?: boolean }) => Promise<void>>(async () => {});
 
@@ -509,54 +508,6 @@ export function MarketingPipelinePanel({
     }
   }
   persistAssistedHistoryRef.current = persistAssistedHistory;
-
-  useEffect(() => {
-    const persistedRequestIds = new Set(
-      facebookPosts
-        .filter((item) => item.source === 'chrome_extension')
-        .map((item) => String(item.source_post_id || '')),
-    );
-    const recoverable = history
-      .filter((row) => row.id.startsWith('chrome-'))
-      .map((row) => ({ row, requestId: row.id.slice('chrome-'.length) }))
-      .filter(({ row, requestId }) => {
-        if (!requestId || persistedRequestIds.has(requestId) || localFacebookHistoryRecoveryRef.current.has(requestId)) return false;
-        return (row.results || []).some((result) => result.ok && (
-          Boolean(result.post_id)
-          || ['published', 'pending_review', 'submitted'].includes(String(result.delivery || ''))
-        ));
-      })
-      .slice(0, 3);
-
-    recoverable.forEach(({ row, requestId }) => {
-      localFacebookHistoryRecoveryRef.current.add(requestId);
-      void api('/api/facebook-posts/extension-result', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          request_id: requestId,
-          content: [row.title, row.content].filter(Boolean).join('\n\n'),
-          hashtags: row.hashtags,
-          media_urls: row.mediaUrls || (row.mediaUrl ? [row.mediaUrl] : []),
-          targets: row.targets,
-          status: 'recovered_from_local_history',
-          results: (row.results || []).map((item) => ({ ...item, ...item.target, target: undefined })),
-        }),
-      }).then(async (response) => {
-        const payload = await response.json().catch(() => ({ posts: [] }));
-        const recovered = safeList<FacebookPublishedPost>(payload.posts);
-        if (!response.ok || !payload.ok || !recovered.length) {
-          localFacebookHistoryRecoveryRef.current.delete(requestId);
-          return;
-        }
-        const recoveredIds = new Set(recovered.map((item) => item.id));
-        setFacebookPosts((prev) => [...recovered, ...prev.filter((item) => !recoveredIds.has(item.id))]);
-        setLocalStatus(`Đã khôi phục ${recovered.length} bản ghi Facebook từ lịch sử trên trình duyệt.`);
-      }).catch(() => {
-        localFacebookHistoryRecoveryRef.current.delete(requestId);
-      });
-    });
-  }, [facebookPosts, history]);
 
   useEffect(() => {
     try {
