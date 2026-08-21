@@ -805,9 +805,9 @@
 
   function postIdFromUrl(url) {
     return globalThis.STREALFacebookPostReference?.postIdFromUrl(url)
-      || String(url || '').match(/\/posts\/(\d+)/i)?.[1]
+      || String(url || '').match(/\/posts\/(pfbid[a-z0-9]+|\d+)/i)?.[1]
       || String(url || '').match(/[?&](?:story_fbid|fbid)=(\d+)/i)?.[1]
-      || String(url || '').match(/\/permalink\/(\d+)/i)?.[1]
+      || String(url || '').match(/\/permalink\/(pfbid[a-z0-9]+|\d+)/i)?.[1]
       || '';
   }
 
@@ -1136,10 +1136,13 @@
   async function findExistingPostReference(payload) {
     const expected = String(payload?.content || '').trim();
     if (!expected) return { ok: false, final: true, error: 'Lịch sử không có nội dung để đối chiếu bài Facebook.' };
+    let matchedArticleWaits = 0;
     for (let attempt = 0; attempt < 18; attempt += 1) {
       const matches = [];
+      let matchingArticleVisible = false;
       for (const article of document.querySelectorAll('[role="article"]')) {
         if (!isVisible(article) || !captionOrSignatureMatches(article.innerText || article.textContent || '', expected)) continue;
+        matchingArticleVisible = true;
         const anchors = [...article.querySelectorAll('a[href]')]
           .filter((anchor) => isPostReferenceUrl(anchor.href || ''));
         const anchor = anchors[0];
@@ -1150,6 +1153,12 @@
       if (unique.length > 1) {
         return { ok: false, final: true, ambiguous: true, error: 'Facebook hiển thị nhiều bài trùng nội dung; cần chọn link thủ công để tránh gắn nhầm.' };
       }
+      if (matchingArticleVisible && matchedArticleWaits < 4) {
+        matchedArticleWaits += 1;
+        await sleep(700);
+        continue;
+      }
+      matchedArticleWaits = 0;
       window.scrollBy({ top: Math.max(520, Math.floor(window.innerHeight * 0.75)), behavior: 'smooth' });
       await sleep(850);
     }

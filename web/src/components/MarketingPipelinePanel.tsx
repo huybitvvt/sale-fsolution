@@ -888,7 +888,7 @@ export function MarketingPipelinePanel({
     const response = await new Promise<ExtensionQueueResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.38 và tải lại trang.' });
+        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.39 và tải lại trang.' });
       }, 6000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -949,7 +949,7 @@ export function MarketingPipelinePanel({
       const response = await new Promise<ExtensionQueueResponse>((resolve) => {
         const timer = window.setTimeout(() => {
           window.removeEventListener('message', handleResponse);
-          resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.38 và tải lại trang.' });
+          resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.39 và tải lại trang.' });
         }, 6000);
         function handleResponse(event: MessageEvent) {
           if (event.source !== window) return;
@@ -1249,7 +1249,7 @@ export function MarketingPipelinePanel({
     return new Promise<ExtensionMetricsResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.38 và tải lại tab F-Solution/Facebook.' });
+        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.39 và tải lại tab F-Solution/Facebook.' });
       }, 60000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -1275,7 +1275,7 @@ export function MarketingPipelinePanel({
     return new Promise<ExtensionReferenceResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.38 và tải lại tab F-Solution/Facebook.' });
+        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.39 và tải lại tab F-Solution/Facebook.' });
       }, 60000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;

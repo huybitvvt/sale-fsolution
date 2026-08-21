@@ -11,6 +11,10 @@ class FacebookPostHistoryTests(unittest.TestCase):
             '123456789012345',
         )
         self.assertEqual(
+            backend._facebook_post_id_from_url('https://www.facebook.com/phan.hieu/posts/pfbid02AbCdEf123/'),
+            'pfbid02AbCdEf123',
+        )
+        self.assertEqual(
             backend._facebook_post_id_from_url('https://m.facebook.com/permalink.php?story_fbid=987654321&id=123'),
             '987654321',
         )

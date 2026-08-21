@@ -8383,7 +8383,7 @@ def _facebook_post_id_from_url(value: str) -> str:
     host = parsed.netloc.lower().split(':')[0]
     if host != 'facebook.com' and not host.endswith('.facebook.com'):
         return ''
-    for pattern in (r'/posts/(\d+)', r'/permalink/(\d+)'):
+    for pattern in (r'/posts/(pfbid[a-z0-9]+|\d+)', r'/permalink/(pfbid[a-z0-9]+|\d+)'):
         match = re.search(pattern, parsed.path, re.I)
         if match:
             return match.group(1)

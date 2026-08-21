@@ -7,6 +7,7 @@ const { postIdFromUrl, isPostReferenceUrl } = globalThis.STREALFacebookPostRefer
 
 test('extracts Facebook post IDs from supported permalink formats', () => {
   assert.equal(postIdFromUrl('https://www.facebook.com/groups/123/posts/987654321/'), '987654321');
+  assert.equal(postIdFromUrl('https://www.facebook.com/phan.hieu/posts/pfbid02AbCdEf123/'), 'pfbid02AbCdEf123');
   assert.equal(postIdFromUrl('https://m.facebook.com/permalink.php?story_fbid=456789&id=123'), '456789');
   assert.equal(postIdFromUrl('https://www.facebook.com/photo/?fbid=7654321'), '7654321');
 });
