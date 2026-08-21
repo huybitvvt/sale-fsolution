@@ -1256,6 +1256,77 @@ async function cancelFacebookGroupQueue(request) {
   };
 }
 
+async function resolveFacebookPostReference(request, sender) {
+  const payload = request.payload || {};
+  const targetType = payload.target_type === 'page' ? 'page' : 'group';
+  const targetId = String(payload.target_id || '').trim();
+  const content = String(payload.content || '').replace(/\s+/g, ' ').trim();
+  if (!targetId || !content) return { ok: false, error: 'Thiếu nơi đăng hoặc nội dung để tự tìm bài Facebook.' };
+
+  const query = encodeURIComponent(content.slice(0, 100));
+  const targetUrl = targetType === 'group'
+    ? `https://www.facebook.com/groups/${encodeURIComponent(targetId)}/search/?q=${query}`
+    : `https://www.facebook.com/${encodeURIComponent(targetId)}/search/?q=${query}`;
+  const tab = await chrome.tabs.create({ url: targetUrl, active: true });
+  try {
+    await waitForTabLoaded(tab.id, 45000);
+    await sleep(1600);
+    let response = null;
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      response = await sendTabMessage(tab.id, {
+        type: 'STREAL_FACEBOOK_FIND_EXISTING_POST',
+        payload: { content, target_type: targetType, target_id: targetId },
+      });
+      if (response?.ok || response?.ambiguous || response?.final) break;
+      await sleep(500);
+    }
+    if (response?.ok) {
+      try { await chrome.tabs.remove(tab.id); } catch {}
+      if (sender?.tab?.id) {
+        try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
+      }
+      return response;
+    }
+    return response || { ok: false, error: 'Extension không tìm thấy bài Facebook khớp nội dung.' };
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
+async function collectFacebookPostData(request, sender) {
+  const payload = request.payload || {};
+  const postUrl = String(payload.post_url || '').trim();
+  let parsed = null;
+  try { parsed = new URL(postUrl); } catch {}
+  if (!parsed || !parsed.hostname.endsWith('facebook.com')) {
+    return { ok: false, error: 'Thiếu permalink Facebook hợp lệ để đọc tương tác.' };
+  }
+  const tab = await chrome.tabs.create({ url: postUrl, active: true });
+  try {
+    await waitForTabLoaded(tab.id, 45000);
+    await sleep(1600);
+    let response = null;
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      response = await sendTabMessage(tab.id, {
+        type: 'STREAL_FACEBOOK_COLLECT_POST_DATA',
+        payload,
+      });
+      if (response?.ok || response?.final) break;
+      await sleep(500);
+    }
+    if (response?.ok) {
+      try { await chrome.tabs.remove(tab.id); } catch {}
+      if (sender?.tab?.id) {
+        try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
+      }
+      return response;
+    }
+    return response || { ok: false, error: 'Extension không đọc được dữ liệu bài Facebook.' };
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
 async function handleFacebookQueueEvent(message, sender) {
   const queue = await storageGet(FACEBOOK_QUEUE_STORAGE_KEY);
   if (!queue || queue.requestId !== message.requestId) return { ok: false, error: 'Khong tim thay hang doi Facebook.' };
@@ -1372,8 +1443,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;
   }
+  if (message?.type === 'STREAL_EXTENSION_RESOLVE_FACEBOOK_POST') {
+    resolveFacebookPostReference(message, sender)
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
   if (message?.type === 'STREAL_EXTENSION_FIND_FACEBOOK_POST_REFERENCE') {
     findFacebookPostReference(message)
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+  if (message?.type === 'STREAL_EXTENSION_COLLECT_FACEBOOK_POST_DATA') {
+    collectFacebookPostData(message, sender)
       .then((response) => sendResponse(response))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;

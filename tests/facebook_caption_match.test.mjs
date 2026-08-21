@@ -3,7 +3,7 @@ import test from 'node:test';
 
 await import('../browser-extension/facebook-caption-match.js');
 
-const { normalizeCaptionText, textMatches } = globalThis.STREALFacebookCaptionMatcher;
+const { normalizeCaptionText, textMatches, textOrSignatureMatches } = globalThis.STREALFacebookCaptionMatcher;
 
 test('normalizes Facebook invisible characters and whitespace', () => {
   assert.equal(normalizeCaptionText('  Tiêu\u200B đề\n\nNội dung\u2060 ❤️\uFE0F  '), 'Tiêu đề Nội dung ❤');
@@ -34,4 +34,14 @@ test('rejects captions with a small missing fragment', () => {
   const expected = 'Đây là nội dung hoàn chỉnh cần được giữ nguyên khi đăng bài lên Facebook.';
   const actual = 'Đây là nội dung hoàn chỉnh cần giữ nguyên khi đăng bài lên Facebook.';
   assert.equal(textMatches(actual, expected), false);
+});
+
+test('matches a long caption when Facebook search truncates its preview', () => {
+  const expected = 'Mua CRM xịn nhưng một tháng sau nhân viên lại mở Excel ra dùng. Đây là nội dung bài viết dài cần tìm lại sau khi đăng thủ công.';
+  const preview = 'Mua CRM xịn nhưng một tháng sau nhân viên lại mở Excel ra dùng. Đây là nội dung bài viết dài cần tìm lại... Xem thêm';
+  assert.equal(textOrSignatureMatches(preview, expected), true);
+});
+
+test('does not use a short generic caption as an automatic signature', () => {
+  assert.equal(textOrSignatureMatches('Cần tuyển gia sư ở Hà Nội', 'Cần tuyển gia sư'), false);
 });

@@ -21,7 +21,7 @@ Khi source có thay đổi extension:
 
 1. Mở `chrome://extensions`.
 2. Bấm nút reload trên `Seeding Fsolution Bridge` hoặc bấm `Update`.
-3. Đảm bảo version hiện tại là `0.1.36` trở lên.
+3. Đảm bảo version hiện tại là `0.1.38` trở lên.
 4. Tải lại web Seeding Fsolution trước khi test lại `TikTok CMT`.
 
 ## Lưu ý vận hành
@@ -37,6 +37,8 @@ Khi source có thay đổi extension:
 - Bản 0.1.34 thêm module `facebook-profile-detector.js` độc lập với auto-comment. Module chỉ tìm SĐT Việt Nam trong vùng Thông tin liên hệ/Giới thiệu công khai của profile đang mở, ghi rõ nguồn và không quét/gán số trong bài viết. Nút **Lưu vào Lead** cần có ít nhất một tab F-Solution đang đăng nhập.
 - Bản 0.1.35 tự theo dõi permalink mới từ lúc bấm Đăng, nhận link trong thông báo Facebook hoặc bài mới trên feed và chờ tối đa 15 giây để lấy Post ID. Nếu Facebook không công khai link, lịch sử vẫn có **Mở nơi đăng** và **Gắn link thủ công** làm phương án dự phòng.
 - Bản 0.1.36 tự mở lại nơi đăng theo thứ tự mới nhất khi Facebook chưa trả permalink ngay, gắn link vào lịch sử và dùng tab nền đọc reaction/comment/share khi Graph API không có quyền Group.
+- Bản 0.1.37 phát hiện trường hợp Graph API trả metrics rỗng và tự mở permalink bằng phiên Facebook trong Chrome để đọc reaction/comment/share cùng các comment đang hiển thị, sau đó lưu ngược về lịch sử.
+- Bản 0.1.38 đối chiếu nội dung và Group trước khi chấp nhận permalink, từ chối link của bài khác và cho phép **Tìm lại link** với các bản ghi đã bị gắn nhầm trước đây.
 - Bản 0.1.32 kiểm tra caption trên mọi editor hiện tại và chuẩn hóa ký tự ẩn/khoảng trắng do Facebook Lexical tạo ra, tránh dừng nhầm với lỗi `Không xác nhận được caption` nhưng vẫn chặn caption thiếu hoặc bị nhân đôi.
 - Bản 0.1.33 chờ và cuộn nhẹ qua phần ảnh bìa Group để Facebook tải vùng thảo luận trước khi tìm ô tạo bài, đồng thời nhận thêm các nhãn composer mới nhưng vẫn loại trừ ô bình luận.
 - Caption và file ảnh/video công khai đã upload trên màn `Bài viết` được điền/chọn tự động. Extension chỉ thao tác trong dialog `Tạo bài viết`, không dùng ô bình luận làm phương án dự phòng, ưu tiên paste tương thích Facebook Lexical và không chèn lại caption khi nhận retry. Bản 0.1.29 tự bấm `Đăng` sau khi xác nhận caption, preview media và nút đăng đều sẵn sàng, rồi chuyển sang nơi tiếp theo sau khi dialog đóng. Nút `Hủy hàng đợi` trên lịch sử sẽ dừng các nơi chưa xử lý. Extension sẽ dừng và báo lỗi nếu Facebook chặn, không xác nhận, hoặc không tải/gắn được media.

@@ -88,6 +88,48 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertTrue(updated['metrics_updated_at'])
         save_mock.assert_called_once()
 
+    def test_extracts_group_id_to_reject_a_permalink_from_another_group(self):
+        self.assertEqual(
+            backend._facebook_group_id_from_url('https://www.facebook.com/groups/123456/posts/987654/'),
+            '123456',
+        )
+        self.assertEqual(backend._facebook_group_id_from_url('https://www.facebook.com/people/name/posts/987654/'), '')
+
+    def test_finds_unique_post_by_content_and_publish_time(self):
+        row = {
+            'content': 'Bài tuyển dụng cần tìm nhân sự kinh doanh tại Hà Nội.\n\n#tuyendung',
+            'created_at': '2026-08-21T09:00:00Z',
+        }
+        matched, error = backend._find_facebook_post_candidate(row, [
+            {
+                'id': 'group_old',
+                'message': row['content'],
+                'created_time': '2026-08-18T09:00:00Z',
+            },
+            {
+                'id': 'group_new',
+                'message': row['content'],
+                'created_time': '2026-08-21T09:00:20Z',
+            },
+        ])
+        self.assertEqual(error, '')
+        self.assertEqual(matched['id'], 'group_new')
+
+    def test_refuses_ambiguous_duplicate_posts(self):
+        row = {'content': 'Nội dung đủ dài để đối chiếu chính xác một bài đăng Facebook.', 'created_at': '2026-08-21T09:00:00Z'}
+        matched, error = backend._find_facebook_post_candidate(row, [
+            {'id': 'one', 'message': row['content'], 'created_time': '2026-08-21T09:00:10Z'},
+            {'id': 'two', 'message': row['content'], 'created_time': '2026-08-21T09:00:30Z'},
+        ])
+        self.assertIsNone(matched)
+        self.assertIn('nhiều bài trùng nội dung', error)
+
+    def test_browser_metrics_accept_zero_and_reject_invalid_values(self):
+        self.assertEqual(backend._facebook_dom_metric(0), 0)
+        self.assertEqual(backend._facebook_dom_metric('42'), 42)
+        self.assertEqual(backend._facebook_dom_metric(-5), 0)
+        self.assertIsNone(backend._facebook_dom_metric('không rõ'))
+
     def test_success_requires_post_id_or_confirmed_published_outcome(self):
         saved = []
 

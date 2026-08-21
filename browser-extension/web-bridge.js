@@ -135,6 +135,33 @@
       return;
     }
 
+    if (data.type === 'STREAL_FACEBOOK_RESOLVE_POST_REQUEST') {
+      chrome.runtime.sendMessage(
+        {
+          type: 'STREAL_EXTENSION_RESOLVE_FACEBOOK_POST',
+          requestId: data.requestId,
+          payload: data.payload || {},
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            postToPage({
+              type: 'STREAL_FACEBOOK_RESOLVE_POST_RESPONSE',
+              requestId: data.requestId,
+              ok: false,
+              error: chrome.runtime.lastError.message || 'Extension không phản hồi',
+            });
+            return;
+          }
+          postToPage({
+            type: 'STREAL_FACEBOOK_RESOLVE_POST_RESPONSE',
+            requestId: data.requestId,
+            ...(response || { ok: false, error: 'Extension không tìm được bài Facebook' }),
+          });
+        },
+      );
+      return;
+    }
+
     if (data.type === 'STREAL_FACEBOOK_POST_REFERENCE_REQUEST') {
       chrome.runtime.sendMessage(
         {
@@ -156,6 +183,33 @@
             type: 'STREAL_FACEBOOK_POST_REFERENCE_RESPONSE',
             requestId: data.requestId,
             ...(response || { ok: false, error: 'Extension khong tim thay bai Facebook' }),
+          });
+        },
+      );
+      return;
+    }
+
+    if (data.type === 'STREAL_FACEBOOK_COLLECT_POST_DATA_REQUEST') {
+      chrome.runtime.sendMessage(
+        {
+          type: 'STREAL_EXTENSION_COLLECT_FACEBOOK_POST_DATA',
+          requestId: data.requestId,
+          payload: data.payload || {},
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            postToPage({
+              type: 'STREAL_FACEBOOK_COLLECT_POST_DATA_RESPONSE',
+              requestId: data.requestId,
+              ok: false,
+              error: chrome.runtime.lastError.message || 'Extension không phản hồi',
+            });
+            return;
+          }
+          postToPage({
+            type: 'STREAL_FACEBOOK_COLLECT_POST_DATA_RESPONSE',
+            requestId: data.requestId,
+            ...(response || { ok: false, error: 'Extension không đọc được bài Facebook' }),
           });
         },
       );
