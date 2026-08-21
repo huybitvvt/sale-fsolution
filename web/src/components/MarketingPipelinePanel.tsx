@@ -108,8 +108,6 @@ type HistoryRow = {
 
 const HISTORY_KEY = 'seeding-post-history-v2';
 const PUBLISH_INTERVAL_MINUTES = 5;
-const FACEBOOK_AUTO_SYNC_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-const FACEBOOK_AUTO_SYNC_RETRY_MS = 2 * 60 * 1000;
 const FACEBOOK_HISTORY_POLL_MS = 60 * 1000;
 const VIETNAM_TIME_ZONE = 'Asia/Ho_Chi_Minh';
 const historyDateKeyFormatter = new Intl.DateTimeFormat('en-CA', {
@@ -432,7 +430,6 @@ export function MarketingPipelinePanel({
   const [historyExportError, setHistoryExportError] = useState('');
   const assistedQueueRequestRef = useRef('');
   const assistedQueuePayloadRef = useRef<{ requestId: string; title: string; content: string; hashtags: string; mediaUrls: string[]; targets: PublishTarget[] } | null>(null);
-  const automaticFacebookSyncAttemptsRef = useRef<Map<string, number>>(new Map());
   const localFacebookHistoryRecoveryRef = useRef<Set<string>>(new Set());
   const persistAssistedHistoryRef = useRef<(status: string, results?: PublishResult[], error?: string) => Promise<FacebookPublishedPost[]>>(async () => []);
   const resolveAndSyncFacebookPostRef = useRef<(record: FacebookPublishedPost, options?: { automatic?: boolean; allowManualFallback?: boolean; forceReference?: boolean }) => Promise<void>>(async () => {});
@@ -562,23 +559,6 @@ export function MarketingPipelinePanel({
   }, [facebookPosts, history]);
 
   useEffect(() => {
-    const now = Date.now();
-    const cutoff = now - FACEBOOK_AUTO_SYNC_WINDOW_MS;
-    const recent = facebookPosts
-      .filter((record) => {
-        const created = new Date(record.created_at || record.published_at || '').getTime();
-        const needsSync = !record.facebook_post_id || !record.metrics_updated_at;
-        return Number.isFinite(created) && created >= cutoff && record.status !== 'failed' && needsSync;
-      })
-      .filter((record) => now - (automaticFacebookSyncAttemptsRef.current.get(record.id) || 0) >= FACEBOOK_AUTO_SYNC_RETRY_MS)
-      .slice(0, 1);
-    recent.forEach((record) => {
-      automaticFacebookSyncAttemptsRef.current.set(record.id, now);
-      void resolveAndSyncFacebookPostRef.current(record, { automatic: true, allowManualFallback: false });
-    });
-  }, [facebookPosts]);
-
-  useEffect(() => {
     try {
       window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 80)));
     } catch {
@@ -670,7 +650,6 @@ export function MarketingPipelinePanel({
         updateHistory(`Hoàn tất ${completed}/${total} · kiểm tra trạng thái từng nơi`, undefined, finalResults);
         void persistAssistedHistoryRef.current('done', finalResults).then((saved) => {
           saved.forEach((record) => {
-            automaticFacebookSyncAttemptsRef.current.set(record.id, Date.now());
             void resolveAndSyncFacebookPostRef.current(record, { automatic: true, allowManualFallback: false });
           });
         });
