@@ -5,6 +5,7 @@
     return raw.match(/\/posts\/(pfbid[a-z0-9]+|\d+)/i)?.[1]
       || raw.match(/[?&](?:story_fbid|fbid)=(\d+)/i)?.[1]
       || raw.match(/\/permalink\/(pfbid[a-z0-9]+|\d+)/i)?.[1]
+      || raw.match(/\/share\/p\/([a-z0-9_-]+)/i)?.[1]
       || '';
   }
 

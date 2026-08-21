@@ -45,3 +45,8 @@ test('matches a long caption when Facebook search truncates its preview', () => 
 test('does not use a short generic caption as an automatic signature', () => {
   assert.equal(textOrSignatureMatches('Cần tuyển gia sư ở Hà Nội', 'Cần tuyển gia sư'), false);
 });
+
+test('allows one contained short caption only for scoped Facebook search', () => {
+  assert.equal(textOrSignatureMatches('Phan Hiếu 12 phút bán đàn gita giá 1tr Thích Bình luận', 'bán đàn gita giá 1tr', true), true);
+  assert.equal(textOrSignatureMatches('bán đàn gita giá 1tr bán đàn gita giá 1tr', 'bán đàn gita giá 1tr', true), false);
+});

@@ -808,6 +808,7 @@
       || String(url || '').match(/\/posts\/(pfbid[a-z0-9]+|\d+)/i)?.[1]
       || String(url || '').match(/[?&](?:story_fbid|fbid)=(\d+)/i)?.[1]
       || String(url || '').match(/\/permalink\/(pfbid[a-z0-9]+|\d+)/i)?.[1]
+      || String(url || '').match(/\/share\/p\/([a-z0-9_-]+)/i)?.[1]
       || '';
   }
 
@@ -1141,7 +1142,7 @@
       const matches = [];
       let matchingArticleVisible = false;
       for (const article of document.querySelectorAll('[role="article"]')) {
-        if (!isVisible(article) || !captionOrSignatureMatches(article.innerText || article.textContent || '', expected)) continue;
+        if (!isVisible(article) || !captionOrSignatureMatches(article.innerText || article.textContent || '', expected, true)) continue;
         matchingArticleVisible = true;
         const anchors = [...article.querySelectorAll('a[href]')]
           .filter((anchor) => isPostReferenceUrl(anchor.href || ''));

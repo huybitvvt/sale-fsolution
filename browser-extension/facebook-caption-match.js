@@ -32,13 +32,13 @@
     return containsOnce(actualCompact, expectedCompact);
   }
 
-  function textOrSignatureMatches(actualValue, expectedValue) {
+  function textOrSignatureMatches(actualValue, expectedValue, allowContainedShort = false) {
     const actual = compactCaptionText(actualValue).toLocaleLowerCase('vi');
     const expected = compactCaptionText(expectedValue).toLocaleLowerCase('vi');
     if (!actual || !expected) return false;
     // A short phrase is too easy to confuse with another search result. It is
     // only safe when the visible text is exactly that phrase.
-    if (expected.length < 36) return actual === expected;
+    if (expected.length < 36) return actual === expected || (allowContainedShort && containsOnce(actual, expected));
     if (textMatches(actualValue, expectedValue)) return true;
     const signature = expected.slice(0, Math.min(72, expected.length));
     return actual.includes(signature);

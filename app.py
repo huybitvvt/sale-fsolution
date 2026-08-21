@@ -8387,6 +8387,9 @@ def _facebook_post_id_from_url(value: str) -> str:
         match = re.search(pattern, parsed.path, re.I)
         if match:
             return match.group(1)
+    share_match = re.search(r'/share/p/([a-z0-9_-]+)', parsed.path, re.I)
+    if share_match:
+        return share_match.group(1)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
     return str(query.get('story_fbid') or query.get('fbid') or '').strip() if str(query.get('story_fbid') or query.get('fbid') or '').strip().isdigit() else ''
 

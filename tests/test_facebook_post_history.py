@@ -22,7 +22,7 @@ class FacebookPostHistoryTests(unittest.TestCase):
             backend._facebook_post_id_from_url('https://www.facebook.com/photo/?fbid=456789123'),
             '456789123',
         )
-        self.assertEqual(backend._facebook_post_id_from_url('https://www.facebook.com/share/p/opaque-code/'), '')
+        self.assertEqual(backend._facebook_post_id_from_url('https://www.facebook.com/share/p/opaque-code/'), 'opaque-code')
         self.assertEqual(backend._facebook_post_id_from_url('https://example.com/posts/123456789'), '')
 
     def test_builds_canonical_graph_post_id_candidates(self):
