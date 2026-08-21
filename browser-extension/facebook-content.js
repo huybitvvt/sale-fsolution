@@ -778,23 +778,70 @@
     failAutomaticSubmission(preparedKey, `${lastReason} Đã chờ 30 giây.`);
   }
 
+  function isPendingArticle(article) {
+    if (!article) return false;
+    const text = normalize(article.innerText || article.textContent || '').toLowerCase();
+    const hasPendingBadge = text.includes('đang chờ')
+      || text.includes('chờ phê duyệt')
+      || text.includes('chờ kiểm duyệt')
+      || text.includes('chờ duyệt')
+      || text.includes('chờ quản trị viên')
+      || text.includes('nội dung của bạn')
+      || text.includes('chỉ bạn mới nhìn thấy')
+      || text.includes('pending approval')
+      || text.includes('pending review')
+      || text.includes('submitted for approval')
+      || text.includes('only you can see');
+    const hasActionControls = (text.includes('chỉnh sửa') || text.includes('edit'))
+      && (text.includes('xóa') || text.includes('delete') || text.includes('remove'));
+    const hasEngagementControls = (text.includes('thích') || text.includes('like'))
+      || (text.includes('bình luận') || text.includes('comment'))
+      || (text.includes('chia sẻ') || text.includes('share'));
+    return hasPendingBadge || (hasActionControls && !hasEngagementControls);
+  }
+
   function detectPostOutcome() {
-    const noticeText = Array.from(document.querySelectorAll('[role="alert"], [role="status"]'))
-      .filter(isVisible)
-      .map((node) => normalize(node.innerText || node.textContent || '').toLowerCase())
-      .join(' ');
+    if (window.location.href.includes('my_pending_content') || window.location.href.includes('pending')) {
+      return 'pending_review';
+    }
     const pendingPhrases = [
       'chờ phê duyệt',
       'chờ kiểm duyệt',
       'chờ quản trị viên',
+      'chờ duyệt',
+      'đang chờ',
+      'nội dung của bạn',
+      'quản trị viên và người kiểm duyệt',
+      'quản trị viên phê duyệt',
+      'người kiểm duyệt',
+      'my_pending_content',
+      'chỉ bạn mới nhìn thấy',
+      'gửi bài viết để phê duyệt',
+      'đã gửi bài viết của bạn',
+      'đã gửi đến người kiểm duyệt',
+      'bài viết đang chờ',
       'pending approval',
       'submitted for approval',
       'waiting for approval',
+      'pending review',
+      'pending post',
+      'sent for approval',
+      'admin approval',
     ];
+    const noticeNodes = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [role="banner"], [role="region"], [aria-live], div[data-visualcompletion]'))
+      .filter(isVisible);
+    const noticeText = noticeNodes
+      .map((node) => normalize(node.innerText || node.textContent || '').toLowerCase())
+      .join(' ');
     if (pendingPhrases.some((phrase) => noticeText.includes(phrase))) return 'pending_review';
+
+    const pageText = normalize(document.body ? document.body.innerText : '').toLowerCase();
+    if (pageText.includes('nội dung của bạn') && pageText.includes('đang chờ')) {
+      return 'pending_review';
+    }
+
     const publishedPhrases = [
       'đã đăng',
-      'đã chia sẻ',
       'post published',
       'post was published',
       'successfully posted',
@@ -928,7 +975,7 @@
 
   function findMatchingPublishedArticle(expectedMessage) {
     return Array.from(document.querySelectorAll('[role="article"]'))
-      .find((article) => isVisible(article) && captionTextMatches(article.innerText || article.textContent || '', expectedMessage)) || null;
+      .find((article) => isVisible(article) && !isPendingArticle(article) && captionTextMatches(article.innerText || article.textContent || '', expectedMessage)) || null;
   }
 
   function engagementMetricsFromArticle(article) {
@@ -974,13 +1021,21 @@
 
   async function findNewPublishedPostReference() {
     for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (detectPostOutcome() === 'pending_review') {
+        return { postId: '', postUrl: '', isPending: true };
+      }
       const currentPostId = postIdFromUrl(window.location.href);
-      if (currentPostId && !state.preSubmitPostIds.has(currentPostId)) {
+      if (currentPostId && !state.preSubmitPostIds.has(currentPostId) && !window.location.href.includes('my_pending_content')) {
         const article = findMatchingPublishedArticle(state.message);
-        return { postId: currentPostId, postUrl: window.location.href, ...engagementMetricsFromArticle(article) };
+        if (article) {
+          return { postId: currentPostId, postUrl: window.location.href, ...engagementMetricsFromArticle(article) };
+        }
       }
       for (const article of document.querySelectorAll('[role="article"]')) {
         if (!isVisible(article) || !captionTextMatches(article.innerText || '', state.message)) continue;
+        if (isPendingArticle(article)) {
+          return { postId: '', postUrl: '', isPending: true };
+        }
         for (const anchor of article.querySelectorAll(POST_REFERENCE_SELECTOR)) rememberPostReference(anchor.href, 120);
       }
       for (const notice of document.querySelectorAll('[role="alert"], [role="status"]')) {
@@ -990,7 +1045,9 @@
       const best = [...state.postReferenceCandidates].sort((a, b) => b.score - a.score || b.detectedAt - a.detectedAt)[0];
       if (best?.score >= 100) {
         const article = findMatchingPublishedArticle(state.message);
-        return { postId: best.postId, postUrl: best.postUrl, ...engagementMetricsFromArticle(article) };
+        if (article) {
+          return { postId: best.postId, postUrl: best.postUrl, ...engagementMetricsFromArticle(article) };
+        }
       }
       await sleep(750);
     }
@@ -1096,7 +1153,11 @@
           showStatus(`Facebook đã đóng hộp đăng tại ${state.groupName}. Đang tự tìm link bài viết...`);
           const reference = await findNewPublishedPostReference();
           stopPostReferenceObserver();
-          if (reference.postUrl && outcome === 'submitted') outcome = 'published';
+          if (reference.isPending || outcome === 'pending_review') {
+            outcome = 'pending_review';
+          } else if (reference.postUrl && outcome === 'submitted') {
+            outcome = 'published';
+          }
           const outcomeText = outcome === 'pending_review'
             ? 'Facebook báo đang chờ kiểm duyệt'
             : outcome === 'published' ? 'Facebook báo đã đăng' : 'đã gửi thao tác đăng';
@@ -1104,8 +1165,8 @@
           sendProgress('confirmed', {
             confirmedAt: new Date().toISOString(),
             outcome,
-            postId: reference.postId,
-            postUrl: reference.postUrl,
+            postId: outcome === 'pending_review' ? '' : reference.postId,
+            postUrl: outcome === 'pending_review' ? '' : reference.postUrl,
             reactionCount: reference.reaction_count,
             commentCount: reference.comment_count,
             shareCount: reference.share_count,

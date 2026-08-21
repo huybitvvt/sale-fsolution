@@ -1,7 +1,7 @@
 (() => {
   function postIdFromUrl(value) {
     const raw = String(value || '').trim();
-    if (!raw) return '';
+    if (!raw || raw.includes('/my_pending_content') || raw.includes('/pending_posts')) return '';
     return raw.match(/\/posts\/(pfbid[a-z0-9]+|\d+)/i)?.[1]
       || raw.match(/[?&](?:story_fbid|fbid)=(\d+)/i)?.[1]
       || raw.match(/\/permalink\/(pfbid[a-z0-9]+|\d+)/i)?.[1]

@@ -17,3 +17,10 @@ test('treats Facebook post share links as browser-readable references', () => {
   assert.equal(postIdFromUrl('https://www.facebook.com/share/p/opaque-code/'), 'opaque-code');
   assert.equal(isPostReferenceUrl('https://www.facebook.com/share/p/opaque-code/'), true);
 });
+
+test('rejects pending content review URLs', () => {
+  assert.equal(postIdFromUrl('https://www.facebook.com/groups/513812408802363/my_pending_content'), '');
+  assert.equal(isPostReferenceUrl('https://www.facebook.com/groups/513812408802363/my_pending_content'), false);
+  assert.equal(postIdFromUrl('https://www.facebook.com/groups/513812408802363/my_pending_content?fbid=12345'), '');
+  assert.equal(isPostReferenceUrl('https://www.facebook.com/groups/513812408802363/my_pending_content?fbid=12345'), false);
+});
