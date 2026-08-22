@@ -246,12 +246,45 @@ function facebookTargetUrl(target?: PublishTarget) {
     : `https://www.facebook.com/${encodeURIComponent(target.id)}`;
 }
 
+function normalizeFacebookHistoryText(value: string) {
+  return String(value || '')
+    .replace(/\u200b|\ufeff/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function historyMatchText(row: HistoryRow) {
+  return normalizeFacebookHistoryText([row.title, row.content, row.hashtags].filter(Boolean).join('\n'));
+}
+
+function historyTimeDistanceMs(row: HistoryRow, post: FacebookPublishedPost) {
+  const left = new Date(row.createdAt || row.scheduledAt || '').getTime();
+  const right = new Date(post.published_at || post.created_at || '').getTime();
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
+  return Math.abs(left - right);
+}
+
+function facebookRecordMatchesHistory(row: HistoryRow, post: FacebookPublishedPost) {
+  if (!row.targets.some((target) => target.id === post.target_id && target.type === post.target_type)) return false;
+  const expected = historyMatchText(row);
+  const actual = normalizeFacebookHistoryText(post.content || '');
+  if (!expected || !actual) return false;
+  if (expected === actual) return true;
+  const shorter = Math.min(expected.length, actual.length);
+  const contains = expected.includes(actual) || actual.includes(expected);
+  if (!contains) return false;
+  if (shorter >= 18) return true;
+  const distanceMs = historyTimeDistanceMs(row, post);
+  return distanceMs !== null && distanceMs <= 20 * 60 * 1000;
+}
+
 function findFacebookRecordForHistory(row: HistoryRow, posts: FacebookPublishedPost[]): FacebookPublishedPost | undefined {
   if (row.facebookRecord) return row.facebookRecord;
   const reqId = row.id.replace(/^(chrome|pipeline|local)-/, '');
   const byReqId = posts.find((p) => p.source_post_id === reqId || p.external_key?.includes(reqId));
   if (byReqId) return byReqId;
-  const byTarget = posts.find((p) => row.targets.some((t) => t.id === p.target_id) && p.content && (row.content?.includes(p.content.slice(0, 30)) || p.content.includes(row.content?.slice(0, 30) || '')));
+  const byTarget = posts.find((p) => facebookRecordMatchesHistory(row, p));
   return byTarget;
 }
 
@@ -829,12 +862,14 @@ export function MarketingPipelinePanel({
     const importedKeys = new Set([...persistedFacebookHistory, ...importedHistory].map(historyFingerprint));
     const persistedChromeIds = new Set(facebookPosts.filter((item) => item.source === 'chrome_extension').map((item) => `chrome-${item.source_post_id}`));
     const persistedPipelineIds = new Set(facebookPosts.filter((item) => ['content_pipeline', 'scheduled_pipeline'].includes(item.source || '')).map((item) => `pipeline-${item.source_post_id}`));
+    const persistedRecordIds = new Set(facebookPosts.map((item) => item.id));
     const seen = new Set<string>();
     return [...persistedFacebookHistory, ...importedHistory, ...history].map((row) => {
       if (row.facebookRecord) return row;
       const facebookRecord = findFacebookRecordForHistory(row, facebookPosts);
       return facebookRecord ? { ...row, facebookRecord } : row;
     }).filter((row) => {
+      if (!row.id.startsWith('facebook-') && row.facebookRecord?.id && persistedRecordIds.has(row.facebookRecord.id)) return false;
       if (row.id.startsWith('pipeline-') && importedKeys.has(historyFingerprint(row)) && persistedFacebookHistory.some((item) => historyFingerprint(item) === historyFingerprint(row))) return false;
       if (persistedPipelineIds.has(row.id)) return false;
       if (row.id.startsWith('local-') && importedKeys.has(historyFingerprint(row))) return false;
