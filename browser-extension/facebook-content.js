@@ -1168,7 +1168,6 @@
   }
 
   async function findNewPublishedPostReference() {
-    let shareCopyAttempted = false;
     for (let attempt = 0; attempt < 20; attempt += 1) {
       if (state.networkPendingReview || detectPostOutcome() === 'pending_review') {
         return { postId: '', postUrl: '', isPending: true };
@@ -1180,28 +1179,12 @@
           return { postId: currentPostId, postUrl: window.location.href, isPublished: true, ...engagementMetricsFromArticle(article) };
         }
       }
-      let matchingArticleForCopy = null;
       for (const article of document.querySelectorAll('[role="article"]')) {
         if (!isVisible(article) || !captionTextMatches(article.innerText || '', state.message)) continue;
         if (isPendingArticle(article)) {
           return { postId: '', postUrl: '', isPending: true };
         }
-        matchingArticleForCopy ||= article;
-        const articleReference = referenceFromArticle(article);
-        if (articleReference.postUrl) {
-          return { postId: articleReference.postId, postUrl: articleReference.postUrl, isPublished: true, ...engagementMetricsFromArticle(article) };
-        }
         for (const anchor of article.querySelectorAll(POST_REFERENCE_SELECTOR)) rememberPostReference(anchor.href, 120);
-      }
-      if (matchingArticleForCopy && !shareCopyAttempted) {
-        shareCopyAttempted = true;
-        const copied = await copyPostReferenceFromShare(matchingArticleForCopy, {
-          target_type: state.targetType,
-          target_id: state.groupId,
-        });
-        if (copied.postUrl) {
-          return { postId: copied.postId, postUrl: copied.postUrl, isPublished: true, ...engagementMetricsFromArticle(matchingArticleForCopy) };
-        }
       }
       for (const notice of document.querySelectorAll('[role="alert"], [role="status"]')) {
         if (!isVisible(notice)) continue;
