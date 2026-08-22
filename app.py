@@ -975,7 +975,9 @@ def _record_publish_results(post: dict, targets: list[dict], result: dict, *, so
         target = indexed_targets.get(f'{target_type}:{target_id}') or {}
         facebook_post_id = str(publish_result.get('post_id') or '').strip()
         delivery = str(publish_result.get('delivery') or '')
-        ok = bool(publish_result.get('ok')) and bool(facebook_post_id or delivery == 'published')
+        ok = bool(publish_result.get('ok')) and bool(
+            delivery == 'published' or (target_type == 'page' and facebook_post_id)
+        )
         metric_values = {
             key: publish_result.get(key)
             for key in ('reaction_count', 'comment_count', 'share_count')
@@ -8820,6 +8822,33 @@ def facebook_post_reference_save(record_id):
         'total_interactions': None if replacing_reference else row.get('total_interactions'),
         'metrics_updated_at': None if replacing_reference else row.get('metrics_updated_at'),
         'published_at': row.get('published_at') or _utc_iso(),
+    })
+    payload = {'ok': True, 'post': updated}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
+
+
+@app.route('/api/facebook-posts/<record_id>/pending-review', methods=['POST'])
+def facebook_post_mark_pending_review(record_id):
+    row = _facebook_post_by_id(record_id)
+    if not row:
+        return jsonify({'ok': False, 'error': 'Không tìm thấy bài Facebook'}), 404
+    if row.get('target_type') != 'group':
+        return jsonify({'ok': False, 'error': 'Chỉ bài Facebook Group mới có trạng thái chờ duyệt'}), 400
+    updated, warning = _save_facebook_post({
+        **row,
+        'facebook_post_id': None,
+        'post_url': '',
+        'status': 'pending',
+        'delivery': 'pending_review',
+        'error_message': '',
+        'reaction_count': None,
+        'comment_count': None,
+        'share_count': None,
+        'total_interactions': None,
+        'metrics_updated_at': None,
+        'published_at': None,
     })
     payload = {'ok': True, 'post': updated}
     if warning:

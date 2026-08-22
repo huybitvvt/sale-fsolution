@@ -22,6 +22,7 @@
     postReferenceObserver: null,
     postReferenceCandidates: [],
     networkReferenceMethod: '',
+    networkPendingReview: false,
     preparedKey: '',
     mediaAttachedCount: 0,
     cancelledRequestIds: new Set(),
@@ -97,6 +98,11 @@
     if (data.source !== 'streal-facebook-main' || data.type !== 'STREAL_FACEBOOK_POST_REFERENCE_CAPTURED') return;
     if (!state.postClickedAt || data.requestId !== state.requestId || data.taskId !== state.taskId) return;
     state.networkReferenceMethod = String(data.method || 'facebook_graphql');
+    if (data.isPending === true) {
+      state.networkPendingReview = true;
+      state.postReferenceCandidates = [];
+      return;
+    }
     rememberPostReference(data.postUrl || '', 300);
   });
 
@@ -597,6 +603,7 @@
     state.preSubmitPostUrls = new Set();
     state.preSubmitPostIds = new Set();
     state.postReferenceCandidates = [];
+    state.networkPendingReview = false;
     if (state.completionTimer) clearInterval(state.completionTimer);
     if (state.autoSubmitTimer) clearTimeout(state.autoSubmitTimer);
     state.autoSubmitTimer = null;
@@ -757,6 +764,7 @@
     state.preSubmitPostIds = new Set([...state.preSubmitPostUrls].map(postIdFromUrl).filter(Boolean));
     startPostReferenceObserver();
     state.networkReferenceMethod = '';
+    state.networkPendingReview = false;
     setNetworkReferenceCapture(true);
     showStatus(`Đang chờ Facebook xác nhận bài tại ${state.groupName}...`);
     sendProgress('submitting', { automatic });
@@ -827,6 +835,7 @@
   }
 
   function detectPostOutcome() {
+    if (state.networkPendingReview) return 'pending_review';
     if (window.location.href.includes('my_pending_content') || window.location.href.includes('pending')) {
       return 'pending_review';
     }
@@ -883,6 +892,17 @@
       || String(url || '').match(/\/permalink\/(pfbid[a-z0-9]+|\d+)/i)?.[1]
       || String(url || '').match(/\/share\/p\/([a-z0-9_-]+)/i)?.[1]
       || '';
+  }
+
+  function groupIdFromUrl(url) {
+    try {
+      const parsed = new URL(String(url || ''), window.location.href);
+      if (parsed.hostname !== 'facebook.com' && !parsed.hostname.endsWith('.facebook.com')) return '';
+      const value = parsed.pathname.match(/\/groups\/([^/?#]+)/i)?.[1] || '';
+      return value ? decodeURIComponent(value) : '';
+    } catch {
+      return '';
+    }
   }
 
   function isPostReferenceUrl(url) {
@@ -1060,14 +1080,14 @@
 
   async function findNewPublishedPostReference() {
     for (let attempt = 0; attempt < 20; attempt += 1) {
-      if (detectPostOutcome() === 'pending_review') {
+      if (state.networkPendingReview || detectPostOutcome() === 'pending_review') {
         return { postId: '', postUrl: '', isPending: true };
       }
       const currentPostId = postIdFromUrl(window.location.href);
       if (currentPostId && !state.preSubmitPostIds.has(currentPostId) && !window.location.href.includes('my_pending_content')) {
         const article = findMatchingPublishedArticle(state.message);
         if (article) {
-          return { postId: currentPostId, postUrl: window.location.href, ...engagementMetricsFromArticle(article) };
+          return { postId: currentPostId, postUrl: window.location.href, isPublished: true, ...engagementMetricsFromArticle(article) };
         }
       }
       for (const article of document.querySelectorAll('[role="article"]')) {
@@ -1084,7 +1104,23 @@
       const best = [...state.postReferenceCandidates].sort((a, b) => b.score - a.score || b.detectedAt - a.detectedAt)[0];
       if (best?.score >= 100) {
         const article = findMatchingPublishedArticle(state.message);
-        return { postId: best.postId, postUrl: best.postUrl, ...engagementMetricsFromArticle(article) };
+        if (article) {
+          const articleReference = referenceFromArticle(article);
+          if (!best.postId || !articleReference.postId || best.postId === articleReference.postId) {
+            return {
+              postId: articleReference.postId || best.postId,
+              postUrl: articleReference.postUrl || best.postUrl,
+              isPublished: true,
+              ...engagementMetricsFromArticle(article),
+            };
+          }
+        }
+        // A Group can redirect to my_pending_content shortly after the composer
+        // closes. Give Facebook time to expose moderation state before trusting
+        // a create-mutation reference that has not appeared in matching DOM.
+        if (best.score >= 300 && attempt >= 8) {
+          return { postId: best.postId, postUrl: best.postUrl, isNetworkCaptured: true };
+        }
       }
       await sleep(750);
     }
@@ -1195,7 +1231,7 @@
           setNetworkReferenceCapture(false);
           if (reference.isPending || outcome === 'pending_review') {
             outcome = 'pending_review';
-          } else if (reference.postUrl && outcome === 'submitted') {
+          } else if (reference.isPublished && outcome === 'submitted') {
             outcome = 'published';
           }
           const outcomeText = outcome === 'pending_review'
@@ -1363,6 +1399,19 @@
   async function collectFacebookPostData(payload) {
     const expectedPostId = String(payload?.post_id || postIdFromUrl(payload?.post_url) || '').trim();
     const expectedContent = String(payload?.content || '').trim();
+    const targetType = payload?.target_type === 'page' ? 'page' : 'group';
+    const expectedTargetId = String(payload?.target_id || '').trim();
+    if (targetType === 'group' && expectedTargetId) {
+      const openedGroupId = groupIdFromUrl(window.location.href);
+      if (!openedGroupId || openedGroupId !== expectedTargetId) {
+        return {
+          ok: false,
+          final: true,
+          contentMismatch: true,
+          error: 'Permalink đang mở không thuộc đúng Group trong lịch sử. Extension đã từ chối đồng bộ.',
+        };
+      }
+    }
     let postArticle = null;
     let matchedByReference = false;
     let matchedByContent = false;
@@ -1388,7 +1437,9 @@
     ));
     let warning = '';
     if (!facebookPostContentMatches(postArticle, expectedContent)) {
-      if (!matchedByReference && !matchedByContent && !trustedOpenedPermalink) {
+      // A Group permalink can be a perfectly valid post ID while still pointing
+      // at somebody else's post. Caption agreement is mandatory for Group data.
+      if (targetType === 'group' || (!matchedByReference && !matchedByContent && !trustedOpenedPermalink)) {
         return {
           ok: false,
           final: true,

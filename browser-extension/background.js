@@ -974,7 +974,12 @@ function assignKnownFacebookMetrics(target, source) {
 }
 
 async function resolveMissingFacebookQueueReferences(queue) {
-  const missing = (queue.results || []).filter((item) => item?.ok && !item.post_id && !item.post_url);
+  const missing = (queue.results || []).filter((item) => (
+    item?.ok
+    && item.delivery !== 'pending_review'
+    && !item.post_id
+    && !item.post_url
+  ));
   if (!missing.length || !queue.facebookTabId) return queue;
   queue.status = 'resolving_references';
   await storageSet(FACEBOOK_QUEUE_STORAGE_KEY, queue);

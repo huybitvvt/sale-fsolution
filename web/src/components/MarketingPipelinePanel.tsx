@@ -396,6 +396,8 @@ function requestFacebookPostDataFromExtension(record: FacebookPublishedPost): Pr
         post_id: record.facebook_post_id || '',
         post_url: record.post_url || '',
         content: record.content || '',
+        target_type: record.target_type,
+        target_id: record.target_id,
       },
     }, window.location.origin);
   });
@@ -690,6 +692,7 @@ export function MarketingPipelinePanel({
         updateHistory(`Hoàn tất ${completed}/${total} · kiểm tra trạng thái từng nơi`, undefined, finalResults);
         void persistAssistedHistoryRef.current('done', finalResults).then((saved) => {
           saved.forEach((record) => {
+            if (record.target_type === 'group' && record.status !== 'success') return;
             void resolveAndSyncFacebookPostRef.current(record, { automatic: true, allowManualFallback: false });
           });
         });
@@ -960,7 +963,7 @@ export function MarketingPipelinePanel({
     const response = await new Promise<ExtensionQueueResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.46 và tải lại trang.' });
+        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.47 và tải lại trang.' });
       }, 6000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -1021,7 +1024,7 @@ export function MarketingPipelinePanel({
       const response = await new Promise<ExtensionQueueResponse>((resolve) => {
         const timer = window.setTimeout(() => {
           window.removeEventListener('message', handleResponse);
-          resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.46 và tải lại trang.' });
+          resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.47 và tải lại trang.' });
         }, 6000);
         function handleResponse(event: MessageEvent) {
           if (event.source !== window) return;
@@ -1321,7 +1324,7 @@ export function MarketingPipelinePanel({
     return new Promise<ExtensionMetricsResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.46 và tải lại tab F-Solution/Facebook.' });
+        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.47 và tải lại tab F-Solution/Facebook.' });
       }, 60000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -1347,7 +1350,7 @@ export function MarketingPipelinePanel({
     return new Promise<ExtensionReferenceResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.46 và tải lại tab F-Solution/Facebook.' });
+        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.47 và tải lại tab F-Solution/Facebook.' });
       }, 60000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -1403,6 +1406,29 @@ export function MarketingPipelinePanel({
     if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không gắn được link bài Facebook');
     setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? payload.post : item));
     return payload.post as FacebookPublishedPost;
+  }
+
+  async function markFacebookPendingReview(record: FacebookPublishedPost) {
+    if (facebookHistoryBusy[record.id]) return;
+    if (!window.confirm('Gỡ permalink/Post ID hiện tại và chuyển bài này về trạng thái Chờ duyệt?')) return;
+    setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: true }));
+    try {
+      const response = await api(`/api/facebook-posts/${encodeURIComponent(record.id)}/pending-review`, { method: 'POST' });
+      const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không gỡ được link sai');
+      setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? payload.post : item));
+      setFacebookComments((prev) => {
+        const next = { ...prev };
+        delete next[record.id];
+        return next;
+      });
+      if (expandedComments === record.id) setExpandedComments('');
+      setLocalStatus('Đã gỡ permalink sai và chuyển bài về trạng thái Chờ Facebook duyệt.');
+    } catch (error) {
+      setLocalStatus(`Không gỡ được link sai: ${formatFetchError(error)}`);
+    } finally {
+      setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: false }));
+    }
   }
 
   async function attachManualFacebookReference(record: FacebookPublishedPost) {
@@ -2380,6 +2406,11 @@ export function MarketingPipelinePanel({
                             ? 'Đang dò...'
                             : row.facebookRecord.facebook_post_id ? 'Dò lại bằng extension' : 'Dò link bằng extension'}
                         </button>
+                        {row.facebookRecord.target_type === 'group' && row.facebookRecord.post_url ? (
+                          <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id]} onClick={() => void markFacebookPendingReview(row.facebookRecord!)}>
+                            Gỡ link sai / chờ duyệt
+                          </button>
+                        ) : null}
                         {!row.facebookRecord.post_url ? (
                           <div className="facebook-manual-reference">
                             <input
@@ -2405,8 +2436,8 @@ export function MarketingPipelinePanel({
                             </button>
                           </div>
                         ) : null}
-                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void refreshFacebookMetrics(row.facebookRecord!)}>Cập nhật tương tác</button>
-                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void collectFacebookComments(row.facebookRecord!)}>Xem comment</button>
+                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || row.facebookRecord.status !== 'success' || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void refreshFacebookMetrics(row.facebookRecord!)}>Cập nhật tương tác</button>
+                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || row.facebookRecord.status !== 'success' || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void collectFacebookComments(row.facebookRecord!)}>Xem comment</button>
                       </div>
                     ) : (
                       <div className="facebook-history-actions">

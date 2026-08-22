@@ -423,6 +423,57 @@ class FacebookPostHistoryTests(unittest.TestCase):
                 self.assertEqual(saved[-1]['facebook_post_id'], 'page-1_post-1')
                 self.assertTrue(saved[-1]['post_url'].endswith('page-1_post-1'))
 
+                backend._record_publish_results(
+                    {'content': 'Bài Group chờ xác nhận'},
+                    [{'type': 'group', 'id': 'group-1', 'name': 'Nhóm A'}],
+                    {'ok': True, 'results': [{
+                        'ok': True,
+                        'type': 'group',
+                        'id': 'group-1',
+                        'delivery': 'submitted',
+                        'post_id': 'group-1_post-1',
+                    }]},
+                    source='chrome_extension', request_id='req-group-submitted',
+                )
+                self.assertEqual(saved[-1]['status'], 'pending')
+                self.assertIsNone(saved[-1]['published_at'])
+
+    def test_mark_pending_review_clears_wrong_group_reference_and_metrics(self):
+        row = {
+            'id': 'history-1',
+            'external_key': 'chrome:req-1:group:123',
+            'target_type': 'group',
+            'target_id': '123',
+            'facebook_post_id': '123_456',
+            'post_url': 'https://www.facebook.com/groups/123/posts/456/',
+            'status': 'success',
+            'delivery': 'published',
+            'reaction_count': 8,
+            'comment_count': 3,
+            'share_count': 1,
+            'total_interactions': 12,
+            'metrics_updated_at': '2026-08-22T10:00:00Z',
+            'published_at': '2026-08-22T09:59:00Z',
+        }
+        with backend.app.test_request_context(
+            '/api/facebook-posts/history-1/pending-review', method='POST',
+        ):
+            with (
+                patch.object(backend, '_facebook_post_by_id', return_value=row),
+                patch.object(backend, '_save_facebook_post', side_effect=lambda value: (value, '')) as save_mock,
+            ):
+                response = backend.facebook_post_mark_pending_review('history-1')
+
+        payload = response.get_json()
+        self.assertTrue(payload['ok'])
+        saved = save_mock.call_args.args[0]
+        self.assertIsNone(saved['facebook_post_id'])
+        self.assertEqual(saved['post_url'], '')
+        self.assertEqual(saved['status'], 'pending')
+        self.assertEqual(saved['delivery'], 'pending_review')
+        self.assertIsNone(saved['total_interactions'])
+        self.assertIsNone(saved['published_at'])
+
     def test_failed_target_keeps_error(self):
         with backend.app.test_request_context('/'):
             with (

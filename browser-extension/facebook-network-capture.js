@@ -73,8 +73,20 @@
     try { path = new URL(String(url || ''), 'https://www.facebook.com/').pathname; } catch {}
     if (!GRAPHQL_PATH.test(path)) return false;
     const requestText = requestBodyText(body);
-    if (!requestText) return true;
-    return /Composer.*Create|StoryCreateMutation|CreateStory|Comet.*(?:Post|Create)|Group.*(?:Post|Create)|Page.*(?:Post|Create)/i.test(requestText);
+    if (!requestText) return false;
+    let decoded = requestText;
+    try { decoded = decodeURIComponent(requestText.replace(/\+/g, ' ')); } catch {}
+    const friendlyName = (() => {
+      try {
+        return new URLSearchParams(requestText).get('fb_api_req_friendly_name') || '';
+      } catch {
+        return '';
+      }
+    })();
+    const candidate = friendlyName || decoded.match(/fb_api_req_friendly_name["'=:\s]+([a-z0-9_]+)/i)?.[1] || '';
+    if (!candidate || /(?:Edit|Delete|Comment|Reply|Share)/i.test(candidate)) return false;
+    return /(?:Composer.*(?:Story)?Create|StoryCreate|CreateStory).*Mutation$/i.test(candidate)
+      || /^useCometComposerSubmitMutation$/i.test(candidate);
   }
 
   function parseJsonPayloads(rawText) {
@@ -95,10 +107,17 @@
   function extractGraphqlPostReference(rawText, context = {}) {
     const urlCandidates = [];
     const idCandidates = [];
+    let isPending = false;
     const addUrl = (value, score = 0) => {
       const postUrl = cleanFacebookUrl(value);
       if (!postUrl) return;
       const targetId = String(context.targetId || '').trim();
+      if (context.targetType !== 'page' && targetId) {
+        const linkedGroupId = postUrl.match(/\/groups\/([^/?#]+)/i)?.[1] || '';
+        let decodedGroupId = '';
+        try { decodedGroupId = decodeURIComponent(linkedGroupId); } catch {}
+        if (!linkedGroupId || decodedGroupId !== targetId) return;
+      }
       const targetBonus = targetId && postUrl.includes(`/${targetId}/`) ? 20 : 0;
       urlCandidates.push({ postUrl, postId: postIdFromUrl(postUrl), score: score + targetBonus });
     };
@@ -116,14 +135,21 @@
       for (const [key, value] of Object.entries(node)) {
         const nextPath = [...path, key];
         const contextPath = nextPath.join('_');
-        const isPostContext = /(?:story|post|composer|create)/i.test(contextPath)
+        const isCreateContext = /(?:story.?create|create.?story|post.?create|create.?post|composer.*create)/i.test(contextPath);
+        const isPostContext = isCreateContext && /(?:story|post|composer)/i.test(contextPath)
           && !/(?:attachment|shared|quoted)/i.test(contextPath);
+        if (isCreateContext) {
+          const pendingKey = /(?:pending|awaiting|approval|moderation|review|preapproval)/i.test(key);
+          const pendingValue = value === true
+            || (typeof value === 'string' && /(?:pending|awaiting|needs?.*approval|requires?.*approval|moderation|review)/i.test(value));
+          if (pendingKey && pendingValue) isPending = true;
+        }
         if (typeof value === 'string' || typeof value === 'number') {
-          if (/permalink/i.test(key)) addUrl(value, 190);
+          if (isPostContext && /permalink/i.test(key)) addUrl(value, 190);
           else if (isPostContext && /(?:wwwurl|post_url|story_url|^url$)/i.test(key)) addUrl(value, 150);
-          if (/^(?:post_?id|story_fbid)$/i.test(key)) addId(value, isPostContext ? 190 : 150);
+          if (isPostContext && /^(?:post_?id|story_fbid)$/i.test(key)) addId(value, 190);
           if (/^legacy_fbid$/i.test(key) && isPostContext) addId(value, 180);
-          if (/^id$/i.test(key) && /(?:^|_)(?:post|story)(?:_|$)/i.test(String(path.at(-1) || ''))) addId(value, 130);
+          if (isPostContext && /^id$/i.test(key) && /(?:^|_)(?:post|story)(?:_|$)/i.test(String(path.at(-1) || ''))) addId(value, 130);
         } else {
           walk(value, nextPath);
         }
@@ -131,18 +157,11 @@
     };
     parseJsonPayloads(rawText).forEach((payload) => walk(payload));
 
-    const raw = String(rawText || '');
-    const urlPattern = /https:\\?\/\\?\/(?:www\.|m\.)?facebook\.com[^"'\s<]+/gi;
-    for (const match of raw.matchAll(urlPattern)) {
-      const rawUrl = cleanFacebookUrl(match[0]);
-      if (rawUrl && (!context.targetId || rawUrl.includes(`/${context.targetId}/`))) addUrl(rawUrl, 140);
-    }
-    const idPattern = /["'](?:post_id|postId|legacy_fbid|story_fbid)["']\s*:\s*["']?(pfbid[a-z0-9]+|\d{6,})/gi;
-    for (const match of raw.matchAll(idPattern)) addId(match[1], 160);
+    if (isPending) return { postId: '', postUrl: '', score: 1000, isPending: true };
 
     const bestUrl = urlCandidates.sort((a, b) => b.score - a.score)[0];
-    if (bestUrl) return bestUrl;
     const bestId = idCandidates.sort((a, b) => b.score - a.score)[0];
+    if (bestUrl && (!bestId || !bestUrl.postId || bestUrl.postId === bestId.postId)) return bestUrl;
     if (!bestId) return null;
     const targetId = encodeURIComponent(String(context.targetId || '').trim());
     const postId = encodeURIComponent(bestId.postId);
@@ -174,13 +193,14 @@
     const capture = currentCapture();
     if (!capture) return;
     const reference = extractGraphqlPostReference(rawText, capture);
-    if (!reference?.postUrl) return;
+    if (!reference || (!reference.postUrl && !reference.isPending)) return;
     window.postMessage({
       source: CAPTURE_SOURCE,
       type: RESULT_TYPE,
       requestId: capture.requestId,
       taskId: capture.taskId,
       method,
+      isPending: reference.isPending === true,
       postId: reference.postId || '',
       postUrl: reference.postUrl,
     }, window.location.origin);
