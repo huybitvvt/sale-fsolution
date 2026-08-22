@@ -3155,6 +3155,13 @@ button, input, select, textarea { font-family: inherit; }
   font: inherit;
 }
 
+.facebook-history-actions > a,
+.facebook-history-actions > button {
+  flex: 1 0 100%;
+  box-sizing: border-box;
+  text-align: center;
+}
+
 .facebook-manual-reference {
   display: flex;
   flex-wrap: wrap;

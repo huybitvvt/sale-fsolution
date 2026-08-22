@@ -8956,6 +8956,7 @@ def facebook_post_browser_sync(record_id):
     if not row:
         return jsonify({'ok': False, 'error': 'Không tìm thấy bài Facebook'}), 404
     body = request.get_json(silent=True) or {}
+    verified_content = body.get('verified_content') is True
     post_url = str(body.get('post_url') or row.get('post_url') or '').strip()
     url_post_id = _facebook_post_id_from_url(post_url)
     stored_post_id = str(row.get('facebook_post_id') or '').strip()
@@ -8999,12 +9000,15 @@ def facebook_post_browser_sync(record_id):
         **row,
         'facebook_post_id': next_post_id or row.get('facebook_post_id'),
         'post_url': post_url,
+        'status': 'success' if verified_content else row.get('status'),
+        'delivery': 'extension_verified' if verified_content else row.get('delivery'),
         'reaction_count': merged_reaction_count,
         'comment_count': merged_comment_count,
         'share_count': merged_share_count,
         'total_interactions': sum(merged_known) if merged_known else row.get('total_interactions'),
         'metrics_updated_at': fetched_at,
         'error_message': '',
+        'published_at': (row.get('published_at') or fetched_at) if verified_content else row.get('published_at'),
     })
 
     stored_post_id = str(updated.get('facebook_post_id') or stored_post_id).strip()

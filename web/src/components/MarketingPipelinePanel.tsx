@@ -1436,29 +1436,6 @@ export function MarketingPipelinePanel({
     return payload.post as FacebookPublishedPost;
   }
 
-  async function markFacebookPendingReview(record: FacebookPublishedPost) {
-    if (facebookHistoryBusy[record.id]) return;
-    if (!window.confirm('Gỡ permalink/Post ID hiện tại và chuyển bài này về trạng thái Chờ duyệt?')) return;
-    setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: true }));
-    try {
-      const response = await api(`/api/facebook-posts/${encodeURIComponent(record.id)}/pending-review`, { method: 'POST' });
-      const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
-      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không gỡ được link sai');
-      setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? payload.post : item));
-      setFacebookComments((prev) => {
-        const next = { ...prev };
-        delete next[record.id];
-        return next;
-      });
-      if (expandedComments === record.id) setExpandedComments('');
-      setLocalStatus('Đã gỡ permalink sai và chuyển bài về trạng thái Chờ Facebook duyệt.');
-    } catch (error) {
-      setLocalStatus(`Không gỡ được link sai: ${formatFetchError(error)}`);
-    } finally {
-      setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: false }));
-    }
-  }
-
   async function attachManualFacebookReference(record: FacebookPublishedPost, suppliedPostUrl = '') {
     if (facebookHistoryBusy[record.id]) return;
     const postUrl = String(suppliedPostUrl || facebookManualLinks[record.id] || '').trim();
@@ -1513,6 +1490,7 @@ export function MarketingPipelinePanel({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         post_url: extension.postUrl || record.post_url,
+        verified_content: extension.ok === true,
         reaction_count: extension.reactionCount,
         comment_count: extension.commentCount,
         share_count: extension.shareCount,
@@ -1746,6 +1724,10 @@ export function MarketingPipelinePanel({
   }
 
   async function attachFacebookReference(record: FacebookPublishedPost) {
+    if (record.post_url && record.status !== 'success') {
+      await attachManualFacebookReference(record, record.post_url);
+      return;
+    }
     await resolveAndSyncFacebookPost(record, {
       automatic: false,
       allowManualFallback: true,
@@ -2462,14 +2444,11 @@ export function MarketingPipelinePanel({
                           : <a href={facebookDestinationUrl(row.facebookRecord)} target="_blank" rel="noreferrer">Mở nơi đăng</a>}
                         <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id]} onClick={() => void attachFacebookReference(row.facebookRecord!)}>
                           {facebookHistoryBusy[row.facebookRecord.id]
-                            ? 'Đang dò...'
-                            : row.facebookRecord.facebook_post_id ? 'Dò lại bằng extension' : 'Dò link bằng extension'}
+                            ? 'Đang xác minh...'
+                            : row.facebookRecord.post_url && row.facebookRecord.status !== 'success'
+                              ? 'Xác nhận link & bật tương tác'
+                              : row.facebookRecord.facebook_post_id ? 'Dò lại bằng extension' : 'Dò link bằng extension'}
                         </button>
-                        {row.facebookRecord.target_type === 'group' && row.facebookRecord.post_url ? (
-                          <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id]} onClick={() => void markFacebookPendingReview(row.facebookRecord!)}>
-                            Gỡ link sai / chờ duyệt
-                          </button>
-                        ) : null}
                         {!row.facebookRecord.post_url ? (
                           <div className="facebook-manual-reference">
                             <input
@@ -2509,8 +2488,8 @@ export function MarketingPipelinePanel({
                             </button>
                           </div>
                         ) : null}
-                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || row.facebookRecord.status !== 'success' || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void refreshFacebookMetrics(row.facebookRecord!)}>Cập nhật tương tác</button>
-                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || row.facebookRecord.status !== 'success' || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void collectFacebookComments(row.facebookRecord!)}>Xem comment</button>
+                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void refreshFacebookMetrics(row.facebookRecord!)}>Cập nhật tương tác</button>
+                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void collectFacebookComments(row.facebookRecord!)}>Xem comment</button>
                       </div>
                     ) : (
                       <div className="facebook-history-actions">

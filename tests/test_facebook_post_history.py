@@ -373,6 +373,7 @@ class FacebookPostHistoryTests(unittest.TestCase):
             method='POST',
             json={
                 'post_url': 'https://www.facebook.com/groups/123/posts/456/',
+                'verified_content': True,
                 'reaction_count': 0,
                 'comment_count': 0,
                 'share_count': 0,
@@ -392,6 +393,9 @@ class FacebookPostHistoryTests(unittest.TestCase):
         saved = save_mock.call_args.args[0]
         self.assertEqual(saved['facebook_post_id'], '123_456')
         self.assertEqual(saved['post_url'], 'https://www.facebook.com/groups/123/posts/456/')
+        self.assertEqual(saved['status'], 'success')
+        self.assertEqual(saved['delivery'], 'extension_verified')
+        self.assertTrue(saved['published_at'])
         self.assertEqual(saved['total_interactions'], 0)
 
     def test_success_requires_post_id_or_confirmed_published_outcome(self):
