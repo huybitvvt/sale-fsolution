@@ -221,6 +221,8 @@ function deliveryLabel(result?: PublishResult) {
   if (!result.ok) return `Lỗi: ${result.error || 'không xác định'}`;
   if (result.delivery === 'auto_resolved') return 'Đã tự tìm và gắn bài';
   if (result.delivery === 'manual_reference') return 'Đã gắn link thủ công';
+  if (result.delivery === 'feed_sync') return 'Đã đồng bộ từ web';
+  if (result.delivery === 'extension_verified') return 'Đã xác minh bằng extension';
   if (result.delivery === 'pending_review') return 'Chờ Facebook kiểm duyệt';
   if (result.delivery === 'published') return 'Facebook báo đã đăng';
   if (result.delivery === 'submitted') return 'Đã gửi, chưa xác định kiểm duyệt';
@@ -2591,7 +2593,7 @@ export function MarketingPipelinePanel({
             ? 'Ngày bắt đầu phải trước hoặc bằng ngày kết thúc.'
             : `Hiển thị ${filteredHistory.length}/${visibleHistory.length} bài đăng${historyFromDate || historyToDate ? ' trong khoảng đã chọn' : ''}.`}
         </div>
-        <div className="data-table-wrap">
+        <div className="data-table-wrap seeding-history-scroll">
           <table className="data-table seeding-history-table">
             <thead>
               <tr>

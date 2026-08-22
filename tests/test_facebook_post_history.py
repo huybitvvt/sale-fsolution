@@ -96,6 +96,49 @@ class FacebookPostHistoryTests(unittest.TestCase):
 
         self.assertNotIn('legacy_unverified', backend._facebook_post_history_row(row))
 
+    def test_history_row_shows_synced_pending_record_as_success(self):
+        row = {
+            'source': 'chrome_extension',
+            'status': 'pending',
+            'delivery': 'pending_review',
+            'facebook_post_id': '1041963898446955_1041994178443927',
+            'post_url': 'https://www.facebook.com/groups/1041963898446955/posts/1041994178443927/',
+            'reaction_count': 1,
+            'comment_count': 3,
+            'share_count': 0,
+            'total_interactions': 4,
+            'metrics_updated_at': '2026-08-22T13:54:00Z',
+        }
+
+        public = backend._facebook_post_history_row(row)
+
+        self.assertEqual(public['status'], 'success')
+        self.assertEqual(public['delivery'], 'feed_sync')
+        self.assertEqual(public['error_message'], '')
+        self.assertEqual(public['published_at'], row['metrics_updated_at'])
+
+    def test_save_normalizes_synced_pending_record_before_persisting(self):
+        with (
+            patch.object(backend, '_facebook_posts', []),
+            patch.object(backend, 'USE_SUPABASE', False),
+            patch.object(backend, '_write_json', return_value=True),
+        ):
+            saved, warning = backend._save_facebook_post({
+                'id': 'history-1',
+                'external_key': 'chrome:req-1:group:1041963898446955',
+                'status': 'pending',
+                'delivery': 'submitted',
+                'reaction_count': 1,
+                'comment_count': 3,
+                'share_count': 0,
+                'total_interactions': 4,
+                'metrics_updated_at': '2026-08-22T13:54:00Z',
+            })
+
+        self.assertEqual(warning, '')
+        self.assertEqual(saved['status'], 'success')
+        self.assertEqual(saved['delivery'], 'feed_sync')
+
     def test_history_includes_recreated_staff_with_same_username(self):
         rows = [
             {'id': 'old', 'created_by_staff_id': 'old-id', 'created_by_staff_username': 'khach-test'},

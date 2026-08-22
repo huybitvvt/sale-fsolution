@@ -840,6 +840,39 @@ def _facebook_post_db_row(row: dict) -> dict:
     return {key: row.get(key) for key in allowed if key in row}
 
 
+def _facebook_post_has_synced_confirmation(row: dict) -> bool:
+    item = row or {}
+    post_url = str(item.get('post_url') or '').strip()
+    if post_url and _is_facebook_post_url(post_url):
+        return True
+    if str(item.get('metrics_updated_at') or '').strip():
+        return True
+    for key in ('reaction_count', 'comment_count', 'share_count', 'total_interactions'):
+        value = item.get(key)
+        if value is not None and value != '':
+            return True
+    delivery = str(item.get('delivery') or '').strip().lower()
+    if str(item.get('facebook_post_id') or '').strip() and delivery in (
+        'published', 'feed_sync', 'extension_verified', 'auto_resolved', 'manual_reference',
+    ):
+        return True
+    return False
+
+
+def _normalize_facebook_post_record(row: dict) -> dict:
+    item = dict(row or {})
+    status = str(item.get('status') or '').strip().lower()
+    if status != 'pending' or not _facebook_post_has_synced_confirmation(item):
+        return item
+    item['status'] = 'success'
+    delivery = str(item.get('delivery') or '').strip().lower()
+    if delivery in ('', 'pending_review', 'submitted', 'submitting', 'opening', 'awaiting_user'):
+        item['delivery'] = 'feed_sync' if str(item.get('metrics_updated_at') or '').strip() else 'published'
+    item['error_message'] = ''
+    item['published_at'] = item.get('published_at') or item.get('metrics_updated_at') or item.get('updated_at') or _utc_iso()
+    return item
+
+
 def _save_facebook_post(row: dict) -> tuple[dict, str]:
     """Upsert one publish target. Supabase is canonical; JSON/app_kv is fallback."""
     global _facebook_posts
@@ -858,6 +891,7 @@ def _save_facebook_post(row: dict) -> tuple[dict, str]:
         previous = next((old for old in _facebook_posts if str(old.get('external_key')) == item['external_key']), None)
         if previous:
             item = {**previous, **item, 'id': previous.get('id') or item['id'], 'created_at': previous.get('created_at') or item['created_at']}
+        item = _normalize_facebook_post_record(item)
         _facebook_posts = [old for old in _facebook_posts if str(old.get('external_key')) != item['external_key']]
         _facebook_posts.insert(0, item)
         _facebook_posts = _facebook_posts[:1000]
@@ -883,7 +917,12 @@ def _save_facebook_post(row: dict) -> tuple[dict, str]:
             else:
                 saved = response.json()
                 if saved:
-                    item = {**item, **saved[0]}
+                    item = _normalize_facebook_post_record({**item, **saved[0]})
+                    with _facebook_posts_lock:
+                        _facebook_posts = [old for old in _facebook_posts if str(old.get('external_key')) != item['external_key']]
+                        _facebook_posts.insert(0, item)
+                        _facebook_posts = _facebook_posts[:1000]
+                        _write_json(FACEBOOK_POSTS_FILE, _facebook_posts)
         except Exception as exc:
             warning = str(exc)[:300]
     if warning and USE_SUPABASE:
@@ -8389,7 +8428,7 @@ def _visible_facebook_post_rows(rows: list[dict]) -> list[dict]:
 
 def _facebook_post_history_row(row: dict) -> dict:
     """Expose legacy untracked rows without changing the stored Supabase record."""
-    item = dict(row or {})
+    item = _normalize_facebook_post_record(row)
     if _is_synthetic_untrackable_facebook_post(item):
         item['legacy_unverified'] = True
     return item

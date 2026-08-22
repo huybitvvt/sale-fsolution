@@ -2898,6 +2898,8 @@ button, input, select, textarea { font-family: inherit; }
   background: #fff;
   padding: 16px;
   box-shadow: 0 12px 28px rgba(15, 23, 42, .04);
+  min-width: 0;
+  max-width: 100%;
 }
 .seeding-compose-card { display: grid; gap: 14px; }
 .seeding-compose-split {
@@ -3103,6 +3105,27 @@ button, input, select, textarea { font-family: inherit; }
   flex-wrap: wrap;
 }
 .seeding-history-actions { margin-left: auto; }
+.seeding-history-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 8px;
+  scrollbar-gutter: stable;
+}
+.seeding-history-scroll .seeding-history-table {
+  min-width: 1360px;
+}
+.seeding-history-scroll::-webkit-scrollbar {
+  height: 10px;
+}
+.seeding-history-scroll::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 999px;
+}
+.seeding-history-scroll::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 999px;
+}
 .seeding-history-table td { vertical-align: top; }
 .seeding-history-table td:nth-child(2) {
   max-width: 460px;
