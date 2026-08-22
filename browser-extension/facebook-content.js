@@ -902,6 +902,22 @@
     }
   }
 
+  function isNumericFacebookId(value) {
+    return /^\d+$/.test(String(value || '').trim());
+  }
+
+  function facebookGroupIdsConflict(left, right) {
+    const leftValue = String(left || '').trim();
+    const rightValue = String(right || '').trim();
+    return Boolean(
+      leftValue
+      && rightValue
+      && isNumericFacebookId(leftValue)
+      && isNumericFacebookId(rightValue)
+      && leftValue !== rightValue
+    );
+  }
+
   function isPostReferenceUrl(url) {
     return globalThis.STREALFacebookPostReference?.isPostReferenceUrl(url)
       || Boolean(postIdFromUrl(url));
@@ -1090,7 +1106,9 @@
     const linkedGroupId = groupIdFromUrl(postUrl);
     // Facebook's Copy link action can return /share/p/<opaque-id> first. The
     // canonical Group is checked again after that URL is opened and redirected.
-    return !linkedGroupId || linkedGroupId === String(targetId);
+    // Some real Group links use a vanity slug instead of the numeric group id
+    // saved in our CRM, so only reject when both sides are numeric ids.
+    return !facebookGroupIdsConflict(linkedGroupId, targetId);
   }
 
   async function readFacebookClipboard() {
@@ -1551,7 +1569,7 @@
     ));
     if (targetType === 'group' && expectedTargetId) {
       const openedGroupId = groupIdFromUrl(window.location.href);
-      if (!openedGroupId || openedGroupId !== expectedTargetId) {
+      if (facebookGroupIdsConflict(openedGroupId, expectedTargetId)) {
         return {
           ok: false,
           final: true,

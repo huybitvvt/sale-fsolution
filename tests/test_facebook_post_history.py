@@ -364,6 +364,12 @@ class FacebookPostHistoryTests(unittest.TestCase):
             backend._facebook_group_id_from_url('https://www.facebook.com/groups/123456/posts/987654/'),
             '123456',
         )
+        self.assertEqual(
+            backend._facebook_group_id_from_url('https://www.facebook.com/groups/damvaydep.net/permalink/3219806054869638/'),
+            'damvaydep.net',
+        )
+        self.assertFalse(backend._facebook_group_ids_conflict('damvaydep.net', '513812408802363'))
+        self.assertTrue(backend._facebook_group_ids_conflict('123456', '513812408802363'))
         self.assertEqual(backend._facebook_group_id_from_url('https://www.facebook.com/people/name/posts/987654/'), '')
 
     def test_finds_unique_post_by_content_and_publish_time(self):
@@ -440,6 +446,43 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertEqual(saved['delivery'], 'extension_verified')
         self.assertTrue(saved['published_at'])
         self.assertEqual(saved['total_interactions'], 0)
+
+    def test_browser_sync_accepts_vanity_group_permalink_for_numeric_target(self):
+        row = {
+            'id': 'history-1',
+            'facebook_post_id': '513812408802363_3219806054869638',
+            'target_type': 'group',
+            'target_id': '513812408802363',
+            'post_url': 'https://www.facebook.com/groups/damvaydep.net/permalink/3219806054869638/',
+            'content': 'bán đàn\n\ngita giá 1tr\n\n#guitar #guitarsaithanh',
+        }
+
+        with backend.app.test_request_context(
+            '/api/facebook-posts/history-1/browser-sync',
+            method='POST',
+            json={
+                'post_url': 'https://www.facebook.com/groups/damvaydep.net/permalink/3219806054869638/',
+                'verified_content': True,
+                'reaction_count': 1,
+                'comment_count': 1,
+                'share_count': 0,
+                'comments': [{'id': 'comment-1', 'message': 'ib', 'from': {'name': 'Phan Hiếu'}}],
+            },
+        ):
+            with (
+                patch.object(backend, '_facebook_post_by_id', return_value=row),
+                patch.object(backend, '_current_staff', return_value={'id': 'sale-1'}),
+                patch.object(backend, '_save_facebook_post', side_effect=lambda value: (value, '')) as save_mock,
+                patch.object(backend, '_store_post_comment_rows', return_value=('local', '')),
+            ):
+                response = backend.facebook_post_browser_sync('history-1')
+
+        payload = response.get_json()
+        self.assertTrue(payload['ok'])
+        saved = save_mock.call_args.args[0]
+        self.assertEqual(saved['post_url'], row['post_url'])
+        self.assertEqual(saved['status'], 'success')
+        self.assertEqual(saved['total_interactions'], 2)
 
     def test_feed_sync_uses_group_feed_when_direct_post_metrics_fail(self):
         row = {

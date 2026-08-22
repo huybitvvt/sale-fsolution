@@ -8702,6 +8702,12 @@ def _facebook_group_id_from_url(value: str) -> str:
     return unquote(match.group(1)).strip() if match else ''
 
 
+def _facebook_group_ids_conflict(left: str, right: str) -> bool:
+    left_value = str(left or '').strip()
+    right_value = str(right or '').strip()
+    return bool(left_value and right_value and left_value.isdigit() and right_value.isdigit() and left_value != right_value)
+
+
 def _facebook_match_text(value: str) -> str:
     return re.sub(r'\s+', ' ', str(value or '').replace('\u200b', '').replace('\ufeff', '')).strip().casefold()
 
@@ -8849,7 +8855,7 @@ def _verify_facebook_reference_with_feed(row: dict, post_url: str) -> tuple[dict
         return None, 'Bài chưa có nơi đăng để xác minh link.'
     link_group_id = _facebook_group_id_from_url(post_url)
     target_group_id = target_id if row.get('target_type') == 'group' else ''
-    if link_group_id and target_group_id and link_group_id != target_group_id:
+    if _facebook_group_ids_conflict(link_group_id, target_group_id):
         return None, f'Link thuộc Group {link_group_id}, không khớp nơi đăng {target_group_id}.'
     posts, _, error = _fetch_facebook_feed_for_post_row(row, limit=100)
     if posts is None:
@@ -8954,7 +8960,7 @@ def facebook_post_reference_save(record_id):
     post_id = candidates[0] if candidates else str(row.get('facebook_post_id') or '').strip()
     link_group_id = _facebook_group_id_from_url(post_url)
     target_group_id = str(row.get('target_id') or '').strip() if row.get('target_type') == 'group' else ''
-    if link_group_id and target_group_id and link_group_id != target_group_id:
+    if _facebook_group_ids_conflict(link_group_id, target_group_id):
         return jsonify({'ok': False, 'error': f'Link thuộc Group {link_group_id}, không khớp nơi đăng {target_group_id}.'}), 400
     if feed_verified_post:
         feed_post_id = str(feed_verified_post.get('id') or '').strip()
@@ -9118,7 +9124,7 @@ def facebook_post_browser_sync(record_id):
         return jsonify({'ok': False, 'error': 'Link Facebook extension đọc không khớp bài trong lịch sử'}), 400
     link_group_id = _facebook_group_id_from_url(post_url)
     target_group_id = str(row.get('target_id') or '').strip() if row.get('target_type') == 'group' else ''
-    if link_group_id and target_group_id and link_group_id != target_group_id:
+    if _facebook_group_ids_conflict(link_group_id, target_group_id):
         return jsonify({'ok': False, 'error': 'Permalink không thuộc Group đã lưu trong lịch sử'}), 400
 
     reaction_count = _facebook_dom_metric(body.get('reaction_count'))
