@@ -2474,13 +2474,18 @@ def _comment_rows_to_phone_leads(rows: list[dict], include_without_phone: bool =
     return leads
 
 
-def _sync_phone_leads_from_comment_rows(rows: list[dict]) -> tuple[int, str]:
-    leads = _comment_rows_to_phone_leads(rows)
+def _sync_comment_leads_from_comment_rows(rows: list[dict], include_without_phone: bool = True) -> tuple[int, str, int]:
+    leads = _comment_rows_to_phone_leads(rows, include_without_phone=include_without_phone)
     if not leads:
-        return 0, ''
+        return 0, '', 0
     changed = _merge_leads_into_memory(leads)
     ok, error = _save_leads_to_supabase(leads)
-    return changed, '' if ok else error
+    return changed, '' if ok else error, len(leads)
+
+
+def _sync_phone_leads_from_comment_rows(rows: list[dict]) -> tuple[int, str]:
+    changed, error, _ = _sync_comment_leads_from_comment_rows(rows, include_without_phone=False)
+    return changed, error
 
 
 def _save_reply_suggestions():
@@ -4961,9 +4966,10 @@ def _store_post_comment_rows(rows: list[dict]) -> tuple[str, str]:
         by_id[str(row.get('comment_id'))] = row
     _post_comments = list(by_id.values())[-5000:]
     _save_post_comments()
-    _sync_phone_leads_from_comment_rows(rows)
+    _, lead_error, _ = _sync_comment_leads_from_comment_rows(rows, include_without_phone=True)
     ok, error = _save_post_comment_rows_to_supabase(rows)
-    return ('supabase' if ok else 'local'), error
+    warning = ' | '.join([item for item in (lead_error, error) if item])
+    return ('supabase' if ok else 'local'), warning
 
 
 def _load_post_comment_rows(source: str = '', post_id: str = '', limit: int = 1000) -> tuple[list[dict], str]:
@@ -8364,7 +8370,7 @@ def list_post_comments():
     if keyword:
         rows = [row for row in rows if keyword in str(row.get('message') or '').lower()]
     rows.sort(key=lambda row: row.get('created_time') or row.get('fetched_at') or '', reverse=True)
-    payload = {'ok': True, 'count': len(rows[:limit]), 'comments': [_public_comment_row(row) for row in rows[:limit]]}
+    payload = {'ok': True, 'count': len(rows[:limit]), 'comments': _public_comment_rows(rows[:limit])}
     if warning:
         payload['warning'] = warning
     return jsonify(payload)

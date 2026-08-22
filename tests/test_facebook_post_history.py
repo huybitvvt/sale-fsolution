@@ -804,6 +804,40 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertEqual(leads[0]['facebook_uid'], 'user-1')
         self.assertEqual(leads[0]['lead_key'], backend._comment_rows_to_phone_leads([comment], include_without_phone=True)[0]['lead_key'])
 
+    def test_store_post_comments_creates_leads_for_all_commenters(self):
+        comment = {
+            'source': 'facebook',
+            'post_id': 'group-1_post-1',
+            'group_id': 'group-1',
+            'post_url': 'https://www.facebook.com/groups/group-1/posts/post-1/',
+            'comment_id': 'comment-no-phone',
+            'author_id': 'user-2',
+            'author_name': 'Trần B',
+            'message': 'Cho mình xin demo phần mềm',
+        }
+        with (
+            patch.object(backend, '_post_comments', []),
+            patch.object(backend, '_leads', {}),
+            patch.object(backend, '_save_post_comments'),
+            patch.object(backend, '_save_leads'),
+            patch.object(backend, '_save_leads_to_supabase', return_value=(True, '')) as save_leads,
+            patch.object(backend, '_save_post_comment_rows_to_supabase', return_value=(True, '')),
+        ):
+            storage, warning = backend._store_post_comment_rows([comment])
+            saved_leads = save_leads.call_args.args[0]
+            lead = saved_leads[0]
+
+            self.assertEqual(storage, 'supabase')
+            self.assertEqual(warning, '')
+            self.assertEqual(len(saved_leads), 1)
+            self.assertEqual(lead['comment_id'], 'comment-no-phone')
+            self.assertEqual(lead['comment_author'], 'Trần B')
+            self.assertEqual(lead['comment_text'], 'Cho mình xin demo phần mềm')
+            self.assertEqual(lead['facebook_uid'], 'user-2')
+            self.assertEqual(lead['phone'], '')
+            self.assertEqual(lead['contact_status'], 'no_phone')
+            self.assertEqual(backend._leads['group-1_post-1'][0]['comment_id'], 'comment-no-phone')
+
 
 if __name__ == '__main__':
     unittest.main()

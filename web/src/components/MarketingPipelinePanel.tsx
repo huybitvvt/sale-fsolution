@@ -1925,13 +1925,13 @@ export function MarketingPipelinePanel({
       try {
         const feedResult = await saveFacebookFeedData(record, true);
         setExpandedComments(feedResult.post.id);
-        setLocalStatus(`Đã lấy ${feedResult.count} comment Group từ feed Facebook như mục Quản lý.`);
+        setLocalStatus(`Đã lấy ${feedResult.count} comment Group và tự tạo/cập nhật lead cho từng commenter.`);
       } catch (error) {
         setLocalStatus('Feed Facebook chưa trả comment, extension đang mở bài để đọc trực tiếp...');
         try {
           const browserResult = await fetchFacebookBrowserData(record);
           setExpandedComments(browserResult.post.id);
-          setLocalStatus(`Đã đọc và lưu ${browserResult.count} comment Group trực tiếp từ giao diện Facebook.`);
+          setLocalStatus(`Đã đọc ${browserResult.count} comment Group và tự tạo/cập nhật lead cho từng commenter.`);
         } catch (browserError) {
           setLocalStatus(`Không lấy được comment Group. Feed: ${formatFetchError(error)} · Extension: ${formatFetchError(browserError)}`);
         }
@@ -1943,14 +1943,14 @@ export function MarketingPipelinePanel({
     try {
       const result = await fetchFacebookComments(record);
       setExpandedComments(record.id);
-      setLocalStatus(`Đã lưu ${result.count} comment; người chưa có SĐT vẫn được giữ trong danh sách tiềm năng.`);
+      setLocalStatus(`Đã lưu ${result.count} comment và tự tạo/cập nhật lead; người chưa có SĐT vẫn vào danh sách tiềm năng.`);
     } catch (error) {
       const graphError = formatFetchError(error);
       setLocalStatus('Facebook API không cấp comment; extension đang mở bài để đọc trực tiếp...');
       try {
         const browserResult = await fetchFacebookBrowserData(record);
         setExpandedComments(record.id);
-        setLocalStatus(`Đã đọc và lưu ${browserResult.count} comment trực tiếp từ giao diện Facebook.`);
+        setLocalStatus(`Đã đọc ${browserResult.count} comment trực tiếp và tự tạo/cập nhật lead cho từng commenter.`);
       } catch (browserError) {
         setLocalStatus(`Không lấy được comment. API: ${graphError} · Extension: ${formatFetchError(browserError)}`);
       }
