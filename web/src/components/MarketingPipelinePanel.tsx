@@ -281,6 +281,31 @@ function facebookRecordMatchesHistory(row: HistoryRow, post: FacebookPublishedPo
   return distanceMs !== null && distanceMs <= 20 * 60 * 1000;
 }
 
+function hasConfirmedFacebookSync(post: FacebookPublishedPost) {
+  const postUrl = String(post.post_url || '').trim().toLowerCase();
+  const hasPostUrl = postUrl.includes('facebook.com') && !/my_pending_content|pending_posts/.test(postUrl);
+  const hasMetrics = [
+    post.reaction_count,
+    post.comment_count,
+    post.share_count,
+    post.total_interactions,
+  ].some((value) => value !== null && value !== undefined);
+  return hasPostUrl || Boolean(post.metrics_updated_at) || hasMetrics;
+}
+
+function normalizeFacebookPublishedPost(post: FacebookPublishedPost): FacebookPublishedPost {
+  if (post.status !== 'pending' || !hasConfirmedFacebookSync(post)) return post;
+  const delivery = String(post.delivery || '').trim().toLowerCase();
+  const pendingDelivery = ['', 'pending_review', 'submitted', 'submitting', 'opening', 'awaiting_user'].includes(delivery);
+  return {
+    ...post,
+    status: 'success',
+    delivery: pendingDelivery ? 'feed_sync' : post.delivery,
+    error_message: '',
+    published_at: post.published_at || post.metrics_updated_at || post.updated_at || post.created_at || null,
+  };
+}
+
 function findFacebookRecordForHistory(row: HistoryRow, posts: FacebookPublishedPost[]): FacebookPublishedPost | undefined {
   if (row.facebookRecord) return row.facebookRecord;
   const reqId = row.id.replace(/^(chrome|pipeline|local)-/, '');
@@ -574,7 +599,9 @@ export function MarketingPipelinePanel({
     try {
       const response = await api('/api/facebook-posts');
       const payload = await response.json().catch(() => ({ posts: [] }));
-      if (response.ok && payload.ok && Array.isArray(payload.posts)) setFacebookPosts(payload.posts);
+      if (response.ok && payload.ok && Array.isArray(payload.posts)) {
+        setFacebookPosts(payload.posts.map(normalizeFacebookPublishedPost));
+      }
     } catch {
       // The pipeline/local history remains available when the migration is not installed yet.
     }
@@ -582,14 +609,16 @@ export function MarketingPipelinePanel({
 
   function upsertFacebookPost(post?: FacebookPublishedPost | null) {
     if (!post?.id) return;
-    const postId = post.id;
-    setFacebookPosts((prev) => [post, ...prev.filter((item) => item.id !== postId)]);
+    const normalized = normalizeFacebookPublishedPost(post);
+    const postId = normalized.id;
+    setFacebookPosts((prev) => [normalized, ...prev.filter((item) => item.id !== postId)]);
   }
 
   function upsertFacebookPosts(posts: FacebookPublishedPost[]) {
     if (!posts.length) return;
-    const savedIds = new Set(posts.map((item) => item.id));
-    setFacebookPosts((prev) => [...posts, ...prev.filter((item) => !savedIds.has(item.id))]);
+    const normalized = posts.map(normalizeFacebookPublishedPost);
+    const savedIds = new Set(normalized.map((item) => item.id));
+    setFacebookPosts((prev) => [...normalized, ...prev.filter((item) => !savedIds.has(item.id))]);
   }
 
   useEffect(() => {
