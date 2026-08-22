@@ -1491,6 +1491,50 @@
       .some((node) => captionTextMatches(node.innerText || node.textContent || '', expected));
   }
 
+  function nearbyFacebookMetricCount(root, phrases) {
+    const indicators = [...root.querySelectorAll('[aria-label], img[alt]')]
+      .filter((node) => {
+        const label = normalize(node.getAttribute('aria-label') || node.getAttribute('alt') || '').toLowerCase();
+        return label && phrases.some((phrase) => label.includes(phrase));
+      });
+    for (const indicator of indicators) {
+      let scope = indicator.parentElement;
+      for (let depth = 0; scope && root.contains(scope) && depth < 5; depth += 1, scope = scope.parentElement) {
+        const text = normalize(scope.innerText || scope.textContent || '');
+        if (text.length > 80) break;
+        const tokens = [...scope.querySelectorAll('a, span')]
+          .map((node) => normalize(node.innerText || node.textContent || ''))
+          .filter((value) => /^\d[\d.,]*\s*(?:k|m|b|nghìn|nghin|triệu|trieu|tr)?$/i.test(value));
+        for (const token of tokens) {
+          const count = globalThis.STREALFacebookPostData?.parseCountToken(token);
+          if (count !== null && count !== undefined) return count;
+        }
+      }
+    }
+    return null;
+  }
+
+  function facebookPostObjectId(value) {
+    return String(value || '').trim().split('_').at(-1) || '';
+  }
+
+  function facebookPostIdsMatch(left, right) {
+    const leftId = facebookPostObjectId(left);
+    const rightId = facebookPostObjectId(right);
+    return Boolean(leftId && rightId && leftId === rightId);
+  }
+
+  function visibleFacebookPostContainers() {
+    const articles = [...document.querySelectorAll('[role="article"]')].filter(isVisible);
+    const postDialogs = [...document.querySelectorAll('[role="dialog"]')]
+      .filter((dialog) => {
+        if (!isVisible(dialog)) return false;
+        const heading = normalize(dialog.querySelector('[role="heading"], h1, h2, h3')?.innerText || '');
+        return /(?:bài viết của|post by|post from)/i.test(heading);
+      });
+    return [...articles, ...postDialogs.filter((dialog) => !articles.includes(dialog))];
+  }
+
   async function collectFacebookPostData(payload) {
     const expectedPostId = String(payload?.post_id || postIdFromUrl(payload?.post_url) || '').trim();
     const expectedContent = String(payload?.content || '').trim();
@@ -1511,16 +1555,16 @@
     let matchedByReference = false;
     let matchedByContent = false;
     for (let attempt = 0; attempt < 24; attempt += 1) {
-      const articles = [...document.querySelectorAll('[role="article"]')].filter(isVisible);
-      postArticle = articles.find((article) => [...article.querySelectorAll('a[href]')]
-        .some((anchor) => postIdFromUrl(anchor.href || '') === expectedPostId));
+      const containers = visibleFacebookPostContainers();
+      postArticle = containers.find((article) => [...article.querySelectorAll('a[href]')]
+        .some((anchor) => facebookPostIdsMatch(postIdFromUrl(anchor.href || ''), expectedPostId)));
       matchedByReference = Boolean(postArticle);
       if (!postArticle && expectedContent) {
-        postArticle = articles.find((article) => captionOrSignatureMatches(article.innerText || article.textContent || '', expectedContent));
+        postArticle = containers.find((article) => captionOrSignatureMatches(article.innerText || article.textContent || '', expectedContent));
         matchedByContent = Boolean(postArticle);
       }
       if (!postArticle) {
-        postArticle = articles.find((article) => /bình luận|comment|chia sẻ|share/i.test(normalize(article.innerText || article.textContent || '')));
+        postArticle = containers.find((article) => /bình luận|comment|chia sẻ|share/i.test(normalize(article.innerText || article.textContent || '')));
       }
       if (postArticle) break;
       await sleep(500);
@@ -1528,7 +1572,7 @@
     if (!postArticle) return { ok: false, final: true, error: 'Extension không nhận diện được khung bài viết Facebook.' };
     const currentPostId = postIdFromUrl(window.location.href);
     const trustedOpenedPermalink = Boolean(expectedPostId && currentPostId && (
-      currentPostId === expectedPostId || isOpaqueFacebookShareId(expectedPostId)
+      facebookPostIdsMatch(currentPostId, expectedPostId) || isOpaqueFacebookShareId(expectedPostId)
     ));
     let warning = '';
     if (!facebookPostContentMatches(postArticle, expectedContent)) {
@@ -1550,13 +1594,29 @@
     const metricTexts = metricNodes.flatMap((node) => [
       node.getAttribute?.('aria-label') || '',
       node.innerText || node.textContent || '',
+      `${node.getAttribute?.('aria-label') || ''} ${node.innerText || node.textContent || ''}`,
     ]);
     const metrics = globalThis.STREALFacebookPostData?.extractMetricCounts(metricTexts)
       || { reactionCount: null, commentCount: null, shareCount: null };
+    if (metrics.reactionCount === null) {
+      metrics.reactionCount = nearbyFacebookMetricCount(postArticle, [
+        'bày tỏ cảm xúc', 'reaction', 'yêu thích', 'love', 'thương thương', 'haha', 'wow', 'buồn', 'phẫn nộ',
+      ]);
+    }
+    if (metrics.commentCount === null) {
+      metrics.commentCount = nearbyFacebookMetricCount(postArticle, ['bình luận', 'comment']);
+    }
+    if (metrics.shareCount === null) {
+      metrics.shareCount = nearbyFacebookMetricCount(postArticle, ['chia sẻ', 'share']);
+    }
     const commentArticles = [...document.querySelectorAll('[role="article"]')]
       .filter((article) => article !== postArticle && isVisible(article))
-      .filter((article) => postArticle.contains(article)
-        || /bình luận của|comment by/i.test(normalize(article.getAttribute('aria-label') || '')));
+      .filter((article) => {
+        const aria = normalize(article.getAttribute('aria-label') || '');
+        if (/bình luận của|comment by/i.test(aria)) return true;
+        if (!postArticle.contains(article) || facebookPostContentMatches(article, expectedContent)) return false;
+        return /(?:trả lời|reply)/i.test(normalize(article.innerText || article.textContent || ''));
+      });
     const comments = commentArticles
       .map((article, index) => facebookCommentFromArticle(article, index))
       .filter(Boolean);

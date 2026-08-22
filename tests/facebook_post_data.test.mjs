@@ -26,3 +26,14 @@ test('extracts English Facebook engagement labels without using unrelated number
     shareCount: 7,
   });
 });
+
+test('extracts a reaction count when Facebook puts the number after the control label', () => {
+  assert.deepEqual(extractMetricCounts([
+    'Xem ai đã bày tỏ cảm xúc 1',
+    '1 bình luận',
+  ]), {
+    reactionCount: 1,
+    commentCount: 1,
+    shareCount: null,
+  });
+});

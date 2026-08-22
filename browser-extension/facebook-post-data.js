@@ -46,6 +46,8 @@
         reactionCount = metricFromText(text, [
           /(\d[\d.,\s]*(?:k|m|b|nghìn|nghin|triệu|trieu|tr)?)\s*(?:người\s*)?(?:đã\s*)?(?:bày tỏ cảm xúc|cảm xúc)/i,
           /(\d[\d.,\s]*(?:k|m|b)?)\s*reactions?/i,
+          /(?:bày tỏ cảm xúc|cảm xúc|reactions?|yêu thích|love)\s*[:·-]?\s*(\d[\d.,\s]*(?:k|m|b|nghìn|nghin|triệu|trieu|tr)?)/i,
+          /(?:xem ai đã bày tỏ cảm xúc|see who reacted)[^\d]*(\d[\d.,\s]*(?:k|m|b)?)/i,
         ]);
       }
       if (commentCount === null) {
