@@ -216,6 +216,24 @@
       return;
     }
 
+    if (data.type === 'STREAL_CLIPBOARD_READ_REQUEST') {
+      navigator.clipboard.readText()
+        .then((value) => postToPage({
+          type: 'STREAL_CLIPBOARD_READ_RESPONSE',
+          requestId: data.requestId,
+          ok: Boolean(String(value || '').trim()),
+          value: String(value || '').trim(),
+          error: String(value || '').trim() ? '' : 'Clipboard đang trống',
+        }))
+        .catch((error) => postToPage({
+          type: 'STREAL_CLIPBOARD_READ_RESPONSE',
+          requestId: data.requestId,
+          ok: false,
+          error: error?.message || 'Không đọc được clipboard',
+        }));
+      return;
+    }
+
     if (data.type === 'STREAL_TIKTOK_COLLECT_VIDEOS_REQUEST') {
       chrome.runtime.sendMessage(
         {

@@ -1176,7 +1176,15 @@ def _parse_iso_datetime(value: str):
 
 
 def _pipeline_post_message(post: dict) -> str:
-    return '\n\n'.join([str(post.get('content') or '').strip(), str(post.get('hashtags') or '').strip()]).strip()
+    content = str(post.get('content') or '').strip()
+    hashtags = str(post.get('hashtags') or '').strip()
+    if not hashtags:
+        return content
+    normalized_content = re.sub(r'\s+', ' ', content).strip().casefold()
+    normalized_hashtags = re.sub(r'\s+', ' ', hashtags).strip().casefold()
+    if normalized_content.endswith(normalized_hashtags):
+        return content
+    return '\n\n'.join([content, hashtags]).strip()
 
 
 _VIDEO_EXT_RE = re.compile(r'\.(mp4|mov|m4v|webm|avi|mkv|flv|wmv|3gp|ogv)(\?|$)', re.I)

@@ -3157,6 +3157,7 @@ button, input, select, textarea { font-family: inherit; }
 
 .facebook-manual-reference {
   display: flex;
+  flex-wrap: wrap;
   flex-basis: 100%;
   gap: 6px;
   min-width: 260px;
@@ -3164,7 +3165,7 @@ button, input, select, textarea { font-family: inherit; }
 
 .facebook-manual-reference input {
   min-width: 0;
-  flex: 1 1 190px;
+  flex: 1 0 100%;
   border: 1px solid #cbd5e1;
   border-radius: 7px;
   padding: 6px 8px;

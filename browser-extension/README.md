@@ -21,7 +21,7 @@ Khi source có thay đổi extension:
 
 1. Mở `chrome://extensions`.
 2. Bấm nút reload trên `Seeding Fsolution Bridge` hoặc bấm `Update`.
-3. Đảm bảo version hiện tại là `0.1.47` trở lên.
+3. Đảm bảo version hiện tại là `0.1.48` trở lên.
 4. Tải lại web Seeding Fsolution trước khi test lại `TikTok CMT`.
 
 ## Lưu ý vận hành
@@ -45,6 +45,7 @@ Khi source có thay đổi extension:
 - Bản 0.1.45 chuẩn hóa nội dung bài viết và nhận diện đầy đủ link tìm kiếm (`multi_permalinks`, `story_fbid=pfbid`, `permalink.php`, `/share/`), bắt link ngay tại bài đầu tiên trên kết quả tìm kiếm mà không cuộn trôi qua bài.
 - Bản 0.1.46 bắt permalink/Post ID ngay trong phản hồi GraphQL khi đăng, dùng DOM làm dự phòng, lưu từng kết quả về backend trước khi chuyển nơi tiếp theo; Group chỉ đọc tương tác/comment trực tiếp qua extension.
 - Bản 0.1.47 chỉ nhận phản hồi đúng mutation tạo bài, ưu tiên trạng thái chờ duyệt, bắt buộc Group và caption phải khớp trước khi đọc tương tác/comment, đồng thời cho phép gỡ permalink bị gắn sai.
+- Bản 0.1.48 bỏ nhận nhầm mô tả chung của Group là trạng thái chờ duyệt, tự xử lý hashtag lịch sử bị lặp, và fallback bấm **Chia sẻ → Sao chép liên kết** khi bài đúng không lộ permalink trong DOM.
 - Bản 0.1.32 kiểm tra caption trên mọi editor hiện tại và chuẩn hóa ký tự ẩn/khoảng trắng do Facebook Lexical tạo ra, tránh dừng nhầm với lỗi `Không xác nhận được caption` nhưng vẫn chặn caption thiếu hoặc bị nhân đôi.
 - Bản 0.1.33 chờ và cuộn nhẹ qua phần ảnh bìa Group để Facebook tải vùng thảo luận trước khi tìm ô tạo bài, đồng thời nhận thêm các nhãn composer mới nhưng vẫn loại trừ ô bình luận.
 - Caption và file ảnh/video công khai đã upload trên màn `Bài viết` được điền/chọn tự động. Extension chỉ thao tác trong dialog `Tạo bài viết`, không dùng ô bình luận làm phương án dự phòng, ưu tiên paste tương thích Facebook Lexical và không chèn lại caption khi nhận retry. Bản 0.1.29 tự bấm `Đăng` sau khi xác nhận caption, preview media và nút đăng đều sẵn sàng, rồi chuyển sang nơi tiếp theo sau khi dialog đóng. Nút `Hủy hàng đợi` trên lịch sử sẽ dừng các nơi chưa xử lý. Extension sẽ dừng và báo lỗi nếu Facebook chặn, không xác nhận, hoặc không tải/gắn được media.

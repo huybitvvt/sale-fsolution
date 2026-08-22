@@ -32,7 +32,28 @@
     return containsOnce(actualCompact, expectedCompact);
   }
 
-  function textOrSignatureMatches(actualValue, expectedValue, allowContainedShort = false) {
+  function removeRepeatedTrailingLines(value) {
+    let lines = String(value || '')
+      .replace(/\r\n?/g, '\n')
+      .split('\n')
+      .map((line) => normalizeCaptionText(line))
+      .filter(Boolean);
+    let changed = true;
+    while (changed && lines.length >= 2) {
+      changed = false;
+      for (let size = 1; size <= Math.floor(lines.length / 2); size += 1) {
+        const tail = lines.slice(-size).join('\n').toLocaleLowerCase('vi');
+        const previous = lines.slice(-size * 2, -size).join('\n').toLocaleLowerCase('vi');
+        if (tail !== previous) continue;
+        lines = lines.slice(0, -size);
+        changed = true;
+        break;
+      }
+    }
+    return lines.join('\n');
+  }
+
+  function textOrSignatureMatchesOne(actualValue, expectedValue, allowContainedShort) {
     const actual = compactCaptionText(actualValue).toLocaleLowerCase('vi');
     const expected = compactCaptionText(expectedValue).toLocaleLowerCase('vi');
     if (!actual || !expected) return false;
@@ -44,8 +65,16 @@
     return actual.includes(signature);
   }
 
+  function textOrSignatureMatches(actualValue, expectedValue, allowContainedShort = false) {
+    const deduped = removeRepeatedTrailingLines(expectedValue);
+    return [expectedValue, deduped]
+      .filter((value, index, values) => value && values.indexOf(value) === index)
+      .some((value) => textOrSignatureMatchesOne(actualValue, value, allowContainedShort));
+  }
+
   globalThis.STREALFacebookCaptionMatcher = Object.freeze({
     normalizeCaptionText,
+    removeRepeatedTrailingLines,
     textMatches,
     textOrSignatureMatches,
   });

@@ -3,7 +3,12 @@ import test from 'node:test';
 
 await import('../browser-extension/facebook-caption-match.js');
 
-const { normalizeCaptionText, textMatches, textOrSignatureMatches } = globalThis.STREALFacebookCaptionMatcher;
+const {
+  normalizeCaptionText,
+  removeRepeatedTrailingLines,
+  textMatches,
+  textOrSignatureMatches,
+} = globalThis.STREALFacebookCaptionMatcher;
 
 test('normalizes Facebook invisible characters and whitespace', () => {
   assert.equal(normalizeCaptionText('  Tiêu\u200B đề\n\nNội dung\u2060 ❤️\uFE0F  '), 'Tiêu đề Nội dung ❤');
@@ -49,4 +54,11 @@ test('does not use a short generic caption as an automatic signature', () => {
 test('allows one contained short caption only for scoped Facebook search', () => {
   assert.equal(textOrSignatureMatches('Phan Hiếu 12 phút bán đàn gita giá 1tr Thích Bình luận', 'bán đàn gita giá 1tr', true), true);
   assert.equal(textOrSignatureMatches('bán đàn gita giá 1tr bán đàn gita giá 1tr', 'bán đàn gita giá 1tr', true), false);
+});
+
+test('matches history whose hashtag block was appended twice', () => {
+  const actual = 'e xin test ạ\n\nib\n\n#guitar\n#guitarsaithanh';
+  const duplicated = `${actual}\n\n#guitar\n#guitarsaithanh`;
+  assert.equal(removeRepeatedTrailingLines(duplicated), 'e xin test ạ\nib\n#guitar\n#guitarsaithanh');
+  assert.equal(textOrSignatureMatches(actual, duplicated, true), true);
 });

@@ -1044,7 +1044,7 @@ async function collectFacebookPostMetrics(message) {
   }
 }
 
-async function findFacebookPostReference(message) {
+async function findFacebookPostReference(message, sender) {
   const payload = message?.payload || {};
   const task = {
     type: payload.targetType === 'page' || payload.target_type === 'page' ? 'page' : 'group',
@@ -1054,7 +1054,7 @@ async function findFacebookPostReference(message) {
   if (!task.id || !task.message) return { ok: false, error: 'Thiếu nơi đăng hoặc nội dung bài để dò link.' };
   let tab = null;
   try {
-    tab = await chrome.tabs.create({ url: facebookTargetUrl(task, true), active: false });
+    tab = await chrome.tabs.create({ url: facebookTargetUrl(task, true), active: true });
     await waitForTabLoaded(tab.id, 45000);
     await sleep(1500);
     const result = await sendTabMessage(tab.id, {
@@ -1065,6 +1065,9 @@ async function findFacebookPostReference(message) {
   } finally {
     if (tab?.id) {
       try { await chrome.tabs.remove(tab.id); } catch {}
+    }
+    if (sender?.tab?.id) {
+      try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
     }
   }
 }
@@ -1457,7 +1460,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message?.type === 'STREAL_EXTENSION_FIND_FACEBOOK_POST_REFERENCE') {
-    findFacebookPostReference(message)
+    findFacebookPostReference(message, sender)
       .then((response) => sendResponse(response))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;

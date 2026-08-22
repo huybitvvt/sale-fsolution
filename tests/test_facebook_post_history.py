@@ -5,6 +5,16 @@ import app as backend
 
 
 class FacebookPostHistoryTests(unittest.TestCase):
+    def test_pipeline_post_message_does_not_append_existing_hashtags_twice(self):
+        message = 'e xin test ạ\n\nib\n\n#guitar #guitarsaithanh'
+        self.assertEqual(
+            backend._pipeline_post_message({
+                'content': message,
+                'hashtags': '#guitar #guitarsaithanh',
+            }),
+            message,
+        )
+
     def test_load_merges_legacy_kv_history_with_partial_remote_table(self):
         legacy_rows = [
             {

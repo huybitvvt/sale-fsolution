@@ -845,10 +845,7 @@
       'chờ quản trị viên',
       'chờ duyệt',
       'đang chờ',
-      'nội dung của bạn',
-      'quản trị viên và người kiểm duyệt',
       'quản trị viên phê duyệt',
-      'người kiểm duyệt',
       'my_pending_content',
       'chỉ bạn mới nhìn thấy',
       'gửi bài viết để phê duyệt',
@@ -863,8 +860,8 @@
       'sent for approval',
       'admin approval',
     ];
-    const noticeNodes = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [role="banner"], [role="region"], [aria-live], div[data-visualcompletion]'))
-      .filter(isVisible);
+    const noticeNodes = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live]'))
+      .filter((node) => isVisible(node) && normalize(node.innerText || node.textContent || '').length <= 600);
     const noticeText = noticeNodes
       .map((node) => normalize(node.innerText || node.textContent || '').toLowerCase())
       .join(' ');
@@ -1078,6 +1075,80 @@
     return { postId: '', postUrl: urlOnlyReference };
   }
 
+  function facebookControlLabel(node) {
+    return normalize(node?.getAttribute?.('aria-label') || node?.innerText || node?.textContent || '').toLowerCase();
+  }
+
+  function findFacebookControl(root, phrases) {
+    return Array.from(root?.querySelectorAll?.('button, [role="button"], [tabindex="0"]') || [])
+      .find((node) => isVisible(node) && phrases.includes(facebookControlLabel(node))) || null;
+  }
+
+  function referenceMatchesTarget(postUrl, targetType, targetId) {
+    if (!isBrowsablePostUrl(postUrl)) return false;
+    if (targetType === 'page' || !targetId) return true;
+    const linkedGroupId = groupIdFromUrl(postUrl);
+    // Facebook's Copy link action can return /share/p/<opaque-id> first. The
+    // canonical Group is checked again after that URL is opened and redirected.
+    return !linkedGroupId || linkedGroupId === String(targetId);
+  }
+
+  async function readFacebookClipboard() {
+    try {
+      const value = await navigator.clipboard.readText();
+      if (value) return value;
+    } catch {}
+    const textarea = document.createElement('textarea');
+    textarea.setAttribute('aria-hidden', 'true');
+    Object.assign(textarea.style, { position: 'fixed', left: '-9999px', top: '0' });
+    document.body.appendChild(textarea);
+    textarea.focus();
+    try {
+      document.execCommand('paste');
+      return textarea.value;
+    } catch {
+      return '';
+    } finally {
+      textarea.remove();
+    }
+  }
+
+  async function copyPostReferenceFromShare(article, payload = {}) {
+    const shareButton = findFacebookControl(article, ['chia sẻ', 'share']);
+    if (!shareButton) return { postId: '', postUrl: '' };
+    try {
+      shareButton.click();
+    } catch {
+      return { postId: '', postUrl: '' };
+    }
+
+    let copyButton = null;
+    for (let attempt = 0; attempt < 16; attempt += 1) {
+      copyButton = findFacebookControl(document, ['sao chép liên kết', 'copy link']);
+      if (copyButton) break;
+      await sleep(300);
+    }
+    if (!copyButton) return { postId: '', postUrl: '' };
+
+    try {
+      copyButton.click();
+    } catch {
+      return { postId: '', postUrl: '' };
+    }
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await sleep(250);
+      try {
+        const copied = canonicalPostReferenceUrl(await readFacebookClipboard());
+        if (!referenceMatchesTarget(copied, payload.target_type, payload.target_id)) continue;
+        return { postId: postIdFromUrl(copied), postUrl: copied };
+      } catch {
+        // clipboardRead permission is declared by the extension; retry briefly
+        // because Facebook can update the clipboard after its share dialog closes.
+      }
+    }
+    return { postId: '', postUrl: '' };
+  }
+
   async function findNewPublishedPostReference() {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       if (state.networkPendingReview || detectPostOutcome() === 'pending_review') {
@@ -1136,6 +1207,13 @@
       if (article) {
         const reference = referenceFromArticle(article);
         if (reference.postUrl) return { ok: true, ...reference, ...engagementMetricsFromArticle(article) };
+        if (attempt === 2) {
+          const copied = await copyPostReferenceFromShare(article, {
+            target_type: payload?.targetType,
+            target_id: payload?.targetId,
+          });
+          if (copied.postUrl) return { ok: true, ...copied, ...engagementMetricsFromArticle(article), method: 'facebook_share_copy' };
+        }
       }
       if (attempt === 4 || attempt === 8) window.scrollBy({ top: 700, behavior: 'instant' });
       await sleep(700);
@@ -1282,14 +1360,17 @@
     const expected = String(payload?.content || '').trim();
     if (!expected) return { ok: false, final: true, error: 'Lịch sử không có nội dung để đối chiếu bài Facebook.' };
     let matchedArticleWaits = 0;
+    let shareCopyAttempted = false;
     for (let attempt = 0; attempt < 24; attempt += 1) {
       const matches = [];
       let matchingArticleVisible = false;
+      let matchingArticle = null;
       for (const article of document.querySelectorAll('[role="article"]')) {
         if (!isVisible(article) || isPendingArticle(article)) continue;
         const text = article.innerText || article.textContent || '';
         if (!captionOrSignatureMatches(text, expected, true)) continue;
         matchingArticleVisible = true;
+        matchingArticle ||= article;
         const ref = referenceFromArticle(article);
         if (ref.postId && ref.postUrl) {
           matches.push(ref);
@@ -1308,6 +1389,20 @@
       if (unique.length === 1) return { ok: true, ...unique[0], method: 'facebook_dom_match' };
       if (unique.length > 1) {
         return { ok: false, final: true, ambiguous: true, error: 'Facebook hiển thị nhiều bài trùng nội dung; cần chọn link thủ công để tránh gắn nhầm.' };
+      }
+      if (matchingArticle && !shareCopyAttempted && matchedArticleWaits >= 2) {
+        shareCopyAttempted = true;
+        showStatus('Đã thấy đúng bài. Đang bấm Chia sẻ → Sao chép liên kết...');
+        const copied = await copyPostReferenceFromShare(matchingArticle, payload);
+        if (copied.postUrl) {
+          showStatus('Đã sao chép đúng link bài Facebook.', 'success');
+          return { ok: true, ...copied, method: 'facebook_share_copy' };
+        }
+        return {
+          ok: false,
+          final: true,
+          error: 'Đã thấy đúng bài nhưng Facebook/Chrome không cho extension đọc link từ nút Chia sẻ. Hãy bấm Sao chép liên kết rồi dùng Dán clipboard & lưu.',
+        };
       }
       if (matchingArticleVisible && matchedArticleWaits < 6) {
         matchedArticleWaits += 1;

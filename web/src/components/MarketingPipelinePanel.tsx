@@ -403,6 +403,34 @@ function requestFacebookPostDataFromExtension(record: FacebookPublishedPost): Pr
   });
 }
 
+function readClipboardFromExtension(): Promise<string> {
+  const requestId = `clipboard_read_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      window.removeEventListener('message', handleResponse);
+      reject(new Error('Extension không phản hồi khi đọc clipboard'));
+    }, 6000);
+    function handleResponse(event: MessageEvent) {
+      if (event.source !== window) return;
+      const payload = event.data || {};
+      if (payload.source !== 'streal-tiktok-extension' || payload.type !== 'STREAL_CLIPBOARD_READ_RESPONSE' || payload.requestId !== requestId) return;
+      window.clearTimeout(timer);
+      window.removeEventListener('message', handleResponse);
+      if (!payload.ok || !String(payload.value || '').trim()) {
+        reject(new Error(payload.error || 'Clipboard chưa có link'));
+        return;
+      }
+      resolve(String(payload.value).trim());
+    }
+    window.addEventListener('message', handleResponse);
+    window.postMessage({
+      source: 'streal-web-page',
+      type: 'STREAL_CLIPBOARD_READ_REQUEST',
+      requestId,
+    }, window.location.origin);
+  });
+}
+
 function applyTargetRows(
   groupRows: GroupRow[],
   pageRows: FbPage[],
@@ -692,7 +720,7 @@ export function MarketingPipelinePanel({
         updateHistory(`Hoàn tất ${completed}/${total} · kiểm tra trạng thái từng nơi`, undefined, finalResults);
         void persistAssistedHistoryRef.current('done', finalResults).then((saved) => {
           saved.forEach((record) => {
-            if (record.target_type === 'group' && record.status !== 'success') return;
+            if (record.target_type === 'group' && record.delivery === 'pending_review') return;
             void resolveAndSyncFacebookPostRef.current(record, { automatic: true, allowManualFallback: false });
           });
         });
@@ -963,7 +991,7 @@ export function MarketingPipelinePanel({
     const response = await new Promise<ExtensionQueueResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.47 và tải lại trang.' });
+        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.48 và tải lại trang.' });
       }, 6000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -1024,7 +1052,7 @@ export function MarketingPipelinePanel({
       const response = await new Promise<ExtensionQueueResponse>((resolve) => {
         const timer = window.setTimeout(() => {
           window.removeEventListener('message', handleResponse);
-          resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.47 và tải lại trang.' });
+          resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Seeding Fsolution Bridge lên 0.1.48 và tải lại trang.' });
         }, 6000);
         function handleResponse(event: MessageEvent) {
           if (event.source !== window) return;
@@ -1324,7 +1352,7 @@ export function MarketingPipelinePanel({
     return new Promise<ExtensionMetricsResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.47 và tải lại tab F-Solution/Facebook.' });
+        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.48 và tải lại tab F-Solution/Facebook.' });
       }, 60000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -1350,7 +1378,7 @@ export function MarketingPipelinePanel({
     return new Promise<ExtensionReferenceResponse>((resolve) => {
       const timer = window.setTimeout(() => {
         window.removeEventListener('message', handleResponse);
-        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.47 và tải lại tab F-Solution/Facebook.' });
+        resolve({ ok: false, error: 'Extension không phản hồi. Hãy cập nhật bản 0.1.48 và tải lại tab F-Solution/Facebook.' });
       }, 60000);
       function handleResponse(event: MessageEvent) {
         if (event.source !== window) return;
@@ -1431,9 +1459,9 @@ export function MarketingPipelinePanel({
     }
   }
 
-  async function attachManualFacebookReference(record: FacebookPublishedPost) {
+  async function attachManualFacebookReference(record: FacebookPublishedPost, suppliedPostUrl = '') {
     if (facebookHistoryBusy[record.id]) return;
-    const postUrl = String(facebookManualLinks[record.id] || '').trim();
+    const postUrl = String(suppliedPostUrl || facebookManualLinks[record.id] || '').trim();
     if (!postUrl) {
       setLocalStatus('Dán permalink bài Facebook trước khi bấm Gắn link.');
       return;
@@ -1449,13 +1477,33 @@ export function MarketingPipelinePanel({
       if (!validation.ok) throw new Error(validation.error || 'Extension không mở được permalink Facebook');
       const verifiedPostUrl = validation.postUrl || postUrl;
       const resolved = await saveFacebookReference(record, verifiedPostUrl, 'manual_reference');
-      const browserResult = await saveFacebookBrowserData(resolved, validation);
       setFacebookManualLinks((prev) => ({ ...prev, [record.id]: '' }));
-      setLocalStatus(`Đã gắn permalink và lưu ${browserResult.count} comment từ giao diện Facebook.`);
+      try {
+        const browserResult = await saveFacebookBrowserData(resolved, validation);
+        setLocalStatus(`Đã gắn permalink, chuyển sang Đã đăng và lưu ${browserResult.count} comment.`);
+      } catch (syncError) {
+        setLocalStatus(`Đã gắn permalink và chuyển sang Đã đăng; chưa đọc được tương tác: ${formatFetchError(syncError)}`);
+      }
     } catch (error) {
       setLocalStatus(`Không gắn được permalink: ${formatFetchError(error)}`);
     } finally {
       setFacebookHistoryBusy((prev) => ({ ...prev, [record.id]: false }));
+    }
+  }
+
+  async function pasteAndAttachFacebookReference(record: FacebookPublishedPost) {
+    if (facebookHistoryBusy[record.id]) return;
+    try {
+      let postUrl = '';
+      try {
+        postUrl = String(await navigator.clipboard.readText()).trim();
+      } catch {}
+      if (!postUrl) postUrl = await readClipboardFromExtension();
+      if (!postUrl) throw new Error('Clipboard chưa có link Facebook');
+      setFacebookManualLinks((prev) => ({ ...prev, [record.id]: postUrl }));
+      await attachManualFacebookReference(record, postUrl);
+    } catch (error) {
+      setLocalStatus(`Không dán được link từ clipboard: ${formatFetchError(error)}`);
     }
   }
 
@@ -1552,6 +1600,7 @@ export function MarketingPipelinePanel({
     const errors: string[] = [];
     try {
       let resolved = forceReference ? { ...record, facebook_post_id: null, post_url: '' } : record;
+      let verifiedGroupData: ExtensionPostDataResponse | null = null;
       if (!resolved.facebook_post_id && resolved.target_type === 'page') {
         const response = await api(`/api/facebook-posts/${encodeURIComponent(record.id)}/resolve`, {
           method: 'POST',
@@ -1572,9 +1621,21 @@ export function MarketingPipelinePanel({
           ? await findFacebookReferenceWithExtension(record)
           : await requestFacebookReferenceFromExtension(record);
         if (extensionResult.ok && extensionResult.postUrl) {
+          let verifiedPostUrl = extensionResult.postUrl;
+          if (record.target_type === 'group') {
+            verifiedGroupData = await requestFacebookPostDataFromExtension({
+              ...record,
+              facebook_post_id: null,
+              post_url: verifiedPostUrl,
+            });
+            if (!verifiedGroupData.ok) {
+              throw new Error(verifiedGroupData.error || 'Extension chưa xác minh được nội dung permalink vừa tìm thấy');
+            }
+            verifiedPostUrl = verifiedGroupData.postUrl || verifiedPostUrl;
+          }
           resolved = await saveFacebookReference(
             record,
-            extensionResult.postUrl,
+            verifiedPostUrl,
             automatic ? 'auto_resolved' : 'manual_reference',
           );
           errors.length = 0;
@@ -1591,17 +1652,15 @@ export function MarketingPipelinePanel({
         return;
       }
 
-      if (automatic && resolved.target_type === 'group') {
-        return;
-      }
-
       let synced = resolved;
       let browserFallbackAttempted = false;
       let commentCount: number | null = null;
       if (resolved.target_type === 'group') {
         browserFallbackAttempted = true;
         try {
-          const browserResult = await fetchFacebookBrowserData(resolved);
+          const browserResult = verifiedGroupData
+            ? await saveFacebookBrowserData(resolved, verifiedGroupData)
+            : await fetchFacebookBrowserData(resolved);
           synced = browserResult.post;
           commentCount = browserResult.count;
         } catch (browserError) {
@@ -2420,6 +2479,13 @@ export function MarketingPipelinePanel({
                               placeholder="Dán permalink bài Facebook"
                               value={facebookManualLinks[row.facebookRecord.id] || ''}
                               onChange={(event) => setFacebookManualLinks((prev) => ({ ...prev, [row.facebookRecord!.id]: event.target.value }))}
+                              onPaste={(event) => {
+                                const postUrl = event.clipboardData.getData('text').trim();
+                                if (!postUrl) return;
+                                event.preventDefault();
+                                setFacebookManualLinks((prev) => ({ ...prev, [row.facebookRecord!.id]: postUrl }));
+                                window.setTimeout(() => void attachManualFacebookReference(row.facebookRecord!, postUrl), 0);
+                              }}
                               onKeyDown={(event) => {
                                 if (event.key === 'Enter') {
                                   event.preventDefault();
@@ -2432,7 +2498,14 @@ export function MarketingPipelinePanel({
                               disabled={!!facebookHistoryBusy[row.facebookRecord.id] || !String(facebookManualLinks[row.facebookRecord.id] || '').trim()}
                               onClick={() => void attachManualFacebookReference(row.facebookRecord!)}
                             >
-                              Gắn link
+                              Kiểm tra &amp; lưu link
+                            </button>
+                            <button
+                              type="button"
+                              disabled={!!facebookHistoryBusy[row.facebookRecord.id]}
+                              onClick={() => void pasteAndAttachFacebookReference(row.facebookRecord!)}
+                            >
+                              Dán clipboard &amp; lưu
                             </button>
                           </div>
                         ) : null}
