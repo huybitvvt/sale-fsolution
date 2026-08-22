@@ -9286,6 +9286,11 @@ def facebook_post_feed_sync(record_id):
     next_post_id = str(metrics.get('facebook_post_id') or row.get('facebook_post_id') or '').strip()
     if not next_post_url and feed_post:
         next_post_url = _facebook_candidate_url(row, feed_post)
+    if not next_post_url and next_post_id:
+        if row.get('target_type') == 'group' and row.get('target_id'):
+            next_post_url = _facebook_candidate_url(row, {'id': next_post_id})
+        else:
+            next_post_url = _facebook_post_url(next_post_id)
     if not next_post_id and next_post_url:
         raw_post_id = _facebook_post_id_from_url(next_post_url)
         id_candidates = _facebook_post_id_candidates({**row, 'facebook_post_id': raw_post_id, 'post_url': next_post_url}, next_post_url)

@@ -1168,6 +1168,7 @@
   }
 
   async function findNewPublishedPostReference() {
+    let shareCopyAttempted = false;
     for (let attempt = 0; attempt < 20; attempt += 1) {
       if (state.networkPendingReview || detectPostOutcome() === 'pending_review') {
         return { postId: '', postUrl: '', isPending: true };
@@ -1179,12 +1180,28 @@
           return { postId: currentPostId, postUrl: window.location.href, isPublished: true, ...engagementMetricsFromArticle(article) };
         }
       }
+      let matchingArticleForCopy = null;
       for (const article of document.querySelectorAll('[role="article"]')) {
         if (!isVisible(article) || !captionTextMatches(article.innerText || '', state.message)) continue;
         if (isPendingArticle(article)) {
           return { postId: '', postUrl: '', isPending: true };
         }
+        matchingArticleForCopy ||= article;
+        const articleReference = referenceFromArticle(article);
+        if (articleReference.postUrl) {
+          return { postId: articleReference.postId, postUrl: articleReference.postUrl, isPublished: true, ...engagementMetricsFromArticle(article) };
+        }
         for (const anchor of article.querySelectorAll(POST_REFERENCE_SELECTOR)) rememberPostReference(anchor.href, 120);
+      }
+      if (matchingArticleForCopy && !shareCopyAttempted) {
+        shareCopyAttempted = true;
+        const copied = await copyPostReferenceFromShare(matchingArticleForCopy, {
+          target_type: state.targetType,
+          target_id: state.groupId,
+        });
+        if (copied.postUrl) {
+          return { postId: copied.postId, postUrl: copied.postUrl, isPublished: true, ...engagementMetricsFromArticle(matchingArticleForCopy) };
+        }
       }
       for (const notice of document.querySelectorAll('[role="alert"], [role="status"]')) {
         if (!isVisible(notice)) continue;
@@ -1225,13 +1242,11 @@
       if (article) {
         const reference = referenceFromArticle(article);
         if (reference.postUrl) return { ok: true, ...reference, ...engagementMetricsFromArticle(article) };
-        if (attempt === 2) {
-          const copied = await copyPostReferenceFromShare(article, {
-            target_type: payload?.targetType,
-            target_id: payload?.targetId,
-          });
-          if (copied.postUrl) return { ok: true, ...copied, ...engagementMetricsFromArticle(article), method: 'facebook_share_copy' };
-        }
+        const copied = await copyPostReferenceFromShare(article, {
+          target_type: payload?.targetType,
+          target_id: payload?.targetId,
+        });
+        if (copied.postUrl) return { ok: true, ...copied, ...engagementMetricsFromArticle(article), method: 'facebook_share_copy' };
       }
       if (attempt === 4 || attempt === 8) window.scrollBy({ top: 700, behavior: 'instant' });
       await sleep(700);
@@ -1408,7 +1423,7 @@
       if (unique.length > 1) {
         return { ok: false, final: true, ambiguous: true, error: 'Facebook hiển thị nhiều bài trùng nội dung; cần chọn link thủ công để tránh gắn nhầm.' };
       }
-      if (matchingArticle && !shareCopyAttempted && matchedArticleWaits >= 2) {
+      if (matchingArticle && !shareCopyAttempted) {
         shareCopyAttempted = true;
         showStatus('Đã thấy đúng bài. Đang bấm Chia sẻ → Sao chép liên kết...');
         const copied = await copyPostReferenceFromShare(matchingArticle, payload);

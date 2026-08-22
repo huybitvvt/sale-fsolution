@@ -241,6 +241,23 @@ function facebookDestinationUrl(record: FacebookPublishedPost) {
     : `https://www.facebook.com/${encodeURIComponent(targetId)}`;
 }
 
+function facebookPostObjectId(value?: string | null) {
+  return String(value || '').trim().split('_').pop() || '';
+}
+
+function facebookRecordPostUrl(record?: FacebookPublishedPost | null) {
+  if (!record) return '';
+  const existing = String(record.post_url || '').trim();
+  if (existing) return existing;
+  const postId = String(record.facebook_post_id || '').trim();
+  const objectId = facebookPostObjectId(postId);
+  if (!objectId) return '';
+  if (record.target_type === 'group' && record.target_id) {
+    return `https://www.facebook.com/groups/${encodeURIComponent(record.target_id)}/posts/${encodeURIComponent(objectId)}/`;
+  }
+  return `https://www.facebook.com/${encodeURIComponent(postId || objectId)}`;
+}
+
 function facebookTargetUrl(target?: PublishTarget) {
   if (!target?.id) return '';
   return target.type === 'group'
@@ -1598,7 +1615,7 @@ export function MarketingPipelinePanel({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        post_url: extension.postUrl || record.post_url,
+        post_url: extension.postUrl || facebookRecordPostUrl(record),
         verified_content: extension.ok === true,
         reaction_count: extension.reactionCount,
         comment_count: extension.commentCount,
@@ -2700,61 +2717,67 @@ export function MarketingPipelinePanel({
                         )}
                       </td>
                       <td>
-                        {row.facebookRecord ? (
-                          <div className="facebook-history-actions">
-                            {row.facebookRecord.post_url
-                              ? <a href={row.facebookRecord.post_url} target="_blank" rel="noreferrer">Xem bài Facebook</a>
-                              : <a href={facebookDestinationUrl(row.facebookRecord)} target="_blank" rel="noreferrer">Mở nơi đăng</a>}
-                            <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id]} onClick={() => void attachFacebookReference(row.facebookRecord!)}>
-                              {facebookHistoryBusy[row.facebookRecord.id]
-                                ? 'Đang đồng bộ...'
-                                : row.facebookRecord.post_url && row.facebookRecord.status !== 'success'
-                                  ? 'Xác nhận link & bật tương tác'
-                                  : row.facebookRecord.post_url || row.facebookRecord.facebook_post_id ? 'Đồng bộ từ web' : 'Tìm link từ web'}
-                            </button>
-                            {!row.facebookRecord.post_url ? (
-                              <div className="facebook-manual-reference">
-                                <input
-                                  type="url"
-                                  inputMode="url"
-                                  aria-label={`Permalink Facebook cho ${row.facebookRecord.target_name || row.facebookRecord.target_id}`}
-                                  placeholder="Dán permalink bài Facebook"
-                                  value={facebookManualLinks[row.facebookRecord.id] || ''}
-                                  onChange={(event) => setFacebookManualLinks((prev) => ({ ...prev, [row.facebookRecord!.id]: event.target.value }))}
-                                  onPaste={(event) => {
-                                    const postUrl = event.clipboardData.getData('text').trim();
-                                    if (!postUrl) return;
-                                    event.preventDefault();
-                                    setFacebookManualLinks((prev) => ({ ...prev, [row.facebookRecord!.id]: postUrl }));
-                                    window.setTimeout(() => void attachManualFacebookReference(row.facebookRecord!, postUrl), 0);
-                                  }}
-                                  onKeyDown={(event) => {
-                                    if (event.key === 'Enter') {
+                        {row.facebookRecord ? (() => {
+                          const record = row.facebookRecord!;
+                          const postUrl = facebookRecordPostUrl(record);
+                          const hasReference = Boolean(postUrl || record.facebook_post_id);
+                          const showManualReference = !hasReference && record.status !== 'success';
+                          return (
+                            <div className="facebook-history-actions">
+                              {postUrl
+                                ? <a href={postUrl} target="_blank" rel="noreferrer">Xem bài Facebook</a>
+                                : <a href={facebookDestinationUrl(record)} target="_blank" rel="noreferrer">Mở nơi đăng</a>}
+                              <button type="button" disabled={!!facebookHistoryBusy[record.id]} onClick={() => void attachFacebookReference(record)}>
+                                {facebookHistoryBusy[record.id]
+                                  ? 'Đang đồng bộ...'
+                                  : postUrl && record.status !== 'success'
+                                    ? 'Xác nhận link & bật tương tác'
+                                    : hasReference ? 'Đồng bộ từ web' : 'Tìm link từ web'}
+                              </button>
+                              {showManualReference ? (
+                                <div className="facebook-manual-reference">
+                                  <input
+                                    type="url"
+                                    inputMode="url"
+                                    aria-label={`Permalink Facebook cho ${record.target_name || record.target_id}`}
+                                    placeholder="Dán permalink bài Facebook"
+                                    value={facebookManualLinks[record.id] || ''}
+                                    onChange={(event) => setFacebookManualLinks((prev) => ({ ...prev, [record.id]: event.target.value }))}
+                                    onPaste={(event) => {
+                                      const pastedPostUrl = event.clipboardData.getData('text').trim();
+                                      if (!pastedPostUrl) return;
                                       event.preventDefault();
-                                      void attachManualFacebookReference(row.facebookRecord!);
-                                    }
-                                  }}
-                                />
-                                <button
-                                  type="button"
-                                  disabled={!!facebookHistoryBusy[row.facebookRecord.id] || !String(facebookManualLinks[row.facebookRecord.id] || '').trim()}
-                                  onClick={() => void attachManualFacebookReference(row.facebookRecord!)}
-                                >
-                                  Kiểm tra &amp; lưu link
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={!!facebookHistoryBusy[row.facebookRecord.id]}
-                                  onClick={() => void pasteAndAttachFacebookReference(row.facebookRecord!)}
-                                >
-                                  Dán clipboard &amp; lưu
-                                </button>
-                              </div>
-                            ) : null}
-                            <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void refreshFacebookMetrics(row.facebookRecord!)}>Cập nhật tương tác</button>
-                            <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void collectFacebookComments(row.facebookRecord!)}>{facebookHistoryBusy[row.facebookRecord.id] ? 'Đang lấy comment...' : 'Xem comment'}</button>
-                          </div>
-                        ) : (
+                                      setFacebookManualLinks((prev) => ({ ...prev, [record.id]: pastedPostUrl }));
+                                      window.setTimeout(() => void attachManualFacebookReference(record, pastedPostUrl), 0);
+                                    }}
+                                    onKeyDown={(event) => {
+                                      if (event.key === 'Enter') {
+                                        event.preventDefault();
+                                        void attachManualFacebookReference(record);
+                                      }
+                                    }}
+                                  />
+                                  <button
+                                    type="button"
+                                    disabled={!!facebookHistoryBusy[record.id] || !String(facebookManualLinks[record.id] || '').trim()}
+                                    onClick={() => void attachManualFacebookReference(record)}
+                                  >
+                                    Kiểm tra &amp; lưu link
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={!!facebookHistoryBusy[record.id]}
+                                    onClick={() => void pasteAndAttachFacebookReference(record)}
+                                  >
+                                    Dán clipboard &amp; lưu
+                                  </button>
+                                </div>
+                              ) : null}
+                              <button type="button" disabled={!!facebookHistoryBusy[record.id] || !hasReference} onClick={() => void refreshFacebookMetrics(record)}>Cập nhật tương tác</button>
+                              <button type="button" disabled={!!facebookHistoryBusy[record.id] || !hasReference} onClick={() => void collectFacebookComments(record)}>{facebookHistoryBusy[record.id] ? 'Đang lấy comment...' : 'Xem comment'}</button>
+                            </div>
+                          );
+                        })() : (
                           <div className="facebook-history-actions">
                             {row.targets[0] && facebookTargetUrl(row.targets[0])
                               ? <a href={facebookTargetUrl(row.targets[0])} target="_blank" rel="noreferrer">Mở nơi đăng</a>
