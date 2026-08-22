@@ -454,6 +454,103 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertEqual(payload['count'], 1)
         store_mock.assert_called_once()
 
+    def test_feed_sync_merges_feed_when_direct_metrics_are_partial(self):
+        row = {
+            'id': 'history-1',
+            'facebook_post_id': '1041963898446955_1041994178443927',
+            'target_type': 'group',
+            'target_id': '1041963898446955',
+            'target_name': 'test nhom',
+            'post_url': 'https://www.facebook.com/groups/1041963898446955/posts/1041994178443927/',
+            'content': 'test\n\nhi\n\n#guitar #guitarsaithanh',
+            'status': 'success',
+        }
+        client = Mock(last_graph_error='')
+        client.get_post_engagement.return_value = {
+            'facebook_post_id': row['facebook_post_id'],
+            'post_url': row['post_url'],
+            'reaction_count': 1,
+            'comment_count': None,
+            'share_count': 0,
+        }
+        client.get_posts.return_value = [{
+            'id': row['facebook_post_id'],
+            'message': row['content'],
+            'permalink_url': row['post_url'],
+            'created_time': '2026-08-22T10:00:00Z',
+            'reactions': {'summary': {'total_count': 1}},
+            'comments': {
+                'summary': {'total_count': 3},
+                'data': [{'id': 'comment-1', 'message': 'ib', 'from': {'id': 'user-1', 'name': 'Phạm Dương'}}],
+            },
+            'shares': {'count': 0},
+        }]
+        client.get_post_comments.return_value = None
+
+        with backend.app.test_request_context(
+            '/api/facebook-posts/history-1/feed-sync',
+            method='POST',
+            json={'include_comments': True},
+        ):
+            with (
+                patch.object(backend, '_facebook_post_by_id', return_value=row),
+                patch.object(backend, 'get_api', return_value=client),
+                patch.object(backend, '_current_staff', return_value={'id': 'sale-1'}),
+                patch.object(backend, '_save_facebook_post', side_effect=lambda value: (value, '')) as save_mock,
+                patch.object(backend, '_store_post_comment_rows', return_value=('local', '')),
+            ):
+                response = backend.facebook_post_feed_sync('history-1')
+
+        payload = response.get_json()
+        self.assertTrue(payload['ok'])
+        saved = save_mock.call_args.args[0]
+        self.assertEqual(saved['reaction_count'], 1)
+        self.assertEqual(saved['comment_count'], 3)
+        self.assertEqual(saved['share_count'], 0)
+        self.assertEqual(saved['total_interactions'], 4)
+        self.assertEqual(payload['total_count'], 3)
+
+    def test_manual_reference_can_be_verified_by_feed_without_extension(self):
+        row = {
+            'id': 'history-1',
+            'target_type': 'group',
+            'target_id': '123',
+            'target_name': 'test nhom',
+            'content': 'Bài test cần gắn link',
+            'status': 'pending',
+        }
+        client = Mock(last_graph_error='')
+        client.get_posts.return_value = [{
+            'id': '123_456',
+            'message': row['content'],
+            'permalink_url': 'https://www.facebook.com/groups/123/posts/456/',
+            'created_time': '2026-08-22T10:00:00Z',
+        }]
+
+        with backend.app.test_request_context(
+            '/api/facebook-posts/history-1/reference',
+            method='POST',
+            json={
+                'post_url': 'https://www.facebook.com/groups/123/posts/456/',
+                'delivery': 'manual_reference',
+                'verify_with_feed': True,
+            },
+        ):
+            with (
+                patch.object(backend, '_facebook_post_by_id', return_value=row),
+                patch.object(backend, 'get_api', return_value=client),
+                patch.object(backend, '_save_facebook_post', side_effect=lambda value: (value, '')) as save_mock,
+            ):
+                response = backend.facebook_post_reference_save('history-1')
+
+        payload = response.get_json()
+        self.assertTrue(payload['ok'])
+        saved = save_mock.call_args.args[0]
+        self.assertEqual(saved['facebook_post_id'], '123_456')
+        self.assertEqual(saved['post_url'], 'https://www.facebook.com/groups/123/posts/456/')
+        self.assertEqual(saved['status'], 'success')
+        self.assertEqual(saved['delivery'], 'manual_reference')
+
     def test_success_requires_post_id_or_confirmed_published_outcome(self):
         saved = []
 

@@ -8789,6 +8789,43 @@ def _public_comment_rows(rows: list[dict]) -> list[dict]:
     return public_comments
 
 
+def _fetch_facebook_feed_for_post_row(row: dict, limit: int = 100) -> tuple[list[dict] | None, dict, str]:
+    target_id = str(row.get('target_id') or '').strip()
+    page_id = str(row.get('facebook_page_id') or (target_id if row.get('target_type') == 'page' else '')).strip()
+    page_token = _page_token_from_cache(page_id) if page_id else ''
+    client = get_api(DEFAULT_GROUP if page_id else target_id)
+    try:
+        posts = client.get_page_posts(page_id, page_token, limit=limit) if page_id else client.get_posts(limit=limit)
+    except Exception as exc:
+        return None, {'page_id': page_id, 'page_token': page_token, 'client': client}, str(exc)
+    if posts is None:
+        detail = getattr(client, 'last_graph_error', '') or 'Facebook không trả feed để đồng bộ bài này.'
+        return None, {'page_id': page_id, 'page_token': page_token, 'client': client}, detail
+    return posts, {'page_id': page_id, 'page_token': page_token, 'client': client}, ''
+
+
+def _verify_facebook_reference_with_feed(row: dict, post_url: str) -> tuple[dict | None, str]:
+    target_id = str(row.get('target_id') or '').strip()
+    if not target_id:
+        return None, 'Bài chưa có nơi đăng để xác minh link.'
+    link_group_id = _facebook_group_id_from_url(post_url)
+    target_group_id = target_id if row.get('target_type') == 'group' else ''
+    if link_group_id and target_group_id and link_group_id != target_group_id:
+        return None, f'Link thuộc Group {link_group_id}, không khớp nơi đăng {target_group_id}.'
+    posts, _, error = _fetch_facebook_feed_for_post_row(row, limit=100)
+    if posts is None:
+        return None, error
+    candidate_row = {
+        **row,
+        'facebook_post_id': _facebook_post_id_from_url(post_url) or row.get('facebook_post_id'),
+        'post_url': post_url,
+    }
+    matched = _find_facebook_feed_post_by_reference(candidate_row, posts)
+    if not matched:
+        return None, 'Feed Facebook không có bài khớp permalink này.'
+    return matched, ''
+
+
 @app.route('/api/facebook-posts/<record_id>/resolve', methods=['POST'])
 def facebook_post_reference_resolve(record_id):
     row = _facebook_post_by_id(record_id)
@@ -8862,8 +8899,15 @@ def facebook_post_reference_save(record_id):
     post_url = str(body.get('post_url') or '').strip()
     if not _is_facebook_post_url(post_url):
         return jsonify({'ok': False, 'error': 'Link chưa phải link bài viết hợp lệ trên facebook.com'}), 400
-    if body.get('verified_content') is not True:
-        return jsonify({'ok': False, 'error': 'Extension chưa xác nhận nội dung của permalink này; không lưu để tránh gắn nhầm bài.'}), 400
+    verified_content = body.get('verified_content') is True
+    feed_verified_post = None
+    if not verified_content and body.get('verify_with_feed') is True:
+        feed_verified_post, verify_error = _verify_facebook_reference_with_feed(row, post_url)
+        if not feed_verified_post:
+            return jsonify({'ok': False, 'error': verify_error or 'Không xác minh được permalink bằng feed Facebook.'}), 400
+        verified_content = True
+    if not verified_content:
+        return jsonify({'ok': False, 'error': 'Chưa xác nhận nội dung của permalink này; không lưu để tránh gắn nhầm bài.'}), 400
     raw_post_id = _facebook_post_id_from_url(post_url)
     if not raw_post_id:
         return jsonify({'ok': False, 'error': 'Facebook chưa chuyển link chia sẻ thành permalink có Post ID.'}), 400
@@ -8873,6 +8917,10 @@ def facebook_post_reference_save(record_id):
     target_group_id = str(row.get('target_id') or '').strip() if row.get('target_type') == 'group' else ''
     if link_group_id and target_group_id and link_group_id != target_group_id:
         return jsonify({'ok': False, 'error': f'Link thuộc Group {link_group_id}, không khớp nơi đăng {target_group_id}.'}), 400
+    if feed_verified_post:
+        feed_post_id = str(feed_verified_post.get('id') or '').strip()
+        if feed_post_id and not _facebook_post_ids_match(feed_post_id, post_id):
+            return jsonify({'ok': False, 'error': 'Permalink không khớp bài tìm thấy trong feed Facebook.'}), 400
     previous_post_id = str(row.get('facebook_post_id') or '').strip()
     previous_object_id = previous_post_id.rsplit('_', 1)[-1] if previous_post_id else ''
     replacing_reference = bool(previous_object_id) and previous_object_id != raw_post_id
@@ -9144,18 +9192,43 @@ def facebook_post_feed_sync(record_id):
 
     metrics = client.get_post_engagement(candidates, access_token=page_token or None) if candidates else None
     feed_post = None
-    if not metrics or not any(metrics.get(key) is not None for key in ('reaction_count', 'comment_count', 'share_count')):
-        try:
-            posts = client.get_page_posts(page_id, page_token, limit=100) if page_id else client.get_posts(limit=100)
-        except Exception:
-            posts = None
+    feed_warning = ''
+    needs_feed = (
+        not metrics
+        or any(metrics.get(key) is None for key in ('reaction_count', 'comment_count', 'share_count'))
+        or include_comments
+        or not metrics.get('post_url')
+        or not metrics.get('facebook_post_id')
+    )
+    if needs_feed:
+        posts, feed_context, feed_error = _fetch_facebook_feed_for_post_row(row, limit=100)
+        if feed_context.get('client'):
+            client = feed_context['client']
+            page_token = str(feed_context.get('page_token') or page_token or '')
+            page_id = str(feed_context.get('page_id') or page_id or '')
         if posts is None:
-            detail = getattr(client, 'last_graph_error', '') or 'Facebook không trả feed để đồng bộ bài này.'
-            return jsonify({'ok': False, 'error': detail}), 502
-        feed_post = _find_facebook_feed_post_by_reference(row, posts)
-        if not feed_post:
-            return jsonify({'ok': False, 'error': 'Feed Facebook không có bài khớp link/Post ID này.'}), 404
-        metrics = _facebook_metrics_from_feed_post(feed_post)
+            known_direct = metrics and any(metrics.get(key) is not None for key in ('reaction_count', 'comment_count', 'share_count'))
+            if not known_direct:
+                return jsonify({'ok': False, 'error': feed_error or 'Facebook không trả feed để đồng bộ bài này.'}), 502
+            feed_warning = feed_error or 'Facebook chưa trả feed để lấy đủ comment/share.'
+        else:
+            feed_post = _find_facebook_feed_post_by_reference(row, posts)
+            if not feed_post:
+                known_direct = metrics and any(metrics.get(key) is not None for key in ('reaction_count', 'comment_count', 'share_count'))
+                if not known_direct:
+                    return jsonify({'ok': False, 'error': 'Feed Facebook không có bài khớp link/Post ID này.'}), 404
+                feed_warning = 'Feed Facebook chưa có bài khớp link/Post ID này, dùng số trực tiếp đã đọc được.'
+            else:
+                feed_metrics = _facebook_metrics_from_feed_post(feed_post)
+                metrics = {
+                    **(metrics or {}),
+                    **{
+                        key: value
+                        for key, value in feed_metrics.items()
+                        if value not in (None, '')
+                        and (not metrics or metrics.get(key) in (None, ''))
+                    },
+                }
 
     reaction_count = _facebook_dom_metric(metrics.get('reaction_count'))
     comment_count = _facebook_dom_metric(metrics.get('comment_count'))
@@ -9223,7 +9296,7 @@ def facebook_post_feed_sync(record_id):
         'total_count': total_comment_count,
         'storage': storage,
     }
-    warnings = [item for item in (warning, comment_warning) if item]
+    warnings = [item for item in (warning, feed_warning, comment_warning) if item]
     if warnings:
         payload['warning'] = ' | '.join(warnings)
     return jsonify(payload)
