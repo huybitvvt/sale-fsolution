@@ -56,6 +56,13 @@ test('allows one contained short caption only for scoped Facebook search', () =>
   assert.equal(textOrSignatureMatches('bán đàn gita giá 1tr bán đàn gita giá 1tr', 'bán đàn gita giá 1tr', true), false);
 });
 
+test('allows a trusted permalink modal to verify a short caption', () => {
+  const modalText = 'Bài viết của Phạm Dương test Phạm Dương 1 giờ test hi #guitar #guitarsaithanh 1 1 Phù hợp nhất Phạm Dương ib';
+  const expected = 'test\n\nhi\n\n#guitar #guitarsaithanh';
+  assert.equal(textOrSignatureMatches(modalText, expected, true), true);
+  assert.equal(textOrSignatureMatches(modalText, expected, false), false);
+});
+
 test('matches history whose hashtag block was appended twice', () => {
   const actual = 'e xin test ạ\n\nib\n\n#guitar\n#guitarsaithanh';
   const duplicated = `${actual}\n\n#guitar\n#guitarsaithanh`;

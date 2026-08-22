@@ -1332,6 +1332,13 @@ async function collectFacebookPostData(request, sender) {
     return response || { ok: false, error: 'Extension không đọc được dữ liệu bài Facebook.' };
   } catch (error) {
     return { ok: false, error: error?.message || String(error) };
+  } finally {
+    if (tab?.id) {
+      try { await chrome.tabs.remove(tab.id); } catch {}
+    }
+    if (sender?.tab?.id) {
+      try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
+    }
   }
 }
 

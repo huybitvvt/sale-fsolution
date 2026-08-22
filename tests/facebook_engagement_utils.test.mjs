@@ -31,3 +31,11 @@ test('keeps missing counters unknown instead of inventing zero', () => {
     share_count: null,
   });
 });
+
+test('extracts counters when Facebook puts text labels before numbers', () => {
+  assert.deepEqual(extractEngagementMetrics(['Thích 1', 'Bình luận 1', 'Chia sẻ 2']), {
+    reaction_count: 1,
+    comment_count: 1,
+    share_count: 2,
+  });
+});

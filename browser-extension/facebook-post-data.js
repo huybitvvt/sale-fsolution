@@ -47,6 +47,7 @@
           /(\d[\d.,\s]*(?:k|m|b|nghìn|nghin|triệu|trieu|tr)?)\s*(?:người\s*)?(?:đã\s*)?(?:bày tỏ cảm xúc|cảm xúc)/i,
           /(\d[\d.,\s]*(?:k|m|b)?)\s*reactions?/i,
           /(?:bày tỏ cảm xúc|cảm xúc|reactions?|yêu thích|love)\s*[:·-]?\s*(\d[\d.,\s]*(?:k|m|b|nghìn|nghin|triệu|trieu|tr)?)/i,
+          /(?:thích|like|xem ai đã bày tỏ cảm xúc|see who reacted)[^\d]{0,80}(\d[\d.,\s]*(?:k|m|b|nghìn|nghin|triệu|trieu|tr)?)/i,
           /(?:xem ai đã bày tỏ cảm xúc|see who reacted)[^\d]*(\d[\d.,\s]*(?:k|m|b)?)/i,
         ]);
       }
@@ -54,12 +55,14 @@
         commentCount = metricFromText(text, [
           /(\d[\d.,\s]*(?:k|m|b|nghìn|nghin|triệu|trieu|tr)?)\s*(?:lượt\s*)?bình luận/i,
           /(\d[\d.,\s]*(?:k|m|b)?)\s*comments?/i,
+          /(?:bình luận|comments?)[^\d]{0,80}(\d[\d.,\s]*(?:k|m|b|nghìn|nghin|triệu|trieu|tr)?)/i,
         ]);
       }
       if (shareCount === null) {
         shareCount = metricFromText(text, [
           /(\d[\d.,\s]*(?:k|m|b|nghìn|nghin|triệu|trieu|tr)?)\s*(?:lượt\s*)?chia sẻ/i,
           /(\d[\d.,\s]*(?:k|m|b)?)\s*shares?/i,
+          /(?:chia sẻ|shares?)[^\d]{0,80}(\d[\d.,\s]*(?:k|m|b|nghìn|nghin|triệu|trieu|tr)?)/i,
         ]);
       }
     }

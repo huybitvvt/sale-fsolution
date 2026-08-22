@@ -43,9 +43,16 @@
     reaction_count: [
       new RegExp(`${COUNT}\\s*(?:lượt\\s*)?(?:bày tỏ cảm xúc|cảm xúc|reactions?)`, 'i'),
       new RegExp(`(?:tất cả cảm xúc|all reactions|reactions?)\\s*[:·-]?\\s*${COUNT}`, 'i'),
+      new RegExp(`(?:thích|like|xem ai đã bày tỏ cảm xúc|see who reacted)[^\\d]{0,80}${COUNT}`, 'i'),
     ],
-    comment_count: [new RegExp(`${COUNT}\\s*(?:bình luận|comments?)`, 'i')],
-    share_count: [new RegExp(`${COUNT}\\s*(?:lượt\\s*)?(?:chia sẻ|shares?)`, 'i')],
+    comment_count: [
+      new RegExp(`${COUNT}\\s*(?:bình luận|comments?)`, 'i'),
+      new RegExp(`(?:bình luận|comments?)[^\\d]{0,80}${COUNT}`, 'i'),
+    ],
+    share_count: [
+      new RegExp(`${COUNT}\\s*(?:lượt\\s*)?(?:chia sẻ|shares?)`, 'i'),
+      new RegExp(`(?:chia sẻ|shares?)[^\\d]{0,80}${COUNT}`, 'i'),
+    ],
   };
 
   function extractEngagementMetrics(values) {

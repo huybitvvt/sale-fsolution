@@ -37,3 +37,15 @@ test('extracts a reaction count when Facebook puts the number after the control 
     shareCount: null,
   });
 });
+
+test('extracts counters when Facebook renders the label before the number', () => {
+  assert.deepEqual(extractMetricCounts([
+    'Thích 1',
+    'Bình luận 1',
+    'Chia sẻ 2',
+  ]), {
+    reactionCount: 1,
+    commentCount: 1,
+    shareCount: 2,
+  });
+});

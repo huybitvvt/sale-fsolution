@@ -1482,13 +1482,16 @@
     }
   }
 
-  function facebookPostContentMatches(article, expectedContent) {
+  function facebookPostContentMatches(article, expectedContent, allowContainedShort = false) {
     const expected = String(expectedContent || '').trim();
     if (!expected) return false;
-    if (captionOrSignatureMatches(article.innerText || article.textContent || '', expected)) return true;
+    if (captionOrSignatureMatches(article.innerText || article.textContent || '', expected, allowContainedShort)) return true;
     return [...article.querySelectorAll('[dir="auto"]')]
       .filter((node) => !node.querySelector('[dir="auto"]'))
-      .some((node) => captionTextMatches(node.innerText || node.textContent || '', expected));
+      .some((node) => (
+        captionTextMatches(node.innerText || node.textContent || '', expected)
+        || (allowContainedShort && captionOrSignatureMatches(node.innerText || node.textContent || '', expected, true))
+      ));
   }
 
   function nearbyFacebookMetricCount(root, phrases) {
@@ -1524,14 +1527,16 @@
     return Boolean(leftId && rightId && leftId === rightId);
   }
 
+  function isFacebookPostDialog(node) {
+    if (!node || node.getAttribute?.('role') !== 'dialog') return false;
+    const heading = normalize(node.querySelector('[role="heading"], h1, h2, h3')?.innerText || '');
+    return /(?:bài viết của|post by|post from)/i.test(heading);
+  }
+
   function visibleFacebookPostContainers() {
     const articles = [...document.querySelectorAll('[role="article"]')].filter(isVisible);
     const postDialogs = [...document.querySelectorAll('[role="dialog"]')]
-      .filter((dialog) => {
-        if (!isVisible(dialog)) return false;
-        const heading = normalize(dialog.querySelector('[role="heading"], h1, h2, h3')?.innerText || '');
-        return /(?:bài viết của|post by|post from)/i.test(heading);
-      });
+      .filter((dialog) => isVisible(dialog) && isFacebookPostDialog(dialog));
     return [...articles, ...postDialogs.filter((dialog) => !articles.includes(dialog))];
   }
 
@@ -1540,6 +1545,10 @@
     const expectedContent = String(payload?.content || '').trim();
     const targetType = payload?.target_type === 'page' ? 'page' : 'group';
     const expectedTargetId = String(payload?.target_id || '').trim();
+    const currentPostId = postIdFromUrl(window.location.href);
+    const trustedOpenedPermalink = Boolean(expectedPostId && currentPostId && (
+      facebookPostIdsMatch(currentPostId, expectedPostId) || isOpaqueFacebookShareId(expectedPostId)
+    ));
     if (targetType === 'group' && expectedTargetId) {
       const openedGroupId = groupIdFromUrl(window.location.href);
       if (!openedGroupId || openedGroupId !== expectedTargetId) {
@@ -1559,8 +1568,17 @@
       postArticle = containers.find((article) => [...article.querySelectorAll('a[href]')]
         .some((anchor) => facebookPostIdsMatch(postIdFromUrl(anchor.href || ''), expectedPostId)));
       matchedByReference = Boolean(postArticle);
+      if (!postArticle && trustedOpenedPermalink) {
+        postArticle = containers.find(isFacebookPostDialog)
+          || containers.find((article) => /bình luận|comment|chia sẻ|share/i.test(normalize(article.innerText || article.textContent || '')));
+        matchedByReference = Boolean(postArticle);
+      }
       if (!postArticle && expectedContent) {
-        postArticle = containers.find((article) => captionOrSignatureMatches(article.innerText || article.textContent || '', expectedContent));
+        postArticle = containers.find((article) => captionOrSignatureMatches(
+          article.innerText || article.textContent || '',
+          expectedContent,
+          trustedOpenedPermalink,
+        ));
         matchedByContent = Boolean(postArticle);
       }
       if (!postArticle) {
@@ -1570,12 +1588,8 @@
       await sleep(500);
     }
     if (!postArticle) return { ok: false, final: true, error: 'Extension không nhận diện được khung bài viết Facebook.' };
-    const currentPostId = postIdFromUrl(window.location.href);
-    const trustedOpenedPermalink = Boolean(expectedPostId && currentPostId && (
-      facebookPostIdsMatch(currentPostId, expectedPostId) || isOpaqueFacebookShareId(expectedPostId)
-    ));
     let warning = '';
-    if (!facebookPostContentMatches(postArticle, expectedContent)) {
+    if (!facebookPostContentMatches(postArticle, expectedContent, trustedOpenedPermalink)) {
       // A Group permalink can be a perfectly valid post ID while still pointing
       // at somebody else's post. Caption agreement is mandatory for Group data.
       if (targetType === 'group' || (!matchedByReference && !matchedByContent && !trustedOpenedPermalink)) {
@@ -1614,7 +1628,7 @@
       .filter((article) => {
         const aria = normalize(article.getAttribute('aria-label') || '');
         if (/bình luận của|comment by/i.test(aria)) return true;
-        if (!postArticle.contains(article) || facebookPostContentMatches(article, expectedContent)) return false;
+        if (!postArticle.contains(article) || facebookPostContentMatches(article, expectedContent, trustedOpenedPermalink)) return false;
         return /(?:trả lời|reply)/i.test(normalize(article.innerText || article.textContent || ''));
       });
     const comments = commentArticles
