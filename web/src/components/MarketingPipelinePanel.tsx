@@ -1940,6 +1940,67 @@ export function MarketingPipelinePanel({
     }
   }
 
+  function renderFacebookCommentsPanel(record?: FacebookPublishedPost) {
+    const recordId = record?.id || expandedComments;
+    const comments = facebookComments[recordId] || [];
+    const commentMetric = record?.comment_count ?? comments.length;
+    const metrics = record
+      ? `❤️ ${record.reaction_count ?? '—'} · 💬 ${commentMetric || '—'} · ↗ ${record.share_count ?? '—'}`
+      : '';
+    return (
+      <div className="facebook-comment-results">
+        <div className="seeding-history-head">
+          <div>
+            <div className="seeding-section-title">Comment bài đã chọn</div>
+            <small>{record?.target_name || record?.target_id || 'Facebook'}{metrics ? ` · ${metrics}` : ''}</small>
+          </div>
+          <button type="button" className="table-icon-button" aria-label="Đóng khung comment" onClick={() => setExpandedComments('')}>×</button>
+        </div>
+        <div className="data-table-wrap">
+          <table className="data-table">
+            <thead><tr><th>Người comment</th><th>Nội dung</th><th>Facebook</th><th>SĐT</th><th>Nguồn SĐT</th><th>Trạng thái</th><th>Hành động</th></tr></thead>
+            <tbody>
+              {comments.length ? comments.map((comment, index) => {
+                const replyKey = comment.comment_id || `${comment.author_name || 'comment'}-${comment.created_time || index}`;
+                return (
+                  <tr key={replyKey}>
+                    <td>{comment.author_name || 'Ẩn danh'}</td>
+                    <td>{comment.message || '—'}</td>
+                    <td>{comment.author_url ? <a href={comment.author_url} target="_blank" rel="noreferrer">Mở profile</a> : '—'}</td>
+                    <td>{comment.phones?.join(', ') || comment.phone || 'Chưa có'}</td>
+                    <td>{comment.phones_auto?.length ? 'Facebook Comment' : comment.phones_manual?.length ? 'Nhân viên cập nhật' : 'Chưa có'}</td>
+                    <td>{comment.lead_exists ? 'Đã có trong CRM' : comment.phones?.length || comment.phone ? 'Có SĐT' : 'Lead tiềm năng · chưa có SĐT'}</td>
+                    <td>
+                      <div className="facebook-comment-actions">
+                        <button type="button" disabled={comment.lead_exists || !!facebookHistoryBusy[`comment-${comment.comment_id}`]} onClick={() => void createLeadFromFacebookComment(recordId, comment)}>{comment.lead_exists ? 'Đã có CRM' : 'Tạo Lead'}</button>
+                        <input
+                          type="text"
+                          placeholder="Trả lời comment..."
+                          value={facebookReplyDrafts[replyKey] || ''}
+                          onChange={(event) => setFacebookReplyDrafts((prev) => ({ ...prev, [replyKey]: event.target.value }))}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault();
+                              void replyToFacebookComment(record, comment);
+                            }
+                          }}
+                        />
+                        <button type="button" disabled={!!facebookReplyBusy[replyKey]} onClick={() => void replyToFacebookComment(record, comment)}>
+                          {facebookReplyBusy[replyKey] ? 'Đang gửi...' : 'Trả lời'}
+                        </button>
+                        {facebookReplyStatus[replyKey] ? <small>{facebookReplyStatus[replyKey]}</small> : null}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              }) : <tr><td colSpan={7} className="table-empty">Bài chưa có comment hoặc Facebook không cấp quyền đọc.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
   function appendHistory(row: Omit<HistoryRow, 'id' | 'createdAt'>) {
     setHistory((prev) => [{
       ...row,
@@ -2512,133 +2573,133 @@ export function MarketingPipelinePanel({
             </thead>
             <tbody>
               {filteredHistory.length ? filteredHistory.map((row) => (
-                <tr key={row.id}>
-                  <td>
-                    <b>{row.title || 'Bài đăng'}</b>
-                    <small>{formatDateTime(row.createdAt)}</small>
-                  </td>
-                  <td>{row.content || '-'}</td>
-                  <td>
-                    {row.mediaUrls?.length
-                      ? `${row.mediaUrls.length} media`
-                      : row.mediaUrl ? <a href={row.mediaUrl} target="_blank" rel="noreferrer">Mở link</a> : '-'}
-                  </td>
-                  <td>{formatDateTime(row.scheduledAt)}</td>
-                  <td>{row.targets.length ? row.targets.map((target) => target.name).join(', ') : '-'}</td>
-                  <td>{row.publisherName || 'Không xác định'}</td>
-                  <td>
-                    <span className={historyPillClass(row.status)}>
-                      {displayPostStatus(row.status)}
-                    </span>
-                    {row.targets.length ? (
-                      <small className="publish-error-detail">
-                        {row.targets.map((target) => {
-                          const result = row.results?.find((item) => targetKey(item.target) === targetKey(target));
-                          return `${target.name}: ${deliveryLabel(result)}`;
-                        }).join(' · ')}
-                      </small>
-                    ) : null}
-                    {canCancelFacebookQueue(row) ? (
-                      <button
-                        type="button"
-                        className="seeding-history-cancel"
-                        disabled={!!cancellingHistoryIds[row.id]}
-                        onClick={() => void cancelAssistedGroupQueue(row)}
-                      >
-                        {cancellingHistoryIds[row.id]
-                          ? 'Đang hủy...'
-                          : row.queueRequestId ? 'Hủy hàng đợi cũ' : 'Hủy hàng đợi'}
-                      </button>
-                    ) : null}
-                  </td>
-                  <td>
-                    {row.facebookRecord ? (
-                      <div className="facebook-metrics-cell">
-                        <span>❤️ {row.facebookRecord.reaction_count ?? '—'}</span>
-                        <span>💬 {row.facebookRecord.comment_count ?? '—'}</span>
-                        <span>↗ {row.facebookRecord.share_count ?? '—'}</span>
-                        <b>Tổng {row.facebookRecord.total_interactions ?? '—'}</b>
-                        <small>{row.facebookRecord.legacy_unverified
-                          ? 'Lịch sử cũ chưa có link/Post ID'
-                          : row.facebookRecord.metrics_updated_at ? `Cập nhật ${formatDateTime(row.facebookRecord.metrics_updated_at)}` : 'Chưa đồng bộ'}</small>
-                      </div>
-                    ) : (
-                      <div className="facebook-metrics-cell">
-                        <span>❤️ —</span>
-                        <span>💬 —</span>
-                        <span>↗ —</span>
-                        <b>Tổng —</b>
-                        <small>Chưa đồng bộ</small>
-                      </div>
-                    )}
-                  </td>
-                  <td>
-                    {row.facebookRecord ? (
-                      <div className="facebook-history-actions">
-                        {row.facebookRecord.post_url
-                          ? <a href={row.facebookRecord.post_url} target="_blank" rel="noreferrer">Xem bài Facebook</a>
-                          : <a href={facebookDestinationUrl(row.facebookRecord)} target="_blank" rel="noreferrer">Mở nơi đăng</a>}
-                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id]} onClick={() => void attachFacebookReference(row.facebookRecord!)}>
-                          {facebookHistoryBusy[row.facebookRecord.id]
-                            ? 'Đang đồng bộ...'
-                            : row.facebookRecord.post_url && row.facebookRecord.status !== 'success'
-                              ? 'Xác nhận link & bật tương tác'
-                              : row.facebookRecord.post_url || row.facebookRecord.facebook_post_id ? 'Đồng bộ từ web' : 'Tìm link từ web'}
-                        </button>
-                        {!row.facebookRecord.post_url ? (
-                          <div className="facebook-manual-reference">
-                            <input
-                              type="url"
-                              inputMode="url"
-                              aria-label={`Permalink Facebook cho ${row.facebookRecord.target_name || row.facebookRecord.target_id}`}
-                              placeholder="Dán permalink bài Facebook"
-                              value={facebookManualLinks[row.facebookRecord.id] || ''}
-                              onChange={(event) => setFacebookManualLinks((prev) => ({ ...prev, [row.facebookRecord!.id]: event.target.value }))}
-                              onPaste={(event) => {
-                                const postUrl = event.clipboardData.getData('text').trim();
-                                if (!postUrl) return;
-                                event.preventDefault();
-                                setFacebookManualLinks((prev) => ({ ...prev, [row.facebookRecord!.id]: postUrl }));
-                                window.setTimeout(() => void attachManualFacebookReference(row.facebookRecord!, postUrl), 0);
-                              }}
-                              onKeyDown={(event) => {
-                                if (event.key === 'Enter') {
-                                  event.preventDefault();
-                                  void attachManualFacebookReference(row.facebookRecord!);
-                                }
-                              }}
-                            />
-                            <button
-                              type="button"
-                              disabled={!!facebookHistoryBusy[row.facebookRecord.id] || !String(facebookManualLinks[row.facebookRecord.id] || '').trim()}
-                              onClick={() => void attachManualFacebookReference(row.facebookRecord!)}
-                            >
-                              Kiểm tra &amp; lưu link
+                    <tr key={row.id}>
+                      <td>
+                        <b>{row.title || 'Bài đăng'}</b>
+                        <small>{formatDateTime(row.createdAt)}</small>
+                      </td>
+                      <td>{row.content || '-'}</td>
+                      <td>
+                        {row.mediaUrls?.length
+                          ? `${row.mediaUrls.length} media`
+                          : row.mediaUrl ? <a href={row.mediaUrl} target="_blank" rel="noreferrer">Mở link</a> : '-'}
+                      </td>
+                      <td>{formatDateTime(row.scheduledAt)}</td>
+                      <td>{row.targets.length ? row.targets.map((target) => target.name).join(', ') : '-'}</td>
+                      <td>{row.publisherName || 'Không xác định'}</td>
+                      <td>
+                        <span className={historyPillClass(row.status)}>
+                          {displayPostStatus(row.status)}
+                        </span>
+                        {row.targets.length ? (
+                          <small className="publish-error-detail">
+                            {row.targets.map((target) => {
+                              const result = row.results?.find((item) => targetKey(item.target) === targetKey(target));
+                              return `${target.name}: ${deliveryLabel(result)}`;
+                            }).join(' · ')}
+                          </small>
+                        ) : null}
+                        {canCancelFacebookQueue(row) ? (
+                          <button
+                            type="button"
+                            className="seeding-history-cancel"
+                            disabled={!!cancellingHistoryIds[row.id]}
+                            onClick={() => void cancelAssistedGroupQueue(row)}
+                          >
+                            {cancellingHistoryIds[row.id]
+                              ? 'Đang hủy...'
+                              : row.queueRequestId ? 'Hủy hàng đợi cũ' : 'Hủy hàng đợi'}
+                          </button>
+                        ) : null}
+                      </td>
+                      <td>
+                        {row.facebookRecord ? (
+                          <div className="facebook-metrics-cell">
+                            <span>❤️ {row.facebookRecord.reaction_count ?? '—'}</span>
+                            <span>💬 {row.facebookRecord.comment_count ?? '—'}</span>
+                            <span>↗ {row.facebookRecord.share_count ?? '—'}</span>
+                            <b>Tổng {row.facebookRecord.total_interactions ?? '—'}</b>
+                            <small>{row.facebookRecord.legacy_unverified
+                              ? 'Lịch sử cũ chưa có link/Post ID'
+                              : row.facebookRecord.metrics_updated_at ? `Cập nhật ${formatDateTime(row.facebookRecord.metrics_updated_at)}` : 'Chưa đồng bộ'}</small>
+                          </div>
+                        ) : (
+                          <div className="facebook-metrics-cell">
+                            <span>❤️ —</span>
+                            <span>💬 —</span>
+                            <span>↗ —</span>
+                            <b>Tổng —</b>
+                            <small>Chưa đồng bộ</small>
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        {row.facebookRecord ? (
+                          <div className="facebook-history-actions">
+                            {row.facebookRecord.post_url
+                              ? <a href={row.facebookRecord.post_url} target="_blank" rel="noreferrer">Xem bài Facebook</a>
+                              : <a href={facebookDestinationUrl(row.facebookRecord)} target="_blank" rel="noreferrer">Mở nơi đăng</a>}
+                            <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id]} onClick={() => void attachFacebookReference(row.facebookRecord!)}>
+                              {facebookHistoryBusy[row.facebookRecord.id]
+                                ? 'Đang đồng bộ...'
+                                : row.facebookRecord.post_url && row.facebookRecord.status !== 'success'
+                                  ? 'Xác nhận link & bật tương tác'
+                                  : row.facebookRecord.post_url || row.facebookRecord.facebook_post_id ? 'Đồng bộ từ web' : 'Tìm link từ web'}
                             </button>
-                            <button
-                              type="button"
-                              disabled={!!facebookHistoryBusy[row.facebookRecord.id]}
-                              onClick={() => void pasteAndAttachFacebookReference(row.facebookRecord!)}
-                            >
-                              Dán clipboard &amp; lưu
+                            {!row.facebookRecord.post_url ? (
+                              <div className="facebook-manual-reference">
+                                <input
+                                  type="url"
+                                  inputMode="url"
+                                  aria-label={`Permalink Facebook cho ${row.facebookRecord.target_name || row.facebookRecord.target_id}`}
+                                  placeholder="Dán permalink bài Facebook"
+                                  value={facebookManualLinks[row.facebookRecord.id] || ''}
+                                  onChange={(event) => setFacebookManualLinks((prev) => ({ ...prev, [row.facebookRecord!.id]: event.target.value }))}
+                                  onPaste={(event) => {
+                                    const postUrl = event.clipboardData.getData('text').trim();
+                                    if (!postUrl) return;
+                                    event.preventDefault();
+                                    setFacebookManualLinks((prev) => ({ ...prev, [row.facebookRecord!.id]: postUrl }));
+                                    window.setTimeout(() => void attachManualFacebookReference(row.facebookRecord!, postUrl), 0);
+                                  }}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                      event.preventDefault();
+                                      void attachManualFacebookReference(row.facebookRecord!);
+                                    }
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  disabled={!!facebookHistoryBusy[row.facebookRecord.id] || !String(facebookManualLinks[row.facebookRecord.id] || '').trim()}
+                                  onClick={() => void attachManualFacebookReference(row.facebookRecord!)}
+                                >
+                                  Kiểm tra &amp; lưu link
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={!!facebookHistoryBusy[row.facebookRecord.id]}
+                                  onClick={() => void pasteAndAttachFacebookReference(row.facebookRecord!)}
+                                >
+                                  Dán clipboard &amp; lưu
+                                </button>
+                              </div>
+                            ) : null}
+                            <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void refreshFacebookMetrics(row.facebookRecord!)}>Cập nhật tương tác</button>
+                            <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void collectFacebookComments(row.facebookRecord!)}>{facebookHistoryBusy[row.facebookRecord.id] ? 'Đang lấy comment...' : 'Xem comment'}</button>
+                          </div>
+                        ) : (
+                          <div className="facebook-history-actions">
+                            {row.targets[0] && facebookTargetUrl(row.targets[0])
+                              ? <a href={facebookTargetUrl(row.targets[0])} target="_blank" rel="noreferrer">Mở nơi đăng</a>
+                              : null}
+                            <button type="button" disabled={!!facebookHistoryBusy[row.id]} onClick={() => void autoAttachHistoryReference(row)}>
+                              {facebookHistoryBusy[row.id] ? 'Đang tìm...' : 'Tìm link từ web'}
                             </button>
                           </div>
-                        ) : null}
-                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void refreshFacebookMetrics(row.facebookRecord!)}>Cập nhật tương tác</button>
-                        <button type="button" disabled={!!facebookHistoryBusy[row.facebookRecord.id] || (!row.facebookRecord.facebook_post_id && !row.facebookRecord.post_url)} onClick={() => void collectFacebookComments(row.facebookRecord!)}>Xem comment</button>
-                      </div>
-                    ) : (
-                      <div className="facebook-history-actions">
-                        {row.targets[0] && facebookTargetUrl(row.targets[0])
-                          ? <a href={facebookTargetUrl(row.targets[0])} target="_blank" rel="noreferrer">Mở nơi đăng</a>
-                          : null}
-                        <button type="button" disabled={!!facebookHistoryBusy[row.id]} onClick={() => void autoAttachHistoryReference(row)}>
-                          {facebookHistoryBusy[row.id] ? 'Đang tìm...' : 'Tìm link từ web'}
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
+                        )}
+                      </td>
+                    </tr>
               )) : (
                 <tr>
                   <td colSpan={9} className="table-empty">
@@ -2650,51 +2711,17 @@ export function MarketingPipelinePanel({
           </table>
         </div>
         {expandedComments ? (
-          <div className="facebook-comment-results">
-            <div className="seeding-history-head">
-              <div className="seeding-section-title">Comment / khách hàng tiềm năng</div>
-              <button type="button" className="table-icon-button" onClick={() => setExpandedComments('')}>Đóng</button>
-            </div>
-            <div className="data-table-wrap">
-              <table className="data-table">
-                <thead><tr><th>Người comment</th><th>Nội dung</th><th>Facebook</th><th>SĐT</th><th>Nguồn SĐT</th><th>Trạng thái</th><th>Hành động</th></tr></thead>
-                <tbody>
-                  {(facebookComments[expandedComments] || []).length ? (facebookComments[expandedComments] || []).map((comment, index) => {
-                    const replyKey = comment.comment_id || `${comment.author_name || 'comment'}-${comment.created_time || index}`;
-                    return (
-                      <tr key={replyKey}>
-                        <td>{comment.author_name || 'Ẩn danh'}</td>
-                        <td>{comment.message || '—'}</td>
-                        <td>{comment.author_url ? <a href={comment.author_url} target="_blank" rel="noreferrer">Mở profile</a> : '—'}</td>
-                        <td>{comment.phones?.join(', ') || comment.phone || 'Chưa có'}</td>
-                        <td>{comment.phones_auto?.length ? 'Facebook Comment' : comment.phones_manual?.length ? 'Nhân viên cập nhật' : 'Chưa có'}</td>
-                        <td>{comment.lead_exists ? 'Đã có trong CRM' : comment.phones?.length || comment.phone ? 'Có SĐT' : 'Lead tiềm năng · chưa có SĐT'}</td>
-                        <td>
-                          <div className="facebook-comment-actions">
-                            <button type="button" disabled={comment.lead_exists || !!facebookHistoryBusy[`comment-${comment.comment_id}`]} onClick={() => void createLeadFromFacebookComment(expandedComments, comment)}>{comment.lead_exists ? 'Đã có CRM' : 'Tạo Lead'}</button>
-                            <input
-                              type="text"
-                              placeholder="Trả lời comment..."
-                              value={facebookReplyDrafts[replyKey] || ''}
-                              onChange={(event) => setFacebookReplyDrafts((prev) => ({ ...prev, [replyKey]: event.target.value }))}
-                              onKeyDown={(event) => {
-                                if (event.key === 'Enter') {
-                                  event.preventDefault();
-                                  void replyToFacebookComment(expandedFacebookRecord, comment);
-                                }
-                              }}
-                            />
-                            <button type="button" disabled={!!facebookReplyBusy[replyKey]} onClick={() => void replyToFacebookComment(expandedFacebookRecord, comment)}>
-                              {facebookReplyBusy[replyKey] ? 'Đang gửi...' : 'Trả lời'}
-                            </button>
-                            {facebookReplyStatus[replyKey] ? <small>{facebookReplyStatus[replyKey]}</small> : null}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  }) : <tr><td colSpan={7} className="table-empty">Bài chưa có comment hoặc Facebook không cấp quyền đọc.</td></tr>}
-                </tbody>
-              </table>
+          <div
+            className="facebook-comment-modal-backdrop"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Comment bài đã chọn"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setExpandedComments('');
+            }}
+          >
+            <div className="facebook-comment-modal">
+              {renderFacebookCommentsPanel(expandedFacebookRecord)}
             </div>
           </div>
         ) : null}
