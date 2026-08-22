@@ -8719,6 +8719,17 @@ def _facebook_edge_total(edge) -> int | None:
         return None
 
 
+def _facebook_post_object_id(value: str) -> str:
+    value = str(value or '').strip()
+    return value.rsplit('_', 1)[-1] if value else ''
+
+
+def _facebook_post_ids_match(left: str, right: str) -> bool:
+    left_obj = _facebook_post_object_id(left)
+    right_obj = _facebook_post_object_id(right)
+    return bool(left_obj and right_obj and left_obj == right_obj)
+
+
 def _facebook_candidate_url(row: dict, post: dict) -> str:
     permalink = str(post.get('permalink_url') or '').strip()
     if permalink:
@@ -8728,6 +8739,54 @@ def _facebook_candidate_url(row: dict, post: dict) -> str:
     if row.get('target_type') == 'group' and row.get('target_id') and object_id:
         return f"https://www.facebook.com/groups/{row['target_id']}/posts/{object_id}/"
     return _facebook_post_url(post_id)
+
+
+def _facebook_metrics_from_feed_post(post: dict) -> dict:
+    reactions = _facebook_edge_total(post.get('reactions'))
+    comments = _facebook_edge_total(post.get('comments'))
+    shares_raw = (post.get('shares') or {}).get('count') if isinstance(post.get('shares'), dict) else post.get('shares')
+    try:
+        shares = int(shares_raw) if shares_raw is not None else None
+    except (TypeError, ValueError):
+        shares = None
+    return {
+        'facebook_post_id': str(post.get('id') or '').strip(),
+        'post_url': str(post.get('permalink_url') or '').strip(),
+        'reaction_count': reactions,
+        'comment_count': comments,
+        'share_count': shares,
+    }
+
+
+def _find_facebook_feed_post_by_reference(row: dict, posts: list[dict]) -> dict | None:
+    candidates = _facebook_post_id_candidates(row)
+    for post in posts or []:
+        if not isinstance(post, dict):
+            continue
+        post_ids = [
+            str(post.get('id') or '').strip(),
+            _facebook_post_id_from_url(str(post.get('permalink_url') or '')),
+        ]
+        if any(_facebook_post_ids_match(candidate, post_id) for candidate in candidates for post_id in post_ids):
+            return post
+    if not candidates:
+        candidate, _ = _find_facebook_post_candidate(row, posts)
+        return candidate
+    return None
+
+
+def _public_comment_rows(rows: list[dict]) -> list[dict]:
+    existing_comment_ids = {
+        str(lead.get('comment_id') or '')
+        for bucket in _leads.values() for lead in (bucket or [])
+        if str(lead.get('comment_id') or '')
+    }
+    public_comments = []
+    for item in rows:
+        public = _public_comment_row(item)
+        public['lead_exists'] = str(public.get('comment_id') or '') in existing_comment_ids
+        public_comments.append(public)
+    return public_comments
 
 
 @app.route('/api/facebook-posts/<record_id>/resolve', methods=['POST'])
@@ -9060,6 +9119,108 @@ def facebook_post_browser_sync(record_id):
         'post': updated,
         'comments': public_comments,
         'count': len(rows),
+        'storage': storage,
+    }
+    warnings = [item for item in (warning, comment_warning) if item]
+    if warnings:
+        payload['warning'] = ' | '.join(warnings)
+    return jsonify(payload)
+
+
+@app.route('/api/facebook-posts/<record_id>/feed-sync', methods=['POST'])
+def facebook_post_feed_sync(record_id):
+    row = _facebook_post_by_id(record_id)
+    if not row:
+        return jsonify({'ok': False, 'error': 'Không tìm thấy bài Facebook'}), 404
+    target_id = str(row.get('target_id') or '').strip()
+    if not target_id:
+        return jsonify({'ok': False, 'error': 'Bài chưa có nơi đăng để đối chiếu feed Facebook'}), 400
+    body = request.get_json(silent=True) or {}
+    include_comments = body.get('include_comments') is True
+    page_id = str(row.get('facebook_page_id') or (target_id if row.get('target_type') == 'page' else '')).strip()
+    page_token = _page_token_from_cache(page_id) if page_id else ''
+    client = get_api(DEFAULT_GROUP if page_id else target_id)
+    candidates = _facebook_post_id_candidates(row)
+
+    metrics = client.get_post_engagement(candidates, access_token=page_token or None) if candidates else None
+    feed_post = None
+    if not metrics or not any(metrics.get(key) is not None for key in ('reaction_count', 'comment_count', 'share_count')):
+        try:
+            posts = client.get_page_posts(page_id, page_token, limit=100) if page_id else client.get_posts(limit=100)
+        except Exception:
+            posts = None
+        if posts is None:
+            detail = getattr(client, 'last_graph_error', '') or 'Facebook không trả feed để đồng bộ bài này.'
+            return jsonify({'ok': False, 'error': detail}), 502
+        feed_post = _find_facebook_feed_post_by_reference(row, posts)
+        if not feed_post:
+            return jsonify({'ok': False, 'error': 'Feed Facebook không có bài khớp link/Post ID này.'}), 404
+        metrics = _facebook_metrics_from_feed_post(feed_post)
+
+    reaction_count = _facebook_dom_metric(metrics.get('reaction_count'))
+    comment_count = _facebook_dom_metric(metrics.get('comment_count'))
+    share_count = _facebook_dom_metric(metrics.get('share_count'))
+    known = [value for value in (reaction_count, comment_count, share_count) if value is not None]
+    if not known:
+        return jsonify({'ok': False, 'error': 'Facebook có bài nhưng chưa trả số reaction/comment/share.'}), 502
+
+    next_post_url = str(metrics.get('post_url') or row.get('post_url') or '').strip()
+    next_post_id = str(metrics.get('facebook_post_id') or row.get('facebook_post_id') or '').strip()
+    if not next_post_url and feed_post:
+        next_post_url = _facebook_candidate_url(row, feed_post)
+    if not next_post_id and next_post_url:
+        raw_post_id = _facebook_post_id_from_url(next_post_url)
+        id_candidates = _facebook_post_id_candidates({**row, 'facebook_post_id': raw_post_id, 'post_url': next_post_url}, next_post_url)
+        next_post_id = id_candidates[0] if id_candidates else raw_post_id
+
+    updated, warning = _save_facebook_post({
+        **row,
+        'facebook_post_id': next_post_id or row.get('facebook_post_id'),
+        'post_url': next_post_url or row.get('post_url') or '',
+        'status': 'success',
+        'delivery': 'feed_sync',
+        'error_message': '',
+        'reaction_count': reaction_count,
+        'comment_count': comment_count,
+        'share_count': share_count,
+        'total_interactions': sum(known),
+        'metrics_updated_at': _utc_iso(),
+        'published_at': row.get('published_at') or (feed_post or {}).get('created_time') or _utc_iso(),
+    })
+
+    comments_payload = []
+    total_comment_count = comment_count or 0
+    if include_comments:
+        loaded = None
+        if next_post_id:
+            try:
+                loaded = client.get_post_comments(next_post_id, limit=500, access_token=page_token or None)
+            except Exception:
+                loaded = None
+        if loaded and isinstance(loaded, dict):
+            comments_payload = loaded.get('comments') or []
+            total_comment_count = int(loaded.get('total_count') or len(comments_payload) or total_comment_count)
+        if not comments_payload and feed_post:
+            comments_payload = ((feed_post.get('comments') or {}).get('data') or []) if isinstance(feed_post.get('comments'), dict) else []
+
+    post = {
+        'id': next_post_id or str(updated.get('facebook_post_id') or ''),
+        'message': row.get('content') or '',
+        'permalink_url': next_post_url or row.get('post_url') or '',
+        '_page_id': page_id,
+        '_group_id': '' if page_id else target_id,
+        '_page_name': row.get('target_name') or '',
+        '_group_name': row.get('target_name') or '',
+    }
+    rows = _flatten_facebook_comment_rows(post, comments_payload, [], _utc_iso(), _current_staff()) if comments_payload else []
+    storage, comment_warning = _store_post_comment_rows(rows)
+    payload = {
+        'ok': True,
+        'source': 'facebook_feed_sync',
+        'post': updated,
+        'comments': _public_comment_rows(rows),
+        'count': len(rows),
+        'total_count': total_comment_count,
         'storage': storage,
     }
     warnings = [item for item in (warning, comment_warning) if item]

@@ -542,6 +542,18 @@ export function MarketingPipelinePanel({
     }
   }
 
+  function upsertFacebookPost(post?: FacebookPublishedPost | null) {
+    if (!post?.id) return;
+    const postId = post.id;
+    setFacebookPosts((prev) => [post, ...prev.filter((item) => item.id !== postId)]);
+  }
+
+  function upsertFacebookPosts(posts: FacebookPublishedPost[]) {
+    if (!posts.length) return;
+    const savedIds = new Set(posts.map((item) => item.id));
+    setFacebookPosts((prev) => [...posts, ...prev.filter((item) => !savedIds.has(item.id))]);
+  }
+
   useEffect(() => {
     const persistedTargets = new Set(
       facebookPosts
@@ -579,8 +591,7 @@ export function MarketingPipelinePanel({
         const payload = await response.json().catch(() => ({ posts: [] }));
         const saved = safeList<FacebookPublishedPost>(payload.posts);
         if (response.ok && payload.ok && saved.length) {
-          const savedIds = new Set(saved.map((item) => item.id));
-          setFacebookPosts((prev) => [...saved, ...prev.filter((item) => !savedIds.has(item.id))]);
+          upsertFacebookPosts(saved);
           return;
         }
         recoveryKeys.forEach((key) => localFacebookHistoryRecoveryRef.current.delete(key));
@@ -615,8 +626,7 @@ export function MarketingPipelinePanel({
       const payload = await response.json().catch(() => ({ posts: [] }));
       const saved = safeList<FacebookPublishedPost>(payload.posts);
       if (response.ok && payload.ok && saved.length) {
-        const savedIds = new Set(saved.map((item) => item.id));
-        setFacebookPosts((prev) => [...saved, ...prev.filter((item) => !savedIds.has(item.id))]);
+        upsertFacebookPosts(saved);
       } else {
         await loadFacebookHistory();
       }
@@ -1407,7 +1417,7 @@ export function MarketingPipelinePanel({
     const response = await api(`/api/facebook-posts/${encodeURIComponent(record.id)}/refresh`, { method: 'POST' });
     const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
     if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không cập nhật được tương tác');
-    setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? payload.post : item));
+    upsertFacebookPost(payload.post as FacebookPublishedPost);
     return payload.post as FacebookPublishedPost;
   }
 
@@ -1432,7 +1442,7 @@ export function MarketingPipelinePanel({
     });
     const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
     if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không gắn được link bài Facebook');
-    setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? payload.post : item));
+    upsertFacebookPost(payload.post as FacebookPublishedPost);
     return payload.post as FacebookPublishedPost;
   }
 
@@ -1459,7 +1469,12 @@ export function MarketingPipelinePanel({
         const browserResult = await saveFacebookBrowserData(resolved, validation);
         setLocalStatus(`Đã gắn permalink, chuyển sang Đã đăng và lưu ${browserResult.count} comment.`);
       } catch (syncError) {
-        setLocalStatus(`Đã gắn permalink và chuyển sang Đã đăng; chưa đọc được tương tác: ${formatFetchError(syncError)}`);
+        try {
+          const feedResult = await saveFacebookFeedData(resolved, true);
+          setLocalStatus(`Đã gắn permalink và đồng bộ từ feed Facebook: ${feedResult.post.total_interactions ?? 0} tương tác, ${feedResult.count} comment.`);
+        } catch (feedError) {
+          setLocalStatus(`Đã gắn permalink và chuyển sang Đã đăng; chưa đọc được tương tác: extension: ${formatFetchError(syncError)} · feed: ${formatFetchError(feedError)}`);
+        }
       }
     } catch (error) {
       setLocalStatus(`Không gắn được permalink: ${formatFetchError(error)}`);
@@ -1500,9 +1515,25 @@ export function MarketingPipelinePanel({
     const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
     if (!response.ok || !payload.ok) throw new Error(payload.error || 'Server không lưu được dữ liệu extension');
     const comments = safeList<StoredPostComment>(payload.comments);
-    setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? payload.post : item));
+    upsertFacebookPost(payload.post as FacebookPublishedPost);
     setFacebookComments((prev) => ({ ...prev, [record.id]: comments }));
     return { post: payload.post as FacebookPublishedPost, count: Number(payload.count || comments.length), comments };
+  }
+
+  async function saveFacebookFeedData(record: FacebookPublishedPost, includeComments = true) {
+    const response = await api(`/api/facebook-posts/${encodeURIComponent(record.id)}/feed-sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ include_comments: includeComments }),
+    });
+    const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
+    if (!response.ok || !payload.ok) throw new Error(payload.error || 'Server không đồng bộ được từ feed Facebook');
+    const comments = safeList<StoredPostComment>(payload.comments);
+    const post = payload.post as FacebookPublishedPost;
+    upsertFacebookPost(post);
+    setFacebookComments((prev) => ({ ...prev, [record.id]: comments, [post.id]: comments }));
+    const count = Number(payload.total_count ?? payload.count ?? comments.length);
+    return { post, count, comments };
   }
 
   async function restoreFacebookRecordFromHistory(row: HistoryRow): Promise<FacebookPublishedPost | null> {
@@ -1530,8 +1561,7 @@ export function MarketingPipelinePanel({
     const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
     const saved = safeList<FacebookPublishedPost>(payload.posts);
     if (!response.ok || !payload.ok || !saved.length) return null;
-    const savedIds = new Set(saved.map((item) => item.id));
-    setFacebookPosts((prev) => [...saved, ...prev.filter((item) => !savedIds.has(item.id))]);
+    upsertFacebookPosts(saved);
     return saved[0];
   }
 
@@ -1555,14 +1585,23 @@ export function MarketingPipelinePanel({
   }
 
   async function fetchFacebookBrowserData(record: FacebookPublishedPost) {
-    if (!record.post_url) throw new Error('Bài chưa có permalink Facebook để extension mở.');
-    const extension = await requestFacebookPostDataFromExtension(record);
-    if (!extension.ok) throw new Error(extension.error || 'Extension không đọc được dữ liệu bài Facebook');
-    let resolved = record;
-    if (!resolved.facebook_post_id && extension.postUrl) {
-      resolved = await saveFacebookReference(resolved, extension.postUrl, 'extension_reference');
+    if (!record.post_url && !record.facebook_post_id) throw new Error('Bài chưa có permalink/Post ID Facebook để đồng bộ.');
+    try {
+      if (!record.post_url) throw new Error('Bài chưa có permalink Facebook để extension mở.');
+      const extension = await requestFacebookPostDataFromExtension(record);
+      if (!extension.ok) throw new Error(extension.error || 'Extension không đọc được dữ liệu bài Facebook');
+      let resolved = record;
+      if (!resolved.facebook_post_id && extension.postUrl) {
+        resolved = await saveFacebookReference(resolved, extension.postUrl, 'extension_reference');
+      }
+      return saveFacebookBrowserData(resolved, extension);
+    } catch (extensionError) {
+      try {
+        return await saveFacebookFeedData(record, true);
+      } catch (feedError) {
+        throw new Error(`extension: ${formatFetchError(extensionError)} · feed: ${formatFetchError(feedError)}`);
+      }
     }
-    return saveFacebookBrowserData(resolved, extension);
   }
 
   async function resolveAndSyncFacebookPost(
@@ -1588,7 +1627,7 @@ export function MarketingPipelinePanel({
         const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
         if (response.ok && payload.ok && payload.post) {
           resolved = payload.post as FacebookPublishedPost;
-          setFacebookPosts((prev) => prev.map((item) => item.id === record.id ? resolved : item));
+          upsertFacebookPost(resolved);
         } else if (payload.error) {
           errors.push(String(payload.error));
         }
