@@ -1,5 +1,5 @@
 (() => {
-  const CONTROL_TEXT = /^(thích|like|trả lời|reply|chuyển tiếp|forward|gửi|send|đã xem|seen|active now|đang hoạt động|nhập tin nhắn|message|messenger|aa)$/i;
+  const CONTROL_TEXT = /^(thích|like|trả lời|reply|chuyển tiếp|forward|gửi|send|đã xem|seen|active now|đang hoạt động|nhập tin nhắn|soạn|soạn tin nhắn|compose|write a message|type a message|message|messenger|aa)$/i;
   const SYSTEM_TEXT = /^(các bạn không phải là bạn bè|you are not connected|sống tại|làm việc tại|học tại|đã gửi|sent|đã xem|seen|giờ đây, các bạn|now you can|nhập, tin nhắn do|type, message from|bắt đầu đoạn chat|started a chat|đã tham gia|joined|đã rời|left)\b/i;
   const MENU_TEXT = /^(đoạn chat|chats|tất cả|chưa đọc|nhóm|cộng đồng|community|trang cá nhân|profile|tắt thông báo|mute notifications|tìm kiếm|search|thông tin về đoạn chat|chat info|tùy chỉnh đoạn chat|customize chat|file phương tiện, file và liên kết|media, files and links|quyền riêng tư và hỗ trợ|privacy and support|mở rộng đoạn chat|xem chi tiết|more|notifications)$/i;
 

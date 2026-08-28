@@ -415,13 +415,17 @@ function isMessengerSystemText(value?: string, conversation?: MessengerConversat
     'profile',
     'quyền riêng tư và hỗ trợ',
     'search',
+    'soạn',
+    'soạn tin nhắn',
     'tất cả',
     'tắt thông báo',
     'thông báo',
     'thông tin về đoạn chat',
+    'type a message',
     'trang cá nhân',
     'tùy chỉnh đoạn chat',
     'unread',
+    'write a message',
   ].includes(text)) return true;
   return [
     'các bạn không phải là bạn bè',
