@@ -31,6 +31,7 @@ type CommentPayload = {
 
 type MessengerMessage = {
   message_key?: string;
+  conversation_key?: string;
   conversation_id?: string;
   message_id?: string;
   sender_id?: string;
@@ -42,10 +43,12 @@ type MessengerMessage = {
   phones?: string[];
   display_time?: string;
   sent_at?: string;
+  owner_key?: string;
   captured_at?: string;
 };
 
 type MessengerConversation = {
+  conversation_key?: string;
   conversation_id?: string;
   conversation_url?: string;
   title?: string;
@@ -55,9 +58,19 @@ type MessengerConversation = {
   phones?: string[];
   message_count?: number;
   latest_message_at?: string;
+  captured_by_staff_id?: string;
   captured_by_staff_name?: string;
+  captured_by_staff_username?: string;
+  owner_key?: string;
   captured_at?: string;
   updated_at?: string;
+};
+
+type MessengerStaffOption = {
+  id: string;
+  name?: string;
+  username?: string;
+  role?: string;
 };
 
 type MessengerSyncResult = {
@@ -370,6 +383,10 @@ function messengerDisplayTime(row: MessengerMessage) {
   return row.display_time || messengerTime(row.sent_at || row.captured_at);
 }
 
+function messengerConversationKey(row: MessengerConversation | MessengerMessage) {
+  return row.conversation_key || row.conversation_id || '';
+}
+
 function isMessengerSystemText(value?: string) {
   const text = String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
   if (!text) return true;
@@ -454,6 +471,9 @@ export function CommentLeadInboxPanel() {
   const [messengerConversations, setMessengerConversations] = useState<MessengerConversation[]>([]);
   const [messengerMessages, setMessengerMessages] = useState<MessengerMessage[]>([]);
   const [selectedMessengerId, setSelectedMessengerId] = useState('');
+  const [messengerStaffOptions, setMessengerStaffOptions] = useState<MessengerStaffOption[]>([]);
+  const [messengerStaffFilter, setMessengerStaffFilter] = useState('');
+  const [messengerCanManage, setMessengerCanManage] = useState(false);
   const [messengerBusy, setMessengerBusy] = useState(false);
 
   const processedSet = useMemo(() => new Set(processedIds), [processedIds]);
@@ -566,12 +586,13 @@ export function CommentLeadInboxPanel() {
     await loadComments();
   }, [loadComments, loadWorkflow]);
 
-  const loadMessenger = useCallback(async (conversationId = selectedMessengerId) => {
+  const loadMessenger = useCallback(async (conversationKey = selectedMessengerId, staffFilter = messengerStaffFilter) => {
     setMessengerBusy(true);
     setStatus('Đang tải lịch sử Messenger...');
     try {
       const params = new URLSearchParams({ limit: '200' });
-      if (conversationId) params.set('conversation_id', conversationId);
+      if (conversationKey) params.set('conversation_key', conversationKey);
+      if (staffFilter) params.set('staff_id', staffFilter);
       const r = await api(`/api/messenger/conversations?${params.toString()}`);
       const data = await r.json().catch(() => ({ ok: false, error: `Server lỗi ${r.status}` }));
       if (!r.ok || !data.ok) {
@@ -580,12 +601,15 @@ export function CommentLeadInboxPanel() {
       }
       const conversations = Array.isArray(data.conversations) ? data.conversations as MessengerConversation[] : [];
       const messages = Array.isArray(data.messages) ? data.messages as MessengerMessage[] : [];
+      const staff = Array.isArray(data.staff) ? data.staff as MessengerStaffOption[] : [];
       setMessengerConversations(conversations);
       setMessengerMessages(messages);
+      setMessengerCanManage(Boolean(data.can_manage));
+      setMessengerStaffOptions(staff);
       setSelectedMessengerId((current) => {
-        if (conversationId) return conversationId;
-        if (current && conversations.some((item) => item.conversation_id === current)) return current;
-        return conversations[0]?.conversation_id || '';
+        if (conversationKey && conversations.some((item) => messengerConversationKey(item) === conversationKey)) return conversationKey;
+        if (current && conversations.some((item) => messengerConversationKey(item) === current)) return current;
+        return conversations[0] ? messengerConversationKey(conversations[0]) : '';
       });
       setStatus(data.warning ? `⚠️ ${data.warning}` : conversations.length ? `✅ Đã tải ${conversations.length} hội thoại Messenger` : 'Chưa có lịch sử Messenger. Mở một hội thoại rồi bấm đồng bộ.');
     } catch {
@@ -593,7 +617,7 @@ export function CommentLeadInboxPanel() {
     } finally {
       setMessengerBusy(false);
     }
-  }, [selectedMessengerId]);
+  }, [messengerStaffFilter, selectedMessengerId]);
 
   useEffect(() => {
     void loadWorkflow();
@@ -1151,7 +1175,7 @@ export function CommentLeadInboxPanel() {
         setStatus(`❌ ${result.error || result.warning || 'Không đồng bộ được Messenger'}`);
         return;
       }
-      const conversationId = result.conversation?.conversation_id || '';
+      const conversationId = result.conversation ? messengerConversationKey(result.conversation) : '';
       if (conversationId) setSelectedMessengerId(conversationId);
       setMessengerMessages(Array.isArray(result.messages) ? result.messages : []);
       await loadMessenger(conversationId);
@@ -1519,7 +1543,7 @@ export function CommentLeadInboxPanel() {
 
   const selectedMeta = selected ? sourceLabel(selected) : null;
   const selectedSrc = selected ? sourceKey(selected) : null;
-  const selectedMessenger = messengerConversations.find((item) => item.conversation_id === selectedMessengerId) || null;
+  const selectedMessenger = messengerConversations.find((item) => messengerConversationKey(item) === selectedMessengerId) || null;
   const visibleMessengerMessages = messengerMessages.filter((message) => !isMessengerSystemText(message.text));
 
   return (
@@ -1538,6 +1562,26 @@ export function CommentLeadInboxPanel() {
         <div className="omni-topbar-right">
           {tab === 'messenger' ? (
             <>
+              {messengerCanManage ? (
+                <select
+                  className="omni-channel-select"
+                  value={messengerStaffFilter}
+                  onChange={(e) => {
+                    const nextStaff = e.target.value;
+                    setMessengerStaffFilter(nextStaff);
+                    setSelectedMessengerId('');
+                    void loadMessenger('', nextStaff);
+                  }}
+                  aria-label="Lọc hội thoại Messenger theo nhân viên"
+                >
+                  <option value="">Tất cả nhân viên</option>
+                  {messengerStaffOptions.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name || item.username || item.id}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
               <button type="button" className="omni-btn-ghost" onClick={() => window.open('https://www.messenger.com/', '_blank', 'noopener,noreferrer')}>
                 Mở Messenger
               </button>
@@ -1976,8 +2020,11 @@ export function CommentLeadInboxPanel() {
                 <small>{messengerConversations.length} hội thoại</small>
               </div>
               {messengerConversations.length ? messengerConversations.map((item, index) => {
-                const cid = item.conversation_id || '';
+                const cid = messengerConversationKey(item);
                 const phones = item.phones?.length ? item.phones.join(', ') : (item.customer_phone || '');
+                const staffLabel = messengerCanManage && item.captured_by_staff_name
+                  ? `NV ${item.captured_by_staff_name} · `
+                  : '';
                 return (
                   <button
                     key={cid || item.conversation_url || item.title || `messenger-${index}`}
@@ -1992,7 +2039,7 @@ export function CommentLeadInboxPanel() {
                     <span>
                       <b>{item.customer_name || item.title || cid || 'Hội thoại Messenger'}</b>
                       <small>
-                        {item.message_count || 0} tin · {phones ? `SĐT ${phones} · ` : ''}{messengerTime(item.latest_message_at || item.updated_at || item.captured_at)}
+                        {staffLabel}{item.message_count || 0} tin · {phones ? `SĐT ${phones} · ` : ''}{messengerTime(item.latest_message_at || item.updated_at || item.captured_at)}
                       </small>
                     </span>
                   </button>

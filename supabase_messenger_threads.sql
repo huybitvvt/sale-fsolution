@@ -5,7 +5,8 @@ create extension if not exists pgcrypto;
 
 create table if not exists public.messenger_conversations (
   id uuid primary key default gen_random_uuid(),
-  conversation_id text not null unique,
+  conversation_key text not null unique,
+  conversation_id text not null,
   conversation_url text,
   title text,
   customer_id text,
@@ -20,6 +21,7 @@ create table if not exists public.messenger_conversations (
   captured_by_staff_id text,
   captured_by_staff_name text,
   captured_by_staff_username text,
+  owner_key text,
   captured_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -27,6 +29,7 @@ create table if not exists public.messenger_conversations (
 create table if not exists public.messenger_messages (
   id uuid primary key default gen_random_uuid(),
   message_key text not null unique,
+  conversation_key text,
   conversation_id text not null,
   message_id text,
   sender_id text,
@@ -42,27 +45,75 @@ create table if not exists public.messenger_messages (
   captured_by_staff_id text,
   captured_by_staff_name text,
   captured_by_staff_username text,
+  owner_key text,
   captured_at timestamptz not null default now()
 );
 
 alter table public.messenger_conversations
+  add column if not exists conversation_key text,
   add column if not exists customer_id text,
   add column if not exists customer_phone text,
-  add column if not exists phones jsonb not null default '[]'::jsonb;
+  add column if not exists phones jsonb not null default '[]'::jsonb,
+  add column if not exists owner_key text;
 
 alter table public.messenger_messages
+  add column if not exists conversation_key text,
   add column if not exists phone text,
   add column if not exists phones jsonb not null default '[]'::jsonb,
-  add column if not exists display_time text;
+  add column if not exists display_time text,
+  add column if not exists owner_key text;
 
-create unique index if not exists messenger_conversations_conversation_id_uidx
+update public.messenger_conversations
+set owner_key = coalesce(
+  nullif(owner_key, ''),
+  nullif(captured_by_staff_id, ''),
+  nullif(captured_by_staff_username, ''),
+  nullif(captured_by_staff_name, ''),
+  'anonymous'
+);
+
+update public.messenger_conversations
+set conversation_key = encode(digest(owner_key || '|' || conversation_id, 'sha1'), 'hex')
+where conversation_key is null or conversation_key = '';
+
+alter table public.messenger_conversations
+  alter column conversation_key set not null;
+
+update public.messenger_messages
+set owner_key = coalesce(
+  nullif(owner_key, ''),
+  nullif(captured_by_staff_id, ''),
+  nullif(captured_by_staff_username, ''),
+  nullif(captured_by_staff_name, ''),
+  'anonymous'
+);
+
+update public.messenger_messages
+set conversation_key = encode(digest(owner_key || '|' || conversation_id, 'sha1'), 'hex')
+where conversation_key is null or conversation_key = '';
+
+alter table public.messenger_conversations
+  drop constraint if exists messenger_conversations_conversation_id_key;
+
+drop index if exists messenger_conversations_conversation_id_uidx;
+
+create unique index if not exists messenger_conversations_conversation_key_uidx
+  on public.messenger_conversations (conversation_key);
+
+create index if not exists messenger_conversations_conversation_id_idx
   on public.messenger_conversations (conversation_id);
+
+create index if not exists messenger_conversations_staff_idx
+  on public.messenger_conversations (captured_by_staff_id, updated_at desc);
 
 create unique index if not exists messenger_messages_message_key_uidx
   on public.messenger_messages (message_key);
 
 create index if not exists messenger_messages_conversation_idx
   on public.messenger_messages (conversation_id, captured_at desc);
+
+create index if not exists messenger_messages_conversation_key_idx
+  on public.messenger_messages (conversation_key, captured_at desc);
 
 create index if not exists messenger_messages_sender_idx
   on public.messenger_messages (sender_id);

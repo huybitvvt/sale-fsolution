@@ -867,15 +867,63 @@ class FacebookPostHistoryTests(unittest.TestCase):
 
         self.assertEqual(warning, '')
         self.assertEqual(conversation['conversation_id'], '123456789')
+        self.assertTrue(conversation['conversation_key'])
+        self.assertEqual(conversation['owner_key'], 'sale-1')
         self.assertEqual(conversation['customer_id'], '1000000001')
         self.assertEqual(conversation['customer_name'], 'Nguyễn Khách')
         self.assertEqual(conversation['customer_phone'], '0912345678')
         self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0]['conversation_key'], conversation['conversation_key'])
+        self.assertEqual(messages[0]['owner_key'], 'sale-1')
         self.assertEqual(messages[0]['sender_type'], 'customer')
         self.assertEqual(messages[0]['phone'], '0912345678')
         self.assertEqual(messages[0]['display_time'], '08:00 28/8/2026')
         self.assertEqual(messages[1]['direction'], 'outgoing')
         self.assertEqual(len(stored_threads['messages']), 2)
+
+    def test_messenger_threads_are_scoped_by_staff_for_admin_filter(self):
+        payload = {
+            'conversation_url': 'https://www.messenger.com/t/123456789',
+            'conversation_title': 'Khách chung',
+            'messages': [
+                {'message_id': 'm1', 'sender_name': 'Khách chung', 'text': 'Xin demo', 'sent_at': '2026-08-28T01:00:00Z'},
+            ],
+        }
+        sale_a = {'id': 'sale-a', 'name': 'Sale A', 'username': 'salea', 'role': 'staff'}
+        sale_b = {'id': 'sale-b', 'name': 'Sale B', 'username': 'saleb', 'role': 'staff'}
+        admin = {'id': 'admin-1', 'name': 'Admin', 'username': 'admin', 'role': 'admin'}
+
+        with backend.app.test_request_context('/'):
+            with (
+                patch.object(backend, '_messenger_threads', {'conversations': [], 'messages': []}),
+                patch.object(backend, 'USE_SUPABASE', False),
+                patch.object(backend, '_save_messenger_threads'),
+                patch.object(backend, '_merged_public_staff_rows', return_value=([sale_a, sale_b, admin], '')),
+            ):
+                with patch.object(backend, '_current_staff', return_value=sale_a):
+                    conv_a, _, _ = backend._store_messenger_sync_payload(payload)
+                with patch.object(backend, '_current_staff', return_value=sale_b):
+                    conv_b, _, _ = backend._store_messenger_sync_payload(payload)
+
+                self.assertNotEqual(conv_a['conversation_key'], conv_b['conversation_key'])
+                self.assertEqual(len(backend._messenger_threads['conversations']), 2)
+                self.assertEqual(len(backend._messenger_threads['messages']), 2)
+
+                with patch.object(backend, '_current_staff', return_value=admin):
+                    all_convs, _, _ = backend._load_messenger_threads(limit=50)
+                    sale_a_convs, sale_a_messages, _ = backend._load_messenger_threads(staff_id='sale-a', limit=50)
+                    sale_b_convs, sale_b_messages, _ = backend._load_messenger_threads(staff_id='sale-b', limit=50)
+
+                with patch.object(backend, '_current_staff', return_value=sale_a):
+                    self_convs, self_messages, _ = backend._load_messenger_threads(limit=50)
+
+        self.assertEqual(len(all_convs), 2)
+        self.assertEqual([item['owner_key'] for item in sale_a_convs], ['sale-a'])
+        self.assertEqual([item['owner_key'] for item in sale_b_convs], ['sale-b'])
+        self.assertEqual([item['owner_key'] for item in self_convs], ['sale-a'])
+        self.assertEqual(len(sale_a_messages), 1)
+        self.assertEqual(len(sale_b_messages), 1)
+        self.assertEqual(len(self_messages), 1)
 
     def test_messenger_sync_route_rejects_empty_visible_thread(self):
         with backend.app.test_request_context('/api/messenger/sync', method='POST', json={
