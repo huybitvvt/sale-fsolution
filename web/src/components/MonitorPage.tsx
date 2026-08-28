@@ -6,6 +6,7 @@ import { AuthPanel } from '@/components/AuthPanel';
 import { ChannelManagerPanel } from '@/components/ChannelManagerPanel';
 import { ConsoleHome } from '@/components/ConsoleHome';
 import { HistoryPanel } from '@/components/HistoryPanel';
+import { CommentLeadInboxPanel } from '@/components/CommentLeadInboxPanel';
 import { LeadManagerPanel } from '@/components/LeadManagerPanel';
 import { LeadProcessedModal } from '@/components/LeadProcessedModal';
 import { ManageDashboardPanel } from '@/components/ManageDashboardPanel';
@@ -3039,6 +3040,7 @@ export function MonitorPage() {
               onDeleteMany={deleteSelectedLeads}
             />
           ) : null}
+          {activeView === 'inbox' ? <CommentLeadInboxPanel /> : null}
           {activeView === 'scripts' ? <ScriptWriterPanel /> : null}
           {activeView === 'plan' ? <ContentPlanPanel /> : null}
           {activeView === 'approved' ? <ApprovedScriptsPanel /> : null}

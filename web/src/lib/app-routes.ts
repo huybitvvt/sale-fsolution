@@ -5,6 +5,7 @@ export type ViewKey =
   | 'report'
   | 'manage'
   | 'history'
+  | 'inbox'
   | 'leads'
   | 'scripts'
   | 'plan'
@@ -18,6 +19,7 @@ export const VIEW_ROUTES: Record<ViewKey, string> = {
   report: '/bao-cao',
   manage: '/quan-ly',
   history: '/lich-su',
+  inbox: '/inbox',
   leads: '/lead',
   scripts: '/kich-ban',
   plan: '/ke-hoach',
@@ -32,6 +34,7 @@ export const VIEW_LABELS: Record<ViewKey, string> = {
   report: 'Báo cáo',
   manage: 'Quản lý',
   history: 'Lịch thử thao tác',
+  inbox: 'Inbox',
   leads: 'Lead',
   scripts: 'Kịch bản',
   plan: 'Kế hoạch',
@@ -42,7 +45,7 @@ export const VIEW_LABELS: Record<ViewKey, string> = {
 /** URL cũ → chuyển hướng sau khi gỡ trang */
 export const LEGACY_PATH_REDIRECTS: Record<string, string> = {
   '/cookie': '/nhan-su',
-  '/binh-luan': '/quan-ly',
+  '/binh-luan': '/inbox',
 };
 
 const PATH_TO_VIEW = Object.fromEntries(
