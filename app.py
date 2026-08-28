@@ -13,7 +13,7 @@ import requests as _req
 from html import unescape
 from datetime import datetime, time, timezone, timedelta
 from email.utils import parsedate_to_datetime
-from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlparse, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -65,6 +65,7 @@ MANAGED_CHANNELS_FILE = os.path.join(DATA_DIR, 'managed_channels.json')
 TIKTOK_CONFIG_FILE = os.path.join(DATA_DIR, 'tiktok_config.json')
 CONTENT_PIPELINE_FILE = os.path.join(DATA_DIR, 'content_pipeline.json')
 FACEBOOK_POSTS_FILE = os.path.join(DATA_DIR, 'facebook_posts.json')
+MESSENGER_THREADS_FILE = os.path.join(DATA_DIR, 'messenger_threads.json')
 COMMENT_TEMPLATES_FILE = os.path.join(DATA_DIR, 'comment_templates.json')
 COMMENT_TAGS_FILE = os.path.join(DATA_DIR, 'comment_tags.json')
 COMMENT_TAG_ASSIGNMENTS_FILE = os.path.join(DATA_DIR, 'comment_tag_assignments.json')
@@ -127,6 +128,8 @@ SUPABASE_COMMENT_LOG_TABLE = os.environ.get('SUPABASE_COMMENT_LOG_TABLE', 'comme
 SUPABASE_COMMENT_SUMMARY_TABLE = os.environ.get('SUPABASE_COMMENT_SUMMARY_TABLE', 'post_comment_summaries')
 SUPABASE_POST_COMMENT_TABLE = os.environ.get('SUPABASE_POST_COMMENT_TABLE', 'post_comments')
 SUPABASE_FACEBOOK_POST_TABLE = os.environ.get('SUPABASE_FACEBOOK_POST_TABLE', 'facebook_posts')
+SUPABASE_MESSENGER_CONVERSATION_TABLE = os.environ.get('SUPABASE_MESSENGER_CONVERSATION_TABLE', 'messenger_conversations')
+SUPABASE_MESSENGER_MESSAGE_TABLE = os.environ.get('SUPABASE_MESSENGER_MESSAGE_TABLE', 'messenger_messages')
 SUPABASE_LEAD_TABLE = os.environ.get('SUPABASE_LEAD_TABLE', 'leads')
 SUPABASE_STAFF_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 SUPABASE_CHANNEL_TABLE = os.environ.get('SUPABASE_CHANNEL_TABLE', 'managed_channels')
@@ -264,6 +267,7 @@ _MANAGED_CHANNELS_REFRESH_TTL = 30
 _tiktok_config: dict = {}
 _content_pipeline: dict = {}
 _facebook_posts: list = []
+_messenger_threads: dict = {'conversations': [], 'messages': []}
 _comment_templates: list = []
 _comment_tags: list = []
 _comment_tag_assignments: dict = {}
@@ -272,6 +276,7 @@ _comment_manual_phones: dict = {}
 _runtime_staff_context = threading.local()
 _scheduled_posts_lock = threading.Lock()
 _facebook_posts_lock = threading.Lock()
+_messenger_threads_lock = threading.Lock()
 
 
 def _default_business_profile() -> dict:
@@ -522,7 +527,7 @@ def _load_supabase_startup_snapshot() -> tuple[dict, dict[str, str]]:
 
 
 def _load_state():
-    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _deleted_lead_keys, _reply_suggestions, _business_profile, _staff_cookies, _comment_logs, _comment_summaries, _post_comments, _managed_channels, _managed_channels_remote_at, _tiktok_config, _content_pipeline, _facebook_posts, _comment_templates, _comment_tags, _comment_tag_assignments, _comment_inbox_workflow, _comment_manual_phones
+    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _deleted_lead_keys, _reply_suggestions, _business_profile, _staff_cookies, _comment_logs, _comment_summaries, _post_comments, _managed_channels, _managed_channels_remote_at, _tiktok_config, _content_pipeline, _facebook_posts, _messenger_threads, _comment_templates, _comment_tags, _comment_tag_assignments, _comment_inbox_workflow, _comment_manual_phones
     started_at = time_module.monotonic()
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -688,6 +693,19 @@ def _load_state():
         except Exception as e:
             print(f'[supabase] load facebook_posts fallback failed: {e}')
     _facebook_posts = loaded_facebook_posts if isinstance(loaded_facebook_posts, list) else []
+    loaded_messenger_threads = _read_json(MESSENGER_THREADS_FILE, {})
+    if startup_kv_loaded:
+        loaded_messenger_threads = startup_kv.get('messenger_threads') or loaded_messenger_threads
+    elif USE_SUPABASE:
+        try:
+            loaded_messenger_threads = sb.kv_get('messenger_threads', loaded_messenger_threads) or loaded_messenger_threads
+        except Exception as e:
+            print(f'[supabase] load messenger_threads fallback failed: {e}')
+    _messenger_threads = loaded_messenger_threads if isinstance(loaded_messenger_threads, dict) else {'conversations': [], 'messages': []}
+    if not isinstance(_messenger_threads.get('conversations'), list):
+        _messenger_threads['conversations'] = []
+    if not isinstance(_messenger_threads.get('messages'), list):
+        _messenger_threads['messages'] = []
     loaded_templates = _read_json(COMMENT_TEMPLATES_FILE, [])
     loaded_tags = _read_json(COMMENT_TAGS_FILE, [])
     loaded_tag_assignments = _read_json(COMMENT_TAG_ASSIGNMENTS_FILE, {})
@@ -994,6 +1012,325 @@ def _load_facebook_posts() -> tuple[list[dict], str]:
             warning = str(exc)[:300]
     with _facebook_posts_lock:
         return list(_facebook_posts), warning
+
+
+def _save_messenger_threads():
+    _write_json(MESSENGER_THREADS_FILE, _messenger_threads)
+    if USE_SUPABASE:
+        try:
+            sb.kv_set('messenger_threads', _messenger_threads)
+        except Exception as e:
+            print(f'[supabase] save messenger_threads fallback failed: {e}')
+
+
+def _messenger_text(value, limit: int = 4000) -> str:
+    return re.sub(r'\s+', ' ', str(value or '')).strip()[:limit]
+
+
+def _messenger_conversation_id_from_url(value: str) -> str:
+    try:
+        url = urlparse(str(value or ''))
+        parts = [part for part in url.path.split('/') if part]
+        for key in ('t', 'thread', 'e2ee'):
+            if key in parts:
+                idx = parts.index(key)
+                if key == 'e2ee' and idx + 2 < len(parts) and parts[idx + 1] == 't':
+                    return unquote(parts[idx + 2]).strip()
+                if idx + 1 < len(parts):
+                    return unquote(parts[idx + 1]).strip()
+        for name in ('thread_id', 'tid'):
+            raw = parse_qs(url.query).get(name, [''])[0]
+            if raw:
+                return str(raw).strip()
+    except Exception:
+        pass
+    return ''
+
+
+def _normalise_messenger_message(conversation_id: str, item: dict, index: int, captured_at: str, staff: dict) -> dict:
+    raw = item if isinstance(item, dict) else {}
+    text = str(raw.get('text') or raw.get('message') or '').strip()
+    phones = _normalize_phones_list(extract_phones(text))
+    sender_type = str(raw.get('sender_type') or raw.get('direction') or '').strip().lower()
+    sender_name = _messenger_text(raw.get('sender_name') or raw.get('author_name'), 180)
+    sender_id = _messenger_text(raw.get('sender_id') or raw.get('author_id'), 160)
+    staff_name = _messenger_text(staff.get('name'), 180).casefold()
+    staff_fb_id = _messenger_text(staff.get('facebook_user_id') or staff.get('fb_user_id'), 160)
+    sender_is_self = (
+        raw.get('sender_is_self') is True
+        or sender_type in ('self', 'staff', 'outgoing')
+        or (sender_name and staff_name and sender_name.casefold() == staff_name)
+        or (sender_id and staff_fb_id and sender_id == staff_fb_id)
+    )
+    if sender_is_self:
+        sender_type = 'staff'
+        direction = 'outgoing'
+    elif sender_type in ('customer', 'incoming'):
+        sender_type = 'customer'
+        direction = 'incoming'
+    elif sender_name or sender_id:
+        sender_type = 'customer'
+        direction = 'incoming'
+    else:
+        sender_type = 'unknown'
+        direction = 'unknown'
+    message_id = _messenger_text(raw.get('message_id') or raw.get('id'), 120)
+    if not message_id:
+        seed = '|'.join([
+            conversation_id,
+            str(raw.get('sender_id') or raw.get('sender_name') or ''),
+            text,
+            str(raw.get('sent_at') or raw.get('timestamp') or ''),
+            str(index),
+        ])
+        message_id = 'dom_' + hashlib.sha1(seed.encode('utf-8', errors='ignore')).hexdigest()[:24]
+    message_key = hashlib.sha1(f'{conversation_id}|{message_id}'.encode('utf-8', errors='ignore')).hexdigest()
+    return {
+        'message_key': message_key,
+        'conversation_id': conversation_id,
+        'message_id': message_id,
+        'sender_id': sender_id,
+        'sender_name': sender_name or ('Nhân viên' if sender_is_self else 'Khách hàng'),
+        'sender_type': sender_type,
+        'direction': direction,
+        'text': text[:5000],
+        'phone': phones[0] if phones else '',
+        'phones': phones,
+        'sent_at': raw.get('sent_at') or raw.get('timestamp') or None,
+        'raw_message': raw,
+        'captured_by_staff_id': staff.get('id', ''),
+        'captured_by_staff_name': staff.get('name', ''),
+        'captured_by_staff_username': staff.get('username', ''),
+        'captured_at': captured_at,
+    }
+
+
+def _normalise_messenger_sync_payload(body: dict) -> tuple[dict, list[dict]]:
+    body = body if isinstance(body, dict) else {}
+    captured_at = _utc_iso()
+    staff = _current_staff()
+    conversation_url = str(body.get('conversation_url') or body.get('url') or '').strip()
+    conversation_id = _messenger_text(
+        body.get('conversation_id')
+        or body.get('thread_id')
+        or _messenger_conversation_id_from_url(conversation_url),
+        220,
+    )
+    if not conversation_id:
+        conversation_id = 'dom_' + hashlib.sha1(conversation_url.encode('utf-8', errors='ignore')).hexdigest()[:24]
+    participants = body.get('participants') if isinstance(body.get('participants'), list) else []
+    normalised_participants = []
+    for item in participants[:20]:
+        if not isinstance(item, dict):
+            continue
+        name = _messenger_text(item.get('name') or item.get('label'), 180)
+        profile_url = str(item.get('profile_url') or item.get('url') or '').strip()
+        participant_id = _messenger_text(item.get('id') or item.get('uid') or profile_url, 180)
+        if not (name or participant_id or profile_url):
+            continue
+        normalised_participants.append({
+            'id': participant_id,
+            'name': name,
+            'profile_url': profile_url,
+        })
+    customer_name = _messenger_text(body.get('customer_name'), 180)
+    customer_id = _messenger_text(body.get('customer_id') or body.get('uid'), 180)
+    if not customer_name:
+        current_staff_name = _messenger_text(staff.get('name'), 180).casefold()
+        customer_name = next(
+            (
+                item.get('name') for item in normalised_participants
+                if item.get('name') and item.get('name').casefold() != current_staff_name
+            ),
+            '',
+        )
+    if not customer_id:
+        current_staff_name = _messenger_text(staff.get('name'), 180).casefold()
+        current_staff_ids = {
+            _messenger_text(staff.get('id'), 180),
+            _messenger_text(staff.get('facebook_user_id') or staff.get('fb_user_id'), 180),
+        }
+        customer_id = next(
+            (
+                item.get('id') for item in normalised_participants
+                if item.get('id')
+                and item.get('id') not in current_staff_ids
+                and item.get('name', '').casefold() != current_staff_name
+            ),
+            '',
+        )
+    raw_messages = body.get('messages') if isinstance(body.get('messages'), list) else []
+    messages: list[dict] = []
+    seen_keys: set[str] = set()
+    for index, raw in enumerate(raw_messages[:500]):
+        if not isinstance(raw, dict):
+            continue
+        text = str(raw.get('text') or raw.get('message') or '').strip()
+        if not text:
+            continue
+        row = _normalise_messenger_message(conversation_id, raw, index, captured_at, staff)
+        if row['message_key'] in seen_keys:
+            continue
+        seen_keys.add(row['message_key'])
+        messages.append(row)
+    latest_message_at = next(
+        (row.get('sent_at') for row in reversed(messages) if row.get('sent_at')),
+        captured_at,
+    )
+    conversation_phones: list[str] = []
+    phone_seen: set[str] = set()
+    for row in messages:
+        for phone in row.get('phones') or []:
+            if phone and phone not in phone_seen:
+                phone_seen.add(phone)
+                conversation_phones.append(phone)
+    conversation = {
+        'conversation_id': conversation_id,
+        'conversation_url': conversation_url,
+        'title': _messenger_text(body.get('conversation_title') or body.get('title') or customer_name or conversation_id, 240),
+        'customer_id': customer_id,
+        'customer_name': customer_name,
+        'customer_phone': conversation_phones[0] if conversation_phones else '',
+        'phones': conversation_phones,
+        'participants': normalised_participants,
+        'participant_ids': [item.get('id') for item in normalised_participants if item.get('id')],
+        'source': 'chrome_dom',
+        'message_count': len(messages),
+        'latest_message_at': latest_message_at,
+        'captured_by_staff_id': staff.get('id', ''),
+        'captured_by_staff_name': staff.get('name', ''),
+        'captured_by_staff_username': staff.get('username', ''),
+        'captured_at': captured_at,
+        'updated_at': captured_at,
+    }
+    return conversation, messages
+
+
+def _store_messenger_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
+    global _messenger_threads
+    conversation, messages = _normalise_messenger_sync_payload(body)
+    if not messages:
+        return conversation, [], 'Extension chưa đọc được tin nhắn nào trong hội thoại đang mở.'
+    with _messenger_threads_lock:
+        current_conversations = _messenger_threads.get('conversations') if isinstance(_messenger_threads.get('conversations'), list) else []
+        current_messages = _messenger_threads.get('messages') if isinstance(_messenger_threads.get('messages'), list) else []
+        conversations_by_id = {
+            str(item.get('conversation_id') or ''): item
+            for item in current_conversations
+            if isinstance(item, dict) and str(item.get('conversation_id') or '')
+        }
+        previous = conversations_by_id.get(conversation['conversation_id']) or {}
+        conversations_by_id[conversation['conversation_id']] = {**previous, **conversation}
+        messages_by_key = {
+            str(item.get('message_key') or ''): item
+            for item in current_messages
+            if isinstance(item, dict) and str(item.get('message_key') or '')
+        }
+        for row in messages:
+            messages_by_key[row['message_key']] = {**messages_by_key.get(row['message_key'], {}), **row}
+        stored_messages = sorted(
+            messages_by_key.values(),
+            key=lambda row: str(row.get('sent_at') or row.get('captured_at') or ''),
+            reverse=True,
+        )[:10000]
+        _messenger_threads = {
+            'conversations': sorted(
+                conversations_by_id.values(),
+                key=lambda row: str(row.get('updated_at') or row.get('captured_at') or ''),
+                reverse=True,
+            )[:1000],
+            'messages': stored_messages,
+        }
+        _save_messenger_threads()
+
+    warning = ''
+    if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
+        headers = {
+            'apikey': SUPABASE_KEY,
+            'Authorization': f'Bearer {SUPABASE_KEY}',
+            'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-duplicates,return=minimal',
+        }
+        try:
+            conv_response = _req.post(
+                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_MESSENGER_CONVERSATION_TABLE}",
+                headers=headers,
+                params={'on_conflict': 'conversation_id'},
+                json=conversation,
+                timeout=20,
+            )
+            if conv_response.status_code not in (200, 201, 204):
+                warning = conv_response.text[:300]
+            msg_response = _req.post(
+                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_MESSENGER_MESSAGE_TABLE}",
+                headers=headers,
+                params={'on_conflict': 'message_key'},
+                json=messages,
+                timeout=30,
+            )
+            if msg_response.status_code not in (200, 201, 204):
+                msg_warning = msg_response.text[:300]
+                warning = ' | '.join([item for item in (warning, msg_warning) if item])
+        except Exception as exc:
+            warning = str(exc)[:300]
+    return conversation, messages, warning
+
+
+def _load_messenger_threads(conversation_id: str = '', limit: int = 100) -> tuple[list[dict], list[dict], str]:
+    limit = max(1, min(int(limit or 100), 500))
+    conversation_id = str(conversation_id or '').strip()
+    warning = ''
+    conversations: list[dict] = []
+    messages: list[dict] = []
+    if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
+        headers = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
+        try:
+            conv_params = {'select': '*', 'order': 'updated_at.desc', 'limit': '1000'}
+            conv_response = _req.get(
+                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_MESSENGER_CONVERSATION_TABLE}",
+                headers=headers,
+                params=conv_params,
+                timeout=20,
+            )
+            if conv_response.status_code in (200, 206):
+                conv_data = conv_response.json()
+                conversations = conv_data if isinstance(conv_data, list) else []
+            else:
+                warning = conv_response.text[:300]
+            target_id = conversation_id or (conversations[0].get('conversation_id') if conversations else '')
+            if target_id:
+                msg_response = _req.get(
+                    f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_MESSENGER_MESSAGE_TABLE}",
+                    headers=headers,
+                    params={'select': '*', 'conversation_id': f'eq.{target_id}', 'order': 'captured_at.desc', 'limit': str(limit)},
+                    timeout=20,
+                )
+                if msg_response.status_code in (200, 206):
+                    msg_data = msg_response.json()
+                    messages = msg_data if isinstance(msg_data, list) else []
+                else:
+                    msg_warning = msg_response.text[:300]
+                    warning = ' | '.join([item for item in (warning, msg_warning) if item])
+        except Exception as exc:
+            warning = str(exc)[:300]
+    with _messenger_threads_lock:
+        local_conversations = list(_messenger_threads.get('conversations') or [])
+        local_messages = list(_messenger_threads.get('messages') or [])
+    if not conversations:
+        conversations = local_conversations
+    else:
+        by_id = {str(item.get('conversation_id') or ''): item for item in conversations if item.get('conversation_id')}
+        for item in local_conversations:
+            cid = str(item.get('conversation_id') or '')
+            if cid and cid not in by_id:
+                by_id[cid] = item
+        conversations = list(by_id.values())
+    target_id = conversation_id or (conversations[0].get('conversation_id') if conversations else '')
+    if not messages and target_id:
+        messages = [row for row in local_messages if str(row.get('conversation_id') or '') == target_id][:limit]
+    conversations.sort(key=lambda row: str(row.get('updated_at') or row.get('captured_at') or ''), reverse=True)
+    messages.sort(key=lambda row: str(row.get('sent_at') or row.get('captured_at') or ''))
+    return conversations[:1000], messages[-limit:] if len(messages) > limit else messages, warning
 
 
 def _record_publish_results(post: dict, targets: list[dict], result: dict, *, source: str, source_post_id: str = '', request_id: str = '') -> list[dict]:
@@ -6731,6 +7068,7 @@ def api_health():
             'staggered_publish_queue_v1': True,
             'facebook_auto_reference_metrics_v1': True,
             'comment_templates_live_refresh_v1': True,
+            'messenger_dom_sync_poc_v1': True,
         },
     }
     render_commit = str(os.environ.get('RENDER_GIT_COMMIT') or '').strip()
@@ -8371,6 +8709,41 @@ def list_post_comments():
         rows = [row for row in rows if keyword in str(row.get('message') or '').lower()]
     rows.sort(key=lambda row: row.get('created_time') or row.get('fetched_at') or '', reverse=True)
     payload = {'ok': True, 'count': len(rows[:limit]), 'comments': _public_comment_rows(rows[:limit])}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
+
+
+@app.route('/api/messenger/sync', methods=['POST'])
+def messenger_sync_from_extension():
+    body = request.get_json(silent=True) or {}
+    conversation, messages, warning = _store_messenger_sync_payload(body)
+    status_code = 200 if messages else 422
+    payload = {
+        'ok': bool(messages),
+        'conversation': conversation,
+        'messages': messages,
+        'count': len(messages),
+        'storage': 'supabase' if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY and not warning else 'local',
+    }
+    if warning:
+        payload['warning' if messages else 'error'] = warning
+    return jsonify(payload), status_code
+
+
+@app.route('/api/messenger/conversations', methods=['GET'])
+def messenger_conversations_get():
+    conversation_id = str(request.args.get('conversation_id') or '').strip()
+    limit = request.args.get('limit', 100, type=int)
+    conversations, messages, warning = _load_messenger_threads(conversation_id=conversation_id, limit=limit)
+    payload = {
+        'ok': True,
+        'conversations': conversations,
+        'messages': messages,
+        'count': len(conversations),
+        'message_count': len(messages),
+        'storage': 'supabase' if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY and not warning else 'local',
+    }
     if warning:
         payload['warning'] = warning
     return jsonify(payload)

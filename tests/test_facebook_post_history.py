@@ -838,6 +838,61 @@ class FacebookPostHistoryTests(unittest.TestCase):
             self.assertEqual(lead['contact_status'], 'no_phone')
             self.assertEqual(backend._leads['group-1_post-1'][0]['comment_id'], 'comment-no-phone')
 
+    def test_messenger_sync_payload_dedupes_and_persists_visible_messages(self):
+        payload = {
+            'conversation_url': 'https://www.messenger.com/t/123456789',
+            'conversation_title': 'Nguyễn Khách',
+            'participants': [
+                {'id': '61560853200267', 'name': 'Phạm Dương', 'profile_url': 'https://www.facebook.com/me'},
+                {'id': '1000000001', 'name': 'Nguyễn Khách', 'profile_url': 'https://www.facebook.com/1000000001'},
+            ],
+            'messages': [
+                {'message_id': 'm1', 'sender_id': '1000000001', 'sender_name': 'Nguyễn Khách', 'text': 'Cho mình xin demo 0912345678', 'sent_at': '2026-08-28T01:00:00Z'},
+                {'message_id': 'm1', 'sender_id': '1000000001', 'sender_name': 'Nguyễn Khách', 'text': 'Cho mình xin demo 0912345678', 'sent_at': '2026-08-28T01:00:00Z'},
+                {'message_id': 'm2', 'sender_is_self': True, 'sender_name': 'Phạm Dương', 'text': 'Em gửi demo ngay ạ', 'sent_at': '2026-08-28T01:01:00Z'},
+            ],
+        }
+
+        stored_threads = {}
+        with backend.app.test_request_context('/'):
+            with (
+                patch.object(backend, '_messenger_threads', {'conversations': [], 'messages': []}),
+                patch.object(backend, '_current_staff', return_value={'id': 'sale-1', 'name': 'Phạm Dương', 'username': 'sale1'}),
+                patch.object(backend, 'USE_SUPABASE', False),
+                patch.object(backend, '_save_messenger_threads'),
+            ):
+                conversation, messages, warning = backend._store_messenger_sync_payload(payload)
+                stored_threads = backend._messenger_threads
+
+        self.assertEqual(warning, '')
+        self.assertEqual(conversation['conversation_id'], '123456789')
+        self.assertEqual(conversation['customer_id'], '1000000001')
+        self.assertEqual(conversation['customer_name'], 'Nguyễn Khách')
+        self.assertEqual(conversation['customer_phone'], '0912345678')
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0]['sender_type'], 'customer')
+        self.assertEqual(messages[0]['phone'], '0912345678')
+        self.assertEqual(messages[1]['direction'], 'outgoing')
+        self.assertEqual(len(stored_threads['messages']), 2)
+
+    def test_messenger_sync_route_rejects_empty_visible_thread(self):
+        with backend.app.test_request_context('/api/messenger/sync', method='POST', json={
+            'conversation_url': 'https://www.messenger.com/t/empty-thread',
+            'messages': [],
+        }):
+            with (
+                patch.object(backend, '_messenger_threads', {'conversations': [], 'messages': []}),
+                patch.object(backend, '_current_staff', return_value={'id': 'sale-1'}),
+                patch.object(backend, 'USE_SUPABASE', False),
+                patch.object(backend, '_save_messenger_threads'),
+            ):
+                response, status = backend.messenger_sync_from_extension()
+
+        payload = response.get_json()
+        self.assertEqual(status, 422)
+        self.assertFalse(payload['ok'])
+        self.assertIn('Extension chưa đọc được tin nhắn', payload['error'])
+
 
 if __name__ == '__main__':
     unittest.main()

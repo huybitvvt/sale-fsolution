@@ -8,7 +8,7 @@ import { extractPhones, phonesForComment } from '@/lib/phone-utils';
 import type { ManagedChannel, StoredPostComment } from '@/lib/types';
 import './omni-inbox.css';
 
-type TabKey = 'inbox' | 'customers' | 'stats' | 'templates';
+type TabKey = 'inbox' | 'customers' | 'stats' | 'templates' | 'messenger';
 type ChannelFilter = 'all' | 'facebook' | 'tiktok' | 'instagram';
 type SourceKey = 'fb-page' | 'fb-group' | 'tiktok' | 'instagram';
 type TagKey = string;
@@ -27,6 +27,46 @@ type CommentPayload = {
   count?: number;
   warning?: string;
   error?: string;
+};
+
+type MessengerMessage = {
+  message_key?: string;
+  conversation_id?: string;
+  message_id?: string;
+  sender_id?: string;
+  sender_name?: string;
+  sender_type?: string;
+  direction?: string;
+  text?: string;
+  phone?: string;
+  phones?: string[];
+  sent_at?: string;
+  captured_at?: string;
+};
+
+type MessengerConversation = {
+  conversation_id?: string;
+  conversation_url?: string;
+  title?: string;
+  customer_id?: string;
+  customer_name?: string;
+  customer_phone?: string;
+  phones?: string[];
+  message_count?: number;
+  latest_message_at?: string;
+  captured_by_staff_name?: string;
+  captured_at?: string;
+  updated_at?: string;
+};
+
+type MessengerSyncResult = {
+  ok?: boolean;
+  conversation?: MessengerConversation;
+  messages?: MessengerMessage[];
+  count?: number;
+  warning?: string;
+  error?: string;
+  extension_warning?: string;
 };
 
 type TikTokBridgeResult = {
@@ -316,6 +356,15 @@ function commentTimeShort(row: StoredPostComment) {
   }
 }
 
+function messengerTime(value?: string) {
+  if (!value) return '-';
+  try {
+    return new Date(value).toLocaleString('vi-VN');
+  } catch {
+    return value;
+  }
+}
+
 function authorInitials(name?: string) {
   const parts = (name || '?').trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return '?';
@@ -376,6 +425,10 @@ export function CommentLeadInboxPanel() {
   const [phoneInput, setPhoneInput] = useState('');
   const [phoneBusy, setPhoneBusy] = useState(false);
   const [phoneHint, setPhoneHint] = useState('');
+  const [messengerConversations, setMessengerConversations] = useState<MessengerConversation[]>([]);
+  const [messengerMessages, setMessengerMessages] = useState<MessengerMessage[]>([]);
+  const [selectedMessengerId, setSelectedMessengerId] = useState('');
+  const [messengerBusy, setMessengerBusy] = useState(false);
 
   const processedSet = useMemo(() => new Set(processedIds), [processedIds]);
   const starredSet = useMemo(() => new Set(starredIds), [starredIds]);
@@ -487,6 +540,35 @@ export function CommentLeadInboxPanel() {
     await loadComments();
   }, [loadComments, loadWorkflow]);
 
+  const loadMessenger = useCallback(async (conversationId = selectedMessengerId) => {
+    setMessengerBusy(true);
+    setStatus('Đang tải lịch sử Messenger...');
+    try {
+      const params = new URLSearchParams({ limit: '200' });
+      if (conversationId) params.set('conversation_id', conversationId);
+      const r = await api(`/api/messenger/conversations?${params.toString()}`);
+      const data = await r.json().catch(() => ({ ok: false, error: `Server lỗi ${r.status}` }));
+      if (!r.ok || !data.ok) {
+        setStatus(`❌ ${data.error || 'Không tải được Messenger'}`);
+        return;
+      }
+      const conversations = Array.isArray(data.conversations) ? data.conversations as MessengerConversation[] : [];
+      const messages = Array.isArray(data.messages) ? data.messages as MessengerMessage[] : [];
+      setMessengerConversations(conversations);
+      setMessengerMessages(messages);
+      setSelectedMessengerId((current) => {
+        if (conversationId) return conversationId;
+        if (current && conversations.some((item) => item.conversation_id === current)) return current;
+        return conversations[0]?.conversation_id || '';
+      });
+      setStatus(data.warning ? `⚠️ ${data.warning}` : conversations.length ? `✅ Đã tải ${conversations.length} hội thoại Messenger` : 'Chưa có lịch sử Messenger. Mở một hội thoại rồi bấm đồng bộ.');
+    } catch {
+      setStatus('❌ Lỗi kết nối khi tải Messenger');
+    } finally {
+      setMessengerBusy(false);
+    }
+  }, [selectedMessengerId]);
+
   useEffect(() => {
     void loadWorkflow();
     void loadTemplateConfig();
@@ -511,6 +593,10 @@ export function CommentLeadInboxPanel() {
   useEffect(() => {
     if (tab === 'stats' && !comments.length && !busy) void reloadInbox();
   }, [tab, comments.length, busy, reloadInbox]);
+
+  useEffect(() => {
+    if (tab === 'messenger') void loadMessenger();
+  }, [tab, loadMessenger]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -989,6 +1075,69 @@ export function CommentLeadInboxPanel() {
     });
   }
 
+  function requestMessengerSync(payload: Record<string, unknown>): Promise<MessengerSyncResult> {
+    return new Promise((resolve) => {
+      if (typeof window === 'undefined') {
+        resolve({ ok: false, error: 'Chỉ đồng bộ được Messenger trên Chrome có cài extension' });
+        return;
+      }
+
+      const requestId = `messenger_sync_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const timer = window.setTimeout(() => {
+        cleanup();
+        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Lead Hunter Bridge rồi tải lại web.' });
+      }, 90000);
+
+      const handleMessage = (event: MessageEvent) => {
+        if (event.source !== window) return;
+        const data = event.data || {};
+        if (data.source !== 'streal-tiktok-extension') return;
+        if (data.type !== 'STREAL_MESSENGER_SYNC_RESPONSE') return;
+        if (data.requestId !== requestId) return;
+        cleanup();
+        resolve(data as MessengerSyncResult);
+      };
+
+      function cleanup() {
+        window.removeEventListener('message', handleMessage);
+        window.clearTimeout(timer);
+      }
+
+      window.addEventListener('message', handleMessage);
+      window.postMessage(
+        {
+          source: 'streal-web-page',
+          type: 'STREAL_MESSENGER_SYNC_REQUEST',
+          requestId,
+          payload,
+        },
+        window.location.origin,
+      );
+    });
+  }
+
+  async function syncCurrentMessengerThread() {
+    setMessengerBusy(true);
+    setStatus('Đang đọc hội thoại Messenger đang mở bằng extension...');
+    try {
+      const result = await requestMessengerSync({ limit: 200 });
+      if (!result.ok) {
+        setStatus(`❌ ${result.error || result.warning || 'Không đồng bộ được Messenger'}`);
+        return;
+      }
+      const conversationId = result.conversation?.conversation_id || '';
+      if (conversationId) setSelectedMessengerId(conversationId);
+      setMessengerMessages(Array.isArray(result.messages) ? result.messages : []);
+      await loadMessenger(conversationId);
+      const note = result.extension_warning ? ` (${result.extension_warning})` : '';
+      setStatus(`✅ Đã đồng bộ ${result.count || 0} tin nhắn Messenger${note}`);
+    } catch {
+      setStatus('❌ Lỗi khi gọi extension đồng bộ Messenger');
+    } finally {
+      setMessengerBusy(false);
+    }
+  }
+
   function requestTiktokOpenComment(payload: Record<string, unknown>): Promise<TikTokOpenCommentResult> {
     return new Promise((resolve) => {
       if (typeof window === 'undefined') {
@@ -1344,6 +1493,7 @@ export function CommentLeadInboxPanel() {
 
   const selectedMeta = selected ? sourceLabel(selected) : null;
   const selectedSrc = selected ? sourceKey(selected) : null;
+  const selectedMessenger = messengerConversations.find((item) => item.conversation_id === selectedMessengerId) || null;
 
   return (
     <section className="omni-inbox module-panel">
@@ -1355,30 +1505,47 @@ export function CommentLeadInboxPanel() {
             <button type="button" className={tab === 'customers' ? 'active' : ''} onClick={() => setTab('customers')}>Khách hàng</button>
             <button type="button" className={tab === 'stats' ? 'active' : ''} onClick={() => setTab('stats')}>Thống kê</button>
             <button type="button" className={tab === 'templates' ? 'active' : ''} onClick={() => setTab('templates')}>Mẫu câu</button>
+            <button type="button" className={tab === 'messenger' ? 'active' : ''} onClick={() => setTab('messenger')}>Messenger</button>
           </nav>
         </div>
         <div className="omni-topbar-right">
-          <select
-            className="omni-channel-select"
-            value={namedChannelFilter}
-            onChange={(e) => setNamedChannelFilter(e.target.value)}
-            aria-label="Lọc theo kênh"
-          >
-            <option value="">Tất cả kênh ({comments.length})</option>
-            {namedChannelOptions.map((item) => (
-              <option key={item.key} value={item.key}>
-                {item.label} ({item.count})
-              </option>
-            ))}
-          </select>
-          <div className="omni-search">
-            <MaterialIcon name="search" />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Tìm lead, SĐT, nội dung..." type="text" />
-          </div>
-          <button type="button" className="omni-btn-ghost" onClick={() => void reloadInbox()} disabled={busy}>
-            {busy ? 'Đang tải...' : 'Tải lại'}
-          </button>
-          <button type="button" className="omni-btn-primary" onClick={() => void syncLead(selected)}>Tách lead</button>
+          {tab === 'messenger' ? (
+            <>
+              <button type="button" className="omni-btn-ghost" onClick={() => window.open('https://www.messenger.com/', '_blank', 'noopener,noreferrer')}>
+                Mở Messenger
+              </button>
+              <button type="button" className="omni-btn-ghost" onClick={() => void loadMessenger()} disabled={messengerBusy}>
+                {messengerBusy ? 'Đang tải...' : 'Tải lại'}
+              </button>
+              <button type="button" className="omni-btn-primary" onClick={() => void syncCurrentMessengerThread()} disabled={messengerBusy}>
+                Đồng bộ hội thoại đang mở
+              </button>
+            </>
+          ) : (
+            <>
+              <select
+                className="omni-channel-select"
+                value={namedChannelFilter}
+                onChange={(e) => setNamedChannelFilter(e.target.value)}
+                aria-label="Lọc theo kênh"
+              >
+                <option value="">Tất cả kênh ({comments.length})</option>
+                {namedChannelOptions.map((item) => (
+                  <option key={item.key} value={item.key}>
+                    {item.label} ({item.count})
+                  </option>
+                ))}
+              </select>
+              <div className="omni-search">
+                <MaterialIcon name="search" />
+                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Tìm lead, SĐT, nội dung..." type="text" />
+              </div>
+              <button type="button" className="omni-btn-ghost" onClick={() => void reloadInbox()} disabled={busy}>
+                {busy ? 'Đang tải...' : 'Tải lại'}
+              </button>
+              <button type="button" className="omni-btn-primary" onClick={() => void syncLead(selected)}>Tách lead</button>
+            </>
+          )}
         </div>
       </header>
 
@@ -1763,6 +1930,94 @@ export function CommentLeadInboxPanel() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      ) : null}
+
+      {tab === 'messenger' ? (
+        <div className="omni-tab-panel omni-messenger-page">
+          <div className="omni-messenger-note">
+            <MaterialIcon name="info" style={{ fontSize: 18 }} />
+            <span>
+              PoC này chỉ đọc tin nhắn đang hiển thị trong hội thoại Messenger bạn đã mở bằng Chrome. Muốn lấy sâu hơn thì cuộn hội thoại trước rồi bấm đồng bộ.
+            </span>
+          </div>
+          <div className="omni-messenger-grid">
+            <aside className="omni-messenger-list">
+              <div className="omni-messenger-list-head">
+                <b>Hội thoại đã lưu</b>
+                <small>{messengerConversations.length} hội thoại</small>
+              </div>
+              {messengerConversations.length ? messengerConversations.map((item, index) => {
+                const cid = item.conversation_id || '';
+                const phones = item.phones?.length ? item.phones.join(', ') : (item.customer_phone || '');
+                return (
+                  <button
+                    key={cid || item.conversation_url || item.title || `messenger-${index}`}
+                    type="button"
+                    className={`omni-messenger-card ${selectedMessengerId === cid ? 'active' : ''}`}
+                    onClick={() => {
+                      setSelectedMessengerId(cid);
+                      void loadMessenger(cid);
+                    }}
+                  >
+                    <div className="omni-avatar sm">{authorInitials(item.customer_name || item.title)}</div>
+                    <span>
+                      <b>{item.customer_name || item.title || cid || 'Hội thoại Messenger'}</b>
+                      <small>
+                        {item.message_count || 0} tin · {phones ? `SĐT ${phones} · ` : ''}{messengerTime(item.latest_message_at || item.updated_at || item.captured_at)}
+                      </small>
+                    </span>
+                  </button>
+                );
+              }) : (
+                <div className="omni-empty">Chưa có hội thoại. Mở Messenger rồi bấm “Đồng bộ hội thoại đang mở”.</div>
+              )}
+            </aside>
+
+            <section className="omni-messenger-thread">
+              <div className="omni-messenger-thread-head">
+                <div>
+                  <h3>{selectedMessenger?.customer_name || selectedMessenger?.title || 'Chọn hội thoại Messenger'}</h3>
+                  <p>
+                    {selectedMessenger?.conversation_id
+                      ? [
+                        `Thread: ${selectedMessenger.conversation_id}`,
+                        selectedMessenger.customer_id ? `UID KH: ${selectedMessenger.customer_id}` : '',
+                        (selectedMessenger.phones?.length || selectedMessenger.customer_phone)
+                          ? `SĐT: ${(selectedMessenger.phones?.length ? selectedMessenger.phones : [selectedMessenger.customer_phone]).filter(Boolean).join(', ')}`
+                          : '',
+                      ].filter(Boolean).join(' · ')
+                      : 'Tin nhắn được lưu vào phần mềm để đội sale kiểm tra lại.'}
+                  </p>
+                </div>
+                {selectedMessenger?.conversation_url ? (
+                  <button type="button" className="omni-btn-ghost" onClick={() => window.open(selectedMessenger.conversation_url, '_blank', 'noopener,noreferrer')}>
+                    Mở gốc
+                  </button>
+                ) : null}
+              </div>
+              <div className="omni-messenger-messages">
+                {messengerMessages.length ? messengerMessages.map((message, index) => {
+                  const outgoing = message.direction === 'outgoing' || message.sender_type === 'staff';
+                  return (
+                    <div key={message.message_key || `${message.conversation_id}-${index}`} className={`omni-message-row ${outgoing ? 'outgoing' : 'incoming'}`}>
+                      <div className="omni-message-bubble">
+                        <small>{message.sender_name || (outgoing ? 'Nhân viên' : 'Khách hàng')} · {messengerTime(message.sent_at || message.captured_at)}</small>
+                        <p>{message.text}</p>
+                        {(message.phones?.length || message.phone) ? (
+                          <em>SĐT: {(message.phones?.length ? message.phones : [message.phone]).filter(Boolean).join(', ')}</em>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                }) : (
+                  <div className="omni-empty">
+                    {messengerBusy ? 'Đang tải Messenger...' : 'Chưa có tin nhắn cho hội thoại này.'}
+                  </div>
+                )}
+              </div>
+            </section>
           </div>
         </div>
       ) : null}

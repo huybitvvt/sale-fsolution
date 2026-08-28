@@ -216,6 +216,33 @@
       return;
     }
 
+    if (data.type === 'STREAL_MESSENGER_SYNC_REQUEST') {
+      chrome.runtime.sendMessage(
+        {
+          type: 'STREAL_EXTENSION_COLLECT_MESSENGER_THREAD',
+          requestId: data.requestId,
+          payload: data.payload || {},
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            postToPage({
+              type: 'STREAL_MESSENGER_SYNC_RESPONSE',
+              requestId: data.requestId,
+              ok: false,
+              error: chrome.runtime.lastError.message || 'Extension không phản hồi',
+            });
+            return;
+          }
+          postToPage({
+            type: 'STREAL_MESSENGER_SYNC_RESPONSE',
+            requestId: data.requestId,
+            ...(response || { ok: false, error: 'Extension không đồng bộ được Messenger' }),
+          });
+        },
+      );
+      return;
+    }
+
     if (data.type === 'STREAL_CLIPBOARD_READ_REQUEST') {
       navigator.clipboard.readText()
         .then((value) => postToPage({
