@@ -36,6 +36,7 @@ create table if not exists public.messenger_messages (
   text text not null default '',
   phone text,
   phones jsonb not null default '[]'::jsonb,
+  display_time text,
   sent_at timestamptz,
   raw_message jsonb not null default '{}'::jsonb,
   captured_by_staff_id text,
@@ -51,7 +52,8 @@ alter table public.messenger_conversations
 
 alter table public.messenger_messages
   add column if not exists phone text,
-  add column if not exists phones jsonb not null default '[]'::jsonb;
+  add column if not exists phones jsonb not null default '[]'::jsonb,
+  add column if not exists display_time text;
 
 create unique index if not exists messenger_conversations_conversation_id_uidx
   on public.messenger_conversations (conversation_id);

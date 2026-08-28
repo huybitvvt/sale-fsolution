@@ -1455,9 +1455,16 @@
 }
 
 .omni-message-bubble p {
-  margin: 4px 0 0;
+  margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.omni-message-bubble small {
+  display: block;
+  margin-top: 6px;
+  text-align: right;
+  font-size: 11px;
 }
 
 .omni-message-bubble em {

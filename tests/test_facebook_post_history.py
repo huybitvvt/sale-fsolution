@@ -847,8 +847,9 @@ class FacebookPostHistoryTests(unittest.TestCase):
                 {'id': '1000000001', 'name': 'Nguyễn Khách', 'profile_url': 'https://www.facebook.com/1000000001'},
             ],
             'messages': [
-                {'message_id': 'm1', 'sender_id': '1000000001', 'sender_name': 'Nguyễn Khách', 'text': 'Cho mình xin demo 0912345678', 'sent_at': '2026-08-28T01:00:00Z'},
-                {'message_id': 'm1', 'sender_id': '1000000001', 'sender_name': 'Nguyễn Khách', 'text': 'Cho mình xin demo 0912345678', 'sent_at': '2026-08-28T01:00:00Z'},
+                {'message_id': 'sys1', 'sender_name': 'Messenger', 'text': 'Các bạn không phải là bạn bè trên Facebook'},
+                {'message_id': 'm1', 'sender_id': '1000000001', 'sender_name': 'Nguyễn Khách', 'text': 'Cho mình xin demo 0912345678', 'sent_at': '2026-08-28T01:00:00Z', 'display_time': '08:00 28/8/2026'},
+                {'message_id': 'm1', 'sender_id': '1000000001', 'sender_name': 'Nguyễn Khách', 'text': 'Cho mình xin demo 0912345678', 'sent_at': '2026-08-28T01:00:00Z', 'display_time': '08:00 28/8/2026'},
                 {'message_id': 'm2', 'sender_is_self': True, 'sender_name': 'Phạm Dương', 'text': 'Em gửi demo ngay ạ', 'sent_at': '2026-08-28T01:01:00Z'},
             ],
         }
@@ -872,6 +873,7 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertEqual(len(messages), 2)
         self.assertEqual(messages[0]['sender_type'], 'customer')
         self.assertEqual(messages[0]['phone'], '0912345678')
+        self.assertEqual(messages[0]['display_time'], '08:00 28/8/2026')
         self.assertEqual(messages[1]['direction'], 'outgoing')
         self.assertEqual(len(stored_threads['messages']), 2)
 

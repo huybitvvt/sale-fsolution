@@ -40,6 +40,7 @@ type MessengerMessage = {
   text?: string;
   phone?: string;
   phones?: string[];
+  display_time?: string;
   sent_at?: string;
   captured_at?: string;
 };
@@ -363,6 +364,31 @@ function messengerTime(value?: string) {
   } catch {
     return value;
   }
+}
+
+function messengerDisplayTime(row: MessengerMessage) {
+  return row.display_time || messengerTime(row.sent_at || row.captured_at);
+}
+
+function isMessengerSystemText(value?: string) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!text) return true;
+  if (/^(\d{1,2}:\d{2})(\s+\d{1,2}\/\d{1,2}\/\d{2,4})?$/.test(text)) return true;
+  return [
+    'các bạn không phải là bạn bè',
+    'you are not connected',
+    'sống tại ',
+    'làm việc tại ',
+    'học tại ',
+    'giờ đây, các bạn',
+    'now you can',
+    'nhập, tin nhắn do',
+    'type, message from',
+    'đã gửi ',
+    'sent ',
+    'đã xem',
+    'seen',
+  ].some((prefix) => text.startsWith(prefix));
 }
 
 function authorInitials(name?: string) {
@@ -1494,6 +1520,7 @@ export function CommentLeadInboxPanel() {
   const selectedMeta = selected ? sourceLabel(selected) : null;
   const selectedSrc = selected ? sourceKey(selected) : null;
   const selectedMessenger = messengerConversations.find((item) => item.conversation_id === selectedMessengerId) || null;
+  const visibleMessengerMessages = messengerMessages.filter((message) => !isMessengerSystemText(message.text));
 
   return (
     <section className="omni-inbox module-panel">
@@ -1979,17 +2006,7 @@ export function CommentLeadInboxPanel() {
               <div className="omni-messenger-thread-head">
                 <div>
                   <h3>{selectedMessenger?.customer_name || selectedMessenger?.title || 'Chọn hội thoại Messenger'}</h3>
-                  <p>
-                    {selectedMessenger?.conversation_id
-                      ? [
-                        `Thread: ${selectedMessenger.conversation_id}`,
-                        selectedMessenger.customer_id ? `UID KH: ${selectedMessenger.customer_id}` : '',
-                        (selectedMessenger.phones?.length || selectedMessenger.customer_phone)
-                          ? `SĐT: ${(selectedMessenger.phones?.length ? selectedMessenger.phones : [selectedMessenger.customer_phone]).filter(Boolean).join(', ')}`
-                          : '',
-                      ].filter(Boolean).join(' · ')
-                      : 'Tin nhắn được lưu vào phần mềm để đội sale kiểm tra lại.'}
-                  </p>
+                  <p>Chỉ hiển thị nội dung tin nhắn và ngày giờ đã đọc.</p>
                 </div>
                 {selectedMessenger?.conversation_url ? (
                   <button type="button" className="omni-btn-ghost" onClick={() => window.open(selectedMessenger.conversation_url, '_blank', 'noopener,noreferrer')}>
@@ -1998,16 +2015,13 @@ export function CommentLeadInboxPanel() {
                 ) : null}
               </div>
               <div className="omni-messenger-messages">
-                {messengerMessages.length ? messengerMessages.map((message, index) => {
+                {visibleMessengerMessages.length ? visibleMessengerMessages.map((message, index) => {
                   const outgoing = message.direction === 'outgoing' || message.sender_type === 'staff';
                   return (
                     <div key={message.message_key || `${message.conversation_id}-${index}`} className={`omni-message-row ${outgoing ? 'outgoing' : 'incoming'}`}>
                       <div className="omni-message-bubble">
-                        <small>{message.sender_name || (outgoing ? 'Nhân viên' : 'Khách hàng')} · {messengerTime(message.sent_at || message.captured_at)}</small>
                         <p>{message.text}</p>
-                        {(message.phones?.length || message.phone) ? (
-                          <em>SĐT: {(message.phones?.length ? message.phones : [message.phone]).filter(Boolean).join(', ')}</em>
-                        ) : null}
+                        <small>{messengerDisplayTime(message)}</small>
                       </div>
                     </div>
                   );

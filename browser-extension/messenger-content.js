@@ -1,5 +1,6 @@
 (() => {
   const CONTROL_TEXT = /^(thích|like|trả lời|reply|chuyển tiếp|forward|gửi|send|đã xem|seen|active now|đang hoạt động|nhập tin nhắn|message|messenger)$/i;
+  const SYSTEM_TEXT = /^(các bạn không phải là bạn bè|you are not connected|sống tại|làm việc tại|học tại|đã gửi|sent|đã xem|seen|giờ đây, các bạn|now you can|nhập, tin nhắn do|type, message from|bắt đầu đoạn chat|started a chat|đã tham gia|joined|đã rời|left)\b/i;
 
   function normalize(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
@@ -84,10 +85,11 @@
   }
 
   function messageTextFromNode(node) {
-    const leaves = [...node.querySelectorAll('[dir="auto"], span, div')]
+    const title = conversationTitle();
+    const leaves = [...node.querySelectorAll('[dir="auto"]')]
       .filter((child) => isVisible(child) && !child.querySelector('[dir="auto"]'))
       .map((child) => normalize(child.innerText || child.textContent || ''))
-      .filter((text) => text && text.length <= 2000 && !CONTROL_TEXT.test(text));
+      .filter((text) => isLikelyMessageText(text, title));
     const unique = [...new Set(leaves)];
     if (unique.length) return unique.join('\n').slice(0, 5000);
     return normalize(node.innerText || node.textContent || '').slice(0, 5000);
@@ -109,35 +111,79 @@
     };
   }
 
-  function isLikelyConversationMessage(node, text) {
-    if (!text || text.length > 5000) return false;
+  function isTimestampText(text) {
+    return /^(\d{1,2}:\d{2})(?:\s+\d{1,2}\/\d{1,2}\/\d{2,4})?$/.test(normalize(text))
+      || /^(hôm nay|today|hôm qua|yesterday)(?:\s+lúc)?\s+\d{1,2}:\d{2}$/i.test(normalize(text));
+  }
+
+  function isLikelyMessageText(text, title = '') {
+    text = normalize(text);
+    if (!text || text.length > 2000) return false;
     if (CONTROL_TEXT.test(text)) return false;
-    if (/^(\d{1,2}:\d{2}|hôm nay|today|thứ \w+|mon|tue|wed|thu|fri|sat|sun)$/i.test(text)) return false;
+    if (SYSTEM_TEXT.test(text)) return false;
+    if (isTimestampText(text)) return false;
+    if (title && text === title) return false;
+    if (/^(hôm nay|today|hôm qua|yesterday|thứ \w+|mon|tue|wed|thu|fri|sat|sun)$/i.test(text)) return false;
+    return true;
+  }
+
+  function isLikelyConversationMessage(node, text, title = '') {
+    if (!isLikelyMessageText(text, title)) return false;
     const nav = node.closest('[role="navigation"], [aria-label*="Chats"], [aria-label*="Danh sách"], [data-pagelet*="LeftRail"]');
     if (nav) return false;
+    const editable = node.closest('[contenteditable="true"], textarea, input');
+    if (editable) return false;
     return true;
   }
 
   function collectMessages(root, limit) {
-    const nodes = [
-      ...root.querySelectorAll('[data-testid*="message"], [data-testid*="mwchat"], [role="row"], [aria-label*="Tin nhắn"], [aria-label*="Message"]'),
-    ].filter((node) => node instanceof Element && isVisible(node));
+    const title = conversationTitle();
+    const nodes = [...root.querySelectorAll('[dir="auto"]')]
+      .filter((node) => node instanceof Element && isVisible(node) && !node.querySelector('[dir="auto"]'));
     const byKey = new Map();
+    let lastDisplayTime = '';
     nodes.forEach((node, index) => {
-      const text = messageTextFromNode(node);
-      if (!isLikelyConversationMessage(node, text)) return;
-      const sender = senderFromNode(node);
-      const timestamp = normalize(node.querySelector('time, abbr')?.getAttribute('datetime') || node.querySelector('abbr')?.getAttribute('data-utime') || '');
-      const key = `${sender.sender_name}|${text}|${timestamp || index}`;
+      const text = normalize(node.innerText || node.textContent || '');
+      if (isTimestampText(text)) {
+        lastDisplayTime = text;
+        return;
+      }
+      if (!isLikelyConversationMessage(node, text, title)) return;
+      const messageRoot = node.closest('[role="row"], [data-testid*="message"], [aria-label*="Tin nhắn"], [aria-label*="Message"]') || node;
+      const sender = senderFromNode(messageRoot);
+      const timestamp = normalize(messageRoot.querySelector('time, abbr')?.getAttribute('datetime') || messageRoot.querySelector('abbr')?.getAttribute('data-utime') || '');
+      const displayTime = lastDisplayTime || normalize(messageRoot.getAttribute('aria-label') || '').match(/(\d{1,2}:\d{2}(?:\s+\d{1,2}\/\d{1,2}\/\d{2,4})?)/)?.[1] || '';
+      const key = `${sender.sender_name}|${text}|${timestamp || displayTime || index}`;
       if (byKey.has(key)) return;
       byKey.set(key, {
         message_id: `dom_${hashString(key)}`,
         text,
         sent_at: timestamp && /^\d+$/.test(timestamp) ? new Date(Number(timestamp) * 1000).toISOString() : timestamp,
+        display_time: displayTime,
         dom_index: index,
         ...sender,
       });
     });
+    if (!byKey.size) {
+      [
+        ...root.querySelectorAll('[data-testid*="message"], [data-testid*="mwchat"], [role="row"], [aria-label*="Tin nhắn"], [aria-label*="Message"]'),
+      ].filter((node) => node instanceof Element && isVisible(node)).forEach((node, index) => {
+        const text = messageTextFromNode(node);
+        if (!isLikelyConversationMessage(node, text, title)) return;
+        const sender = senderFromNode(node);
+        const timestamp = normalize(node.querySelector('time, abbr')?.getAttribute('datetime') || node.querySelector('abbr')?.getAttribute('data-utime') || '');
+        const key = `${sender.sender_name}|${text}|${timestamp || index}`;
+        if (byKey.has(key)) return;
+        byKey.set(key, {
+          message_id: `dom_${hashString(key)}`,
+          text,
+          sent_at: timestamp && /^\d+$/.test(timestamp) ? new Date(Number(timestamp) * 1000).toISOString() : timestamp,
+          display_time: '',
+          dom_index: index,
+          ...sender,
+        });
+      });
+    }
     const rows = [...byKey.values()];
     return rows.slice(Math.max(0, rows.length - limit));
   }

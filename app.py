@@ -1027,6 +1027,30 @@ def _messenger_text(value, limit: int = 4000) -> str:
     return re.sub(r'\s+', ' ', str(value or '')).strip()[:limit]
 
 
+def _is_messenger_system_text(value: str) -> bool:
+    text = _messenger_text(value, 600).casefold()
+    if not text:
+        return True
+    if re.fullmatch(r'(\d{1,2}:\d{2})(\s+\d{1,2}/\d{1,2}/\d{2,4})?', text):
+        return True
+    system_prefixes = (
+        'các bạn không phải là bạn bè',
+        'you are not connected',
+        'sống tại ',
+        'làm việc tại ',
+        'học tại ',
+        'giờ đây, các bạn',
+        'now you can',
+        'nhập, tin nhắn do',
+        'type, message from',
+        'đã gửi ',
+        'sent ',
+        'đã xem',
+        'seen',
+    )
+    return any(text.startswith(prefix) for prefix in system_prefixes)
+
+
 def _messenger_conversation_id_from_url(value: str) -> str:
     try:
         url = urlparse(str(value or ''))
@@ -1096,6 +1120,7 @@ def _normalise_messenger_message(conversation_id: str, item: dict, index: int, c
         'text': text[:5000],
         'phone': phones[0] if phones else '',
         'phones': phones,
+        'display_time': _messenger_text(raw.get('display_time') or raw.get('time_text'), 120),
         'sent_at': raw.get('sent_at') or raw.get('timestamp') or None,
         'raw_message': raw,
         'captured_by_staff_id': staff.get('id', ''),
@@ -1166,7 +1191,7 @@ def _normalise_messenger_sync_payload(body: dict) -> tuple[dict, list[dict]]:
         if not isinstance(raw, dict):
             continue
         text = str(raw.get('text') or raw.get('message') or '').strip()
-        if not text:
+        if _is_messenger_system_text(text):
             continue
         row = _normalise_messenger_message(conversation_id, raw, index, captured_at, staff)
         if row['message_key'] in seen_keys:
