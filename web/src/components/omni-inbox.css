@@ -1409,22 +1409,29 @@
 .omni-messenger-thread {
   display: flex;
   flex-direction: column;
+  background: #fff;
 }
 
 .omni-messenger-messages {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
   max-height: 620px;
   overflow-y: auto;
-  padding: 18px;
-  background: #f8fafc;
+  padding: 22px;
+  background: #fff;
 }
 
 .omni-message-row {
   display: flex;
+  align-items: flex-end;
+  gap: 8px;
   width: 100%;
+}
+
+.omni-message-row:first-child {
+  margin-top: auto;
 }
 
 .omni-message-row.outgoing {
@@ -1435,18 +1442,32 @@
   justify-content: flex-start;
 }
 
+.omni-message-avatar {
+  display: inline-flex;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .omni-message-bubble {
-  max-width: min(680px, 76%);
-  border: 1px solid var(--omni-outline-variant);
-  border-radius: 16px;
-  background: #fff;
-  padding: 10px 12px;
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+  max-width: min(620px, 72%);
+  border: 0;
+  border-radius: 18px;
+  background: #f0f2f5;
+  padding: 8px 12px;
+  color: #050505;
+  box-shadow: none;
 }
 
 .omni-message-row.outgoing .omni-message-bubble {
-  border-color: #4f46e5;
-  background: #4f46e5;
+  background: #0084ff;
   color: #fff;
 }
 

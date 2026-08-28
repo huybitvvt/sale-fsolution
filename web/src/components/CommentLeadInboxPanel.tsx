@@ -387,10 +387,42 @@ function messengerConversationKey(row: MessengerConversation | MessengerMessage)
   return row.conversation_key || row.conversation_id || '';
 }
 
-function isMessengerSystemText(value?: string) {
+function isMessengerSystemText(value?: string, conversation?: MessengerConversation | null) {
   const text = String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
   if (!text) return true;
   if (/^(\d{1,2}:\d{2})(\s+\d{1,2}\/\d{1,2}\/\d{2,4})?$/.test(text)) return true;
+  const conversationNames = [
+    conversation?.customer_name,
+    conversation?.title,
+  ].map((item) => String(item || '').replace(/\s+/g, ' ').trim().toLowerCase()).filter(Boolean);
+  if (conversationNames.includes(text)) return true;
+  if ([
+    'aa',
+    'all',
+    'chat info',
+    'chats',
+    'community',
+    'cộng đồng',
+    'customize chat',
+    'đoạn chat',
+    'file phương tiện, file và liên kết',
+    'media, files and links',
+    'messenger',
+    'mute notifications',
+    'nhóm',
+    'notifications',
+    'privacy and support',
+    'profile',
+    'quyền riêng tư và hỗ trợ',
+    'search',
+    'tất cả',
+    'tắt thông báo',
+    'thông báo',
+    'thông tin về đoạn chat',
+    'trang cá nhân',
+    'tùy chỉnh đoạn chat',
+    'unread',
+  ].includes(text)) return true;
   return [
     'các bạn không phải là bạn bè',
     'you are not connected',
@@ -1544,7 +1576,7 @@ export function CommentLeadInboxPanel() {
   const selectedMeta = selected ? sourceLabel(selected) : null;
   const selectedSrc = selected ? sourceKey(selected) : null;
   const selectedMessenger = messengerConversations.find((item) => messengerConversationKey(item) === selectedMessengerId) || null;
-  const visibleMessengerMessages = messengerMessages.filter((message) => !isMessengerSystemText(message.text));
+  const visibleMessengerMessages = messengerMessages.filter((message) => !isMessengerSystemText(message.text, selectedMessenger));
 
   return (
     <section className="omni-inbox module-panel">
@@ -2066,6 +2098,9 @@ export function CommentLeadInboxPanel() {
                   const outgoing = message.direction === 'outgoing' || message.sender_type === 'staff';
                   return (
                     <div key={message.message_key || `${message.conversation_id}-${index}`} className={`omni-message-row ${outgoing ? 'outgoing' : 'incoming'}`}>
+                      {!outgoing ? (
+                        <div className="omni-message-avatar">{authorInitials(message.sender_name || selectedMessenger?.customer_name || selectedMessenger?.title || 'K')}</div>
+                      ) : null}
                       <div className="omni-message-bubble">
                         <p>{message.text}</p>
                         <small>{messengerDisplayTime(message)}</small>

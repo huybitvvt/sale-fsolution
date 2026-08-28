@@ -1048,7 +1048,34 @@ def _is_messenger_system_text(value: str) -> bool:
         'đã xem',
         'seen',
     )
-    return any(text.startswith(prefix) for prefix in system_prefixes)
+    system_exact = {
+        'aa',
+        'all',
+        'chat info',
+        'chats',
+        'community',
+        'cộng đồng',
+        'customize chat',
+        'đoạn chat',
+        'file phương tiện, file và liên kết',
+        'media, files and links',
+        'messenger',
+        'mute notifications',
+        'nhóm',
+        'notifications',
+        'privacy and support',
+        'profile',
+        'quyền riêng tư và hỗ trợ',
+        'search',
+        'tất cả',
+        'tắt thông báo',
+        'thông báo',
+        'thông tin về đoạn chat',
+        'trang cá nhân',
+        'tùy chỉnh đoạn chat',
+        'unread',
+    }
+    return text in system_exact or any(text.startswith(prefix) for prefix in system_prefixes)
 
 
 def _messenger_conversation_id_from_url(value: str) -> str:
