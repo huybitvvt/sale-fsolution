@@ -2601,6 +2601,9 @@ export function CommentLeadInboxPanel() {
                         <div className="omni-message-avatar">{authorInitials(message.sender_name || safeConversationTitle(selectedZalo?.customer_name || selectedZalo?.title, 'K'))}</div>
                       ) : null}
                       <div className="omni-message-bubble">
+                        {!outgoing && message.sender_name && message.sender_name !== 'Khách hàng' ? (
+                          <b className="omni-message-sender">{message.sender_name}</b>
+                        ) : null}
                         {message.text && message.text !== '[Ảnh]' ? <p>{message.text}</p> : null}
                         {mediaUrls.length ? (
                           <div className="omni-message-media-grid">

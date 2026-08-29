@@ -84,3 +84,10 @@ test('extracts lazy image sources from srcset and computed CSS values', () => {
     ['blob:https://chat.zalo.me/a', 'https://cdn.example/a.jpg'],
   );
 });
+
+test('separates a Zalo group sender label from the message body', () => {
+  assert.equal(api.senderNameText('Hoàng Dương Nguyên', 'UPCODE_SPA ĐỒ HIỆU LUXURY'), 'Hoàng Dương Nguyên');
+  assert.equal(api.senderNameText('@Nguyễn Đắc Công', 'UPCODE_SPA ĐỒ HIỆU LUXURY'), '');
+  assert.equal(api.stripSenderPrefix('Hoàng Dương Nguyên Em ơi', 'Hoàng Dương Nguyên'), 'Em ơi');
+  assert.equal(api.stripSenderPrefix('Nguyễn Đắc Công em nghe ạ', 'Nguyễn Đắc Công'), 'em nghe ạ');
+});

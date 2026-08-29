@@ -1569,6 +1569,14 @@
   word-break: break-word;
 }
 
+.omni-message-sender {
+  display: block;
+  margin-bottom: 3px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .omni-message-media-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));

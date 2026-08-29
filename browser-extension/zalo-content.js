@@ -515,7 +515,130 @@
     return values.join(' ');
   }
 
-  function senderFromNode(node, scroller) {
+  function senderNameText(value, conversationTitle = '') {
+    const text = normalize(value);
+    if (!text || text.length > 80 || /^@|https?:\/\//i.test(text)) return '';
+    if (/^\[?(?:ảnh|photo|image|sticker|gif)\]?$/i.test(text)) return '';
+    if (isTimestampText(text) || CONTROL_TEXT.test(text) || SYSTEM_TEXT.test(text) || MENU_TEXT.test(text)) return '';
+    if (conversationTitle && text.toLocaleLowerCase('vi-VN') === normalize(conversationTitle).toLocaleLowerCase('vi-VN')) return '';
+    const words = text.split(/\s+/).filter(Boolean);
+    const letters = (text.match(/[a-zà-ỹ]/gi) || []).length;
+    if (!words.length || words.length > 9 || letters < 2 || /[!?;]|\.{2,}/.test(text)) return '';
+    return text;
+  }
+
+  function senderSearchScopes(node, scroller) {
+    const scopes = [];
+    let current = node;
+    const scrollerRect = scroller.getBoundingClientRect();
+    for (let depth = 0; current && current !== scroller && depth < 6; depth += 1, current = current.parentElement) {
+      if (!isVisible(current)) continue;
+      const rect = current.getBoundingClientRect();
+      if (rect.width >= scrollerRect.width * 0.94 || rect.height > 680) break;
+      scopes.push(current);
+      const classes = normalize(current.className || '');
+      if (MESSAGE_ROW_CLASS_RE.test(classes) || current.hasAttribute?.('data-msg-id') || current.hasAttribute?.('data-message-id')) break;
+    }
+    return scopes;
+  }
+
+  function senderNameFromNode(node, scroller, conversationTitle = '') {
+    const rootRect = node.getBoundingClientRect();
+    let best = null;
+    senderSearchScopes(node, scroller).forEach((scope, scopeIndex) => {
+      const selector = '[data-sender-name], [data-author-name], [data-display-name], [class*="sender"], [class*="author"], [class*="display-name"], [class*="user-name"], div, span, strong, b, p';
+      const leaves = [...scope.querySelectorAll(selector)].slice(0, 160).map((candidate) => {
+        if (!isVisible(candidate) || isQuotedOrControlNode(candidate, scope)) return null;
+        const direct = normalize([...candidate.childNodes]
+          .filter((child) => child.nodeType === Node.TEXT_NODE)
+          .map((child) => child.textContent || '')
+          .join(' '));
+        const attributeName = normalize(
+          candidate.getAttribute?.('data-sender-name')
+          || candidate.getAttribute?.('data-author-name')
+          || candidate.getAttribute?.('data-display-name')
+          || '',
+        );
+        const name = senderNameText(attributeName || direct, conversationTitle);
+        if (!name) return null;
+        return { node: candidate, name, rect: candidate.getBoundingClientRect(), attributeName };
+      }).filter(Boolean);
+
+      leaves.forEach((candidate) => {
+        const classes = normalize(candidate.node.className || '');
+        const explicitClass = /sender|author|display-name|user-name|from-name/i.test(classes);
+        const bodyBelow = leaves.filter((other) => (
+          other !== candidate
+          && other.rect.top >= candidate.rect.bottom - 3
+          && other.name.toLocaleLowerCase('vi-VN') !== candidate.name.toLocaleLowerCase('vi-VN')
+        ));
+        const style = window.getComputedStyle(candidate.node);
+        const fontSize = Number.parseFloat(style.fontSize || '0') || 0;
+        const visualSenderLabel = bodyBelow.some((other) => {
+          const bodyStyle = window.getComputedStyle(other.node);
+          const bodyFontSize = Number.parseFloat(bodyStyle.fontSize || '0') || 0;
+          return normalize(bodyStyle.color || '') !== normalize(style.color || '')
+            || (fontSize > 0 && bodyFontSize > fontSize + 0.4)
+            || Number.parseInt(style.fontWeight || '400', 10) !== Number.parseInt(bodyStyle.fontWeight || '400', 10);
+        });
+        if (!candidate.attributeName && !explicitClass && !visualSenderLabel) return;
+        const verticalDistance = candidate.rect.bottom <= rootRect.top
+          ? rootRect.top - candidate.rect.bottom
+          : Math.max(0, candidate.rect.top - rootRect.top);
+        if (verticalDistance > 190 || Math.abs(candidate.rect.left - rootRect.left) > 100) return;
+        let score = 260 - scopeIndex * 18 - verticalDistance * 0.7;
+        if (candidate.attributeName) score += 260;
+        if (explicitClass) score += 180;
+        if (visualSenderLabel) score += 120;
+        if (fontSize > 0 && fontSize <= 17) score += 25;
+        if (!best || score > best.score) best = { name: candidate.name, score };
+      });
+    });
+    return best?.name || '';
+  }
+
+  function senderAvatarId(node, scroller) {
+    const rootRect = node.getBoundingClientRect();
+    let best = null;
+    senderSearchScopes(node, scroller).forEach((scope, scopeIndex) => {
+      [...scope.querySelectorAll('img')].slice(0, 30).forEach((image) => {
+        if (!isVisible(image)) return;
+        const rect = image.getBoundingClientRect();
+        const classes = normalize(`${image.className || ''} ${classTrail(image, scope)}`);
+        const squareEnough = Math.abs(rect.width - rect.height) <= Math.max(8, rect.width * 0.24);
+        if (!squareEnough || rect.width < 24 || rect.width > 88 || rect.height < 24 || rect.height > 88) return;
+        if (/reaction|sticker|emoji|toolbar|button-icon/i.test(classes)) return;
+        const besideBubble = rect.right <= rootRect.left + 28 && rect.bottom >= rootRect.top - 24 && rect.top <= rootRect.bottom + 24;
+        const explicitAvatar = /avatar|user-photo|profile-photo/i.test(classes);
+        if (!besideBubble && !explicitAvatar) return;
+        const raw = String(image.currentSrc || image.src || image.getAttribute('src') || image.getAttribute('data-src') || '').trim();
+        if (!raw || /^data:/i.test(raw)) return;
+        let stable = raw;
+        try {
+          const url = new URL(raw, window.location.href);
+          url.search = '';
+          url.hash = '';
+          stable = `${url.hostname}${url.pathname}`;
+        } catch {
+          // Keep a non-URL blob identifier as a last-resort fingerprint.
+        }
+        const distance = Math.abs(rect.top - rootRect.top) + Math.max(0, rootRect.left - rect.right);
+        const score = (explicitAvatar ? 180 : 80) - scopeIndex * 12 - distance * 0.4;
+        if (!best || score > best.score) best = { id: `zalo_avatar_${hashString(stable)}`, score };
+      });
+    });
+    return best?.id || '';
+  }
+
+  function stripSenderPrefix(text, senderName) {
+    const value = normalize(text);
+    const name = normalize(senderName);
+    if (!value || !name || value.toLocaleLowerCase('vi-VN') === name.toLocaleLowerCase('vi-VN')) return value;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return normalize(value.replace(new RegExp(`^${escaped}(?:\\s+|[：:]\\s*)`, 'iu'), '')) || value;
+  }
+
+  function senderFromNode(node, scroller, conversationTitle = '') {
     const aria = normalize(node.getAttribute('aria-label') || '');
     const classes = classTrail(node, scroller);
     const rect = node.getBoundingClientRect();
@@ -523,12 +646,15 @@
     const geometrySelf = rect.left + rect.width / 2 > shellBounds.left + shellBounds.width * 0.58;
     const classSelf = /\b(me|self|mine|right|owner|sent|out|outgoing)\b|message-out|msg-out|chat-item-me|bubble-me|msg-sent/i.test(classes);
     const self = classSelf || geometrySelf || /(^|\b)(bạn|you)\s*:/i.test(aria);
+    const detectedName = self ? '' : senderNameFromNode(node, scroller, conversationTitle);
+    const avatarId = self ? '' : senderAvatarId(node, scroller);
     return {
-      sender_name: self ? 'Nhân viên' : 'Khách hàng',
-      sender_id: '',
+      sender_name: self ? 'Nhân viên' : (detectedName || 'Khách hàng'),
+      sender_id: self ? '' : (avatarId || (detectedName ? `zalo_member_${hashString(detectedName.toLocaleLowerCase('vi-VN'))}` : '')),
       sender_type: self ? 'staff' : 'customer',
       direction: self ? 'outgoing' : 'incoming',
       sender_is_self: self,
+      sender_name_explicit: Boolean(detectedName),
     };
   }
 
@@ -926,7 +1052,8 @@
   function messageContentKey(row, { looseTime = false } = {}) {
     const displayTime = normalize(row.display_time || '');
     const time = looseTime ? (displayTime.match(/\d{1,2}:\d{2}/)?.[0] || displayTime) : displayTime;
-    return `${row.direction}|${normalize(row.text)}|${time}|${(row.media_urls || []).join('|')}`;
+    const sender = normalize(row.sender_id || row.sender_name || '');
+    return `${row.direction}|${sender}|${normalize(row.text)}|${time}|${(row.media_urls || []).join('|')}`;
   }
 
   function collectMessages(scroller, limit, title, seed = '', round = 0, ignoredReplyIds = null, skippedReplyIds = null) {
@@ -934,14 +1061,43 @@
     const dateMarkers = timelineDateMarkers(scroller);
     const rows = [];
     const nearbyContent = new Map();
+    const senderNamesById = new Map();
+    let previousIncoming = null;
     roots.forEach((root, index) => {
       if (root.closest?.('[contenteditable="true"], textarea, input, [role="textbox"]')) return;
       const media = collectMedia(root);
       const directMarker = directDisplayMarker(root);
-      const text = extractMessageText(root, title, directMarker);
+      const senderDetails = senderFromNode(root, scroller, title);
+      const senderNameExplicit = senderDetails.sender_name_explicit === true;
+      const sender = { ...senderDetails };
+      delete sender.sender_name_explicit;
+      const rect = root.getBoundingClientRect();
+      if (sender.direction === 'incoming') {
+        const rememberedName = sender.sender_id ? senderNamesById.get(sender.sender_id) : '';
+        if (sender.sender_name === 'Khách hàng' && rememberedName) sender.sender_name = rememberedName;
+        const verticalGap = previousIncoming ? rect.top - previousIncoming.bottom : Infinity;
+        const sameColumn = previousIncoming ? Math.abs(rect.left - previousIncoming.left) <= 90 : false;
+        const compatibleAvatar = previousIncoming
+          ? (!sender.sender_id || !previousIncoming.senderId || sender.sender_id === previousIncoming.senderId)
+          : false;
+        if (sender.sender_name === 'Khách hàng' && previousIncoming && verticalGap >= -8 && verticalGap <= 110 && sameColumn && compatibleAvatar) {
+          sender.sender_name = previousIncoming.name;
+          sender.sender_id = sender.sender_id || previousIncoming.senderId;
+        }
+        if (sender.sender_id && sender.sender_name !== 'Khách hàng') senderNamesById.set(sender.sender_id, sender.sender_name);
+        previousIncoming = {
+          name: sender.sender_name,
+          senderId: sender.sender_id,
+          left: rect.left,
+          bottom: rect.bottom,
+        };
+      } else {
+        previousIncoming = null;
+      }
+      let text = extractMessageText(root, title, directMarker);
+      if (senderNameExplicit) text = stripSenderPrefix(text, sender.sender_name);
       if (!text && !media.hasVisualMedia) return;
       const finalText = text || '[Ảnh]';
-      const sender = senderFromNode(root, scroller);
       const dateKey = directMarker?.dateKey || nearestDateKey(root, dateMarkers);
       const sentAt = markerIso(directMarker, dateKey);
       const displayTime = markerDisplayTime(directMarker, dateKey);
@@ -973,7 +1129,7 @@
         return;
       }
       const contentKey = messageContentKey(row, { looseTime: true });
-      const top = root.getBoundingClientRect().top;
+      const top = rect.top;
       const previous = nearbyContent.get(contentKey);
       if (previous && Math.abs(previous.top - top) < 14) {
         if (row.sent_at && !previous.row.sent_at) Object.assign(previous.row, row);
@@ -1249,6 +1405,8 @@
     stableIdValue,
     srcsetCandidates,
     cssImageUrls,
+    senderNameText,
+    stripSenderPrefix,
   };
   if (typeof globalThis !== 'undefined' && globalThis.__STREAL_ZALO_TEST_MODE__) {
     globalThis.__STREAL_ZALO_TEST_API__ = testApi;

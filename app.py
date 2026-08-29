@@ -1462,6 +1462,7 @@ def _zalo_message_fingerprint(row: dict, *, loose_time: bool = False) -> str:
     row = row if isinstance(row, dict) else {}
     conversation_key = _messenger_row_conversation_key(row)
     direction = _messenger_text(row.get('direction') or row.get('sender_type'), 40).casefold()
+    sender = _messenger_text(row.get('sender_id') or row.get('sender_name'), 180).casefold()
     text = re.sub(r'\s+', ' ', str(row.get('text') or '')).strip().casefold()
     display_time = re.sub(r'\s+', ' ', str(row.get('display_time') or '')).strip()
     if loose_time:
@@ -1471,7 +1472,7 @@ def _zalo_message_fingerprint(row: dict, *, loose_time: bool = False) -> str:
     if not (text or media):
         return ''
     return hashlib.sha1(
-        f'{conversation_key}|{direction}|{text}|{display_time}|{media}'.encode('utf-8', errors='ignore')
+        f'{conversation_key}|{direction}|{sender}|{text}|{display_time}|{media}'.encode('utf-8', errors='ignore')
     ).hexdigest()
 
 
