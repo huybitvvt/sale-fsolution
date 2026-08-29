@@ -1344,7 +1344,7 @@ export function CommentLeadInboxPanel() {
     setZaloBusy(true);
     setStatus('Đang đọc hội thoại Zalo Web đang mở bằng extension...');
     try {
-      const result = await requestZaloSync({ limit: 500, maxScrolls: 28, pauseMs: 650 });
+      const result = await requestZaloSync({ limit: 500, maxScrolls: 40, pauseMs: 700 });
       if (!result.ok) {
         setStatus(`❌ ${result.error || result.warning || 'Không đồng bộ được Zalo'}`);
         return;

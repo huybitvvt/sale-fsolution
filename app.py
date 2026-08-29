@@ -1445,11 +1445,102 @@ def _store_messenger_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
     return conversation, messages, warning
 
 
+def _zalo_message_media_urls(row: dict) -> list[str]:
+    raw = row.get('raw_message') if isinstance(row, dict) and isinstance(row.get('raw_message'), dict) else {}
+    values = raw.get('media_urls') if isinstance(raw.get('media_urls'), list) else []
+    return sorted({str(item).strip() for item in values if str(item).strip()})
+
+
+def _zalo_message_fingerprint(row: dict, *, loose_time: bool = False) -> str:
+    row = row if isinstance(row, dict) else {}
+    conversation_key = _messenger_row_conversation_key(row)
+    direction = _messenger_text(row.get('direction') or row.get('sender_type'), 40).casefold()
+    text = re.sub(r'\s+', ' ', str(row.get('text') or '')).strip().casefold()
+    display_time = re.sub(r'\s+', ' ', str(row.get('display_time') or '')).strip()
+    if loose_time:
+        time_match = re.search(r'\b\d{1,2}:\d{2}\b', display_time)
+        display_time = time_match.group(0) if time_match else display_time
+    media = '|'.join(_zalo_message_media_urls(row))
+    if not (text or media):
+        return ''
+    return hashlib.sha1(
+        f'{conversation_key}|{direction}|{text}|{display_time}|{media}'.encode('utf-8', errors='ignore')
+    ).hexdigest()
+
+
+def _prefer_zalo_message(previous: dict, current: dict) -> dict:
+    previous = previous if isinstance(previous, dict) else {}
+    current = current if isinstance(current, dict) else {}
+    merged = {**previous, **current}
+    if previous.get('sent_at') and not current.get('sent_at'):
+        merged['sent_at'] = previous.get('sent_at')
+    previous_display = str(previous.get('display_time') or '').strip()
+    current_display = str(current.get('display_time') or '').strip()
+    if len(previous_display) > len(current_display):
+        merged['display_time'] = previous_display
+    previous_raw = previous.get('raw_message') if isinstance(previous.get('raw_message'), dict) else {}
+    current_raw = current.get('raw_message') if isinstance(current.get('raw_message'), dict) else {}
+    merged['raw_message'] = {**previous_raw, **current_raw}
+    return merged
+
+
+def _dedupe_zalo_message_rows(rows: list[dict]) -> list[dict]:
+    by_key: dict[str, dict] = {}
+    fingerprint_to_key: dict[str, str] = {}
+    for index, item in enumerate(rows or []):
+        if not isinstance(item, dict):
+            continue
+        row = _normalise_messenger_storage_row(item)
+        message_key = _messenger_text(row.get('message_key'), 180) or hashlib.sha1(
+            f"{_messenger_row_conversation_key(row)}|{row.get('message_id') or ''}|{index}".encode('utf-8', errors='ignore')
+        ).hexdigest()
+        fingerprint = _zalo_message_fingerprint(row)
+        existing_key = fingerprint_to_key.get(fingerprint) if fingerprint else ''
+        target_key = existing_key or message_key
+        if existing_key:
+            row['message_key'] = existing_key
+        by_key[target_key] = _prefer_zalo_message(by_key.get(target_key, {}), row)
+        if fingerprint:
+            fingerprint_to_key[fingerprint] = target_key
+    return list(by_key.values())
+
+
+def _zalo_message_sort_key(row: dict) -> tuple:
+    row = row if isinstance(row, dict) else {}
+    sent_at = _parse_iso_datetime(row.get('sent_at'))
+    if sent_at:
+        return (sent_at.timestamp(), 0, 0)
+    display_time = re.sub(r'\s+', ' ', str(row.get('display_time') or '')).strip()
+    match = re.fullmatch(r'(\d{1,2}):(\d{2})\s+(\d{1,2})/(\d{1,2})/(\d{2,4})', display_time)
+    if match:
+        try:
+            year = int(match.group(5))
+            if year < 100:
+                year += 2000
+            parsed = datetime(
+                year,
+                int(match.group(4)),
+                int(match.group(3)),
+                int(match.group(1)),
+                int(match.group(2)),
+                tzinfo=_app_timezone(),
+            ).astimezone(timezone.utc)
+            return (parsed.timestamp(), 0, 0)
+        except (TypeError, ValueError):
+            pass
+    captured_at = _parse_iso_datetime(row.get('captured_at'))
+    raw = row.get('raw_message') if isinstance(row.get('raw_message'), dict) else {}
+    capture_round = int(raw.get('capture_round') or 0) if str(raw.get('capture_round') or '').lstrip('-').isdigit() else 0
+    dom_index = int(raw.get('dom_index') or 0) if str(raw.get('dom_index') or '').lstrip('-').isdigit() else 0
+    return (captured_at.timestamp() if captured_at else 0, -capture_round, dom_index)
+
+
 def _store_zalo_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
     global _zalo_threads
     body = body.copy() if isinstance(body, dict) else {}
     body['source'] = body.get('source') or 'zalo_web_dom'
     conversation, messages = _normalise_messenger_sync_payload(body)
+    messages = _dedupe_zalo_message_rows(messages)
     conversation['source'] = 'zalo_web_dom'
     if not messages:
         return conversation, [], 'Extension chưa đọc được tin nhắn Zalo nào trong hội thoại đang mở.'
@@ -1463,14 +1554,41 @@ def _store_zalo_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
         }
         previous = conversations_by_key.get(conversation['conversation_key']) or {}
         conversations_by_key[conversation['conversation_key']] = {**previous, **conversation}
+        existing_rows = _dedupe_zalo_message_rows(current_messages)
         messages_by_key = {
             str(item.get('message_key') or ''): item
-            for item in current_messages
+            for item in existing_rows
             if isinstance(item, dict) and str(item.get('message_key') or '')
         }
+        exact_fingerprint_to_key = {
+            _zalo_message_fingerprint(item): str(item.get('message_key') or '')
+            for item in messages_by_key.values()
+            if _zalo_message_fingerprint(item)
+        }
+        loose_fingerprint_keys: dict[str, set[str]] = {}
+        for item in messages_by_key.values():
+            loose_fingerprint = _zalo_message_fingerprint(item, loose_time=True)
+            if loose_fingerprint:
+                loose_fingerprint_keys.setdefault(loose_fingerprint, set()).add(str(item.get('message_key') or ''))
         for row in messages:
             row['raw_message'] = {**(row.get('raw_message') or {}), 'source': 'zalo_web_dom'}
-            messages_by_key[row['message_key']] = {**messages_by_key.get(row['message_key'], {}), **row}
+            exact_fingerprint = _zalo_message_fingerprint(row)
+            existing_key = exact_fingerprint_to_key.get(exact_fingerprint) if exact_fingerprint else ''
+            if not existing_key:
+                loose_fingerprint = _zalo_message_fingerprint(row, loose_time=True)
+                loose_matches = loose_fingerprint_keys.get(loose_fingerprint, set()) if loose_fingerprint else set()
+                if len(loose_matches) == 1:
+                    existing_key = next(iter(loose_matches))
+            target_key = existing_key or row['message_key']
+            if existing_key:
+                row['message_key'] = existing_key
+            messages_by_key[target_key] = _prefer_zalo_message(messages_by_key.get(target_key, {}), row)
+            if exact_fingerprint:
+                exact_fingerprint_to_key[exact_fingerprint] = target_key
+            loose_fingerprint = _zalo_message_fingerprint(row, loose_time=True)
+            if loose_fingerprint:
+                loose_fingerprint_keys.setdefault(loose_fingerprint, set()).add(target_key)
+        messages = _dedupe_zalo_message_rows(messages)
         merged_for_conversation = [
             row for row in messages_by_key.values()
             if _messenger_row_conversation_key(row) == conversation['conversation_key']
@@ -1480,11 +1598,7 @@ def _store_zalo_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
             **conversations_by_key.get(conversation['conversation_key'], {}),
             **conversation,
         }
-        stored_messages = sorted(
-            messages_by_key.values(),
-            key=lambda row: str(row.get('sent_at') or row.get('captured_at') or ''),
-            reverse=True,
-        )[:10000]
+        stored_messages = sorted(messages_by_key.values(), key=_zalo_message_sort_key, reverse=True)[:10000]
         _zalo_threads = {
             'conversations': sorted(
                 conversations_by_key.values(),
@@ -1837,9 +1951,9 @@ def _load_zalo_threads(
         message_key = _messenger_text(normalised.get('message_key'), 180) or hashlib.sha1(
             f"{_messenger_row_conversation_key(normalised)}|{normalised.get('text') or ''}|{normalised.get('captured_at') or ''}".encode('utf-8', errors='ignore')
         ).hexdigest()
-        messages_by_key[message_key] = {**messages_by_key.get(message_key, {}), **normalised}
-    messages = list(messages_by_key.values())
-    messages.sort(key=lambda row: str(row.get('sent_at') or row.get('captured_at') or ''))
+        messages_by_key[message_key] = _prefer_zalo_message(messages_by_key.get(message_key, {}), normalised)
+    messages = _dedupe_zalo_message_rows(list(messages_by_key.values()))
+    messages.sort(key=_zalo_message_sort_key)
     return conversations[:1000], messages[-limit:] if len(messages) > limit else messages, warning
 
 

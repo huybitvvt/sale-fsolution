@@ -985,6 +985,75 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertEqual(messages[2]['raw_message']['media_urls'], ['https://example.com/a.jpg'])
         self.assertEqual(len(stored_threads['messages']), 3)
 
+    def test_zalo_sync_keeps_stable_conversation_and_merges_duplicate_dom_bubbles(self):
+        staff = {'id': 'sale-1', 'name': 'Sale A', 'username': 'salea'}
+        first_payload = {
+            'conversation_url': 'https://chat.zalo.me/',
+            'conversation_id': 'zalo_dom_stable_customer_1',
+            'conversation_title': 'Nguyễn Doãn Huy',
+            'customer_name': 'Nguyễn Doãn Huy',
+            'messages': [
+                {
+                    'message_id': 'unstable-root-a',
+                    'sender_is_self': True,
+                    'text': 'bác còn gpt k ạ',
+                    'display_time': '17:58',
+                },
+                {
+                    'message_id': 'unstable-root-b',
+                    'sender_is_self': True,
+                    'text': 'bác còn gpt k ạ',
+                    'display_time': '17:58',
+                },
+            ],
+        }
+        corrected_payload = {
+            **first_payload,
+            'conversation_title': 'Duyy',
+            'customer_name': 'Duyy',
+            'messages': [
+                {
+                    'message_id': 'stable-message-1',
+                    'sender_is_self': True,
+                    'text': 'bác còn gpt k ạ',
+                    'display_time': '17:58 18/8/2026',
+                    'sent_at': '2026-08-18T10:58:00Z',
+                },
+                {
+                    'message_id': 'stable-message-2',
+                    'sender_name': 'Khách hàng',
+                    'text': '60 a',
+                    'display_time': '18:10 18/8/2026',
+                    'sent_at': '2026-08-18T11:10:00Z',
+                },
+            ],
+        }
+
+        with backend.app.test_request_context('/'):
+            with (
+                patch.object(backend, '_zalo_threads', {'conversations': [], 'messages': []}),
+                patch.object(backend, '_current_staff', return_value=staff),
+                patch.object(backend, 'USE_SUPABASE', False),
+                patch.object(backend, '_save_zalo_threads'),
+            ):
+                first_conversation, first_messages, _ = backend._store_zalo_sync_payload(first_payload)
+                corrected_conversation, _, _ = backend._store_zalo_sync_payload(corrected_payload)
+                conversations, loaded_messages, _ = backend._load_zalo_threads(
+                    conversation_key=corrected_conversation['conversation_key'],
+                    limit=20,
+                )
+                stored_threads = backend._zalo_threads
+
+        self.assertEqual(first_conversation['conversation_key'], corrected_conversation['conversation_key'])
+        self.assertEqual(len(first_messages), 1)
+        self.assertEqual(len(stored_threads['conversations']), 1)
+        self.assertEqual(stored_threads['conversations'][0]['customer_name'], 'Duyy')
+        self.assertEqual(stored_threads['conversations'][0]['message_count'], 2)
+        self.assertEqual(len(stored_threads['messages']), 2)
+        self.assertEqual(conversations[0]['customer_name'], 'Duyy')
+        self.assertEqual([row['text'] for row in loaded_messages], ['bác còn gpt k ạ', '60 a'])
+        self.assertEqual(loaded_messages[0]['display_time'], '17:58 18/8/2026')
+
     def test_zalo_delete_conversation_removes_selected_thread_only(self):
         base_payload = {
             'conversation_url': 'https://chat.zalo.me/',
