@@ -20,8 +20,14 @@
 
   function nextPaint() {
     return new Promise((resolve) => {
-      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
-      else setTimeout(resolve, 16);
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        resolve();
+      };
+      setTimeout(finish, 50);
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(finish);
     });
   }
 
@@ -881,16 +887,24 @@
     return hashString(`${text}|${scroller.scrollHeight}|${scroller.scrollTop}`);
   }
 
-  async function settleScroll(scroller, pauseMs, atTop) {
+  async function settleScroll(scroller, maxWaitMs, atTop) {
     try {
       scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
     } catch {
       // ignored
     }
-    await sleep(pauseMs);
-    await nextPaint();
-    await nextPaint();
-    if (atTop) await sleep(Math.min(500, Math.max(180, pauseMs / 2)));
+    const startedAt = Date.now();
+    const minimumWait = Math.min(maxWaitMs, atTop ? 320 : 180);
+    let previous = visibleScrollerSignature(scroller);
+    let stableChecks = 0;
+    while (Date.now() - startedAt < maxWaitMs) {
+      await sleep(80);
+      await nextPaint();
+      const current = visibleScrollerSignature(scroller);
+      stableChecks = current === previous ? stableChecks + 1 : 0;
+      previous = current;
+      if (Date.now() - startedAt >= minimumWait && stableChecks >= 2) break;
+    }
   }
 
   function sortCollectedMessages(rows) {
@@ -916,8 +930,8 @@
       maxTotalBytes: 12_000_000,
     };
     const originalBottomGap = Math.max(0, scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop);
-    const maxScrolls = Math.max(1, Math.min(Number(payload.maxScrolls || 36), 80));
-    const pauseMs = Math.max(300, Math.min(Number(payload.pauseMs || 700), 1800));
+    const maxScrolls = Math.max(1, Math.min(Number(payload.maxScrolls || 34), 80));
+    const pauseMs = Math.max(320, Math.min(Number(payload.pauseMs || 600), 1400));
     const deep = payload.deep !== false;
     const seed = identity.id;
     let rounds = 1;
@@ -931,7 +945,7 @@
         const beforeHeight = Number(scroller.scrollHeight || 0);
         const beforeCount = messages.size;
         const beforeSignature = visibleScrollerSignature(scroller);
-        const jump = Math.max(280, Math.floor((scroller.clientHeight || window.innerHeight) * 0.68));
+        const jump = Math.max(320, Math.floor((scroller.clientHeight || window.innerHeight) * 0.82));
         scroller.scrollTop = Math.max(0, beforeTop - jump);
         const requestedTop = scroller.scrollTop <= 2;
         await settleScroll(scroller, pauseMs, requestedTop);

@@ -1292,11 +1292,14 @@ export function CommentLeadInboxPanel() {
 
   async function syncCurrentMessengerThread() {
     setMessengerBusy(true);
-    setStatus('Đang đọc hội thoại Messenger đang mở bằng extension...');
+    setStatus('Đang tự cuộn và đọc hội thoại Messenger đang mở...');
     try {
-      const result = await requestMessengerSync({ limit: 200 });
+      const result = await requestMessengerSync({ limit: 500, maxScrolls: 34, pauseMs: 560 });
       if (!result.ok) {
-        setStatus(`❌ ${result.error || result.warning || 'Không đồng bộ được Messenger'}`);
+        const diagnostics = result.scan_rounds
+          ? ` (đã quét ${result.extension_count ?? 0} tin qua ${result.scan_rounds} lượt)`
+          : '';
+        setStatus(`❌ ${result.error || result.warning || 'Không đồng bộ được Messenger'}${diagnostics}`);
         return;
       }
       const conversationId = result.conversation ? messengerConversationKey(result.conversation) : '';
@@ -1357,7 +1360,7 @@ export function CommentLeadInboxPanel() {
     setZaloBusy(true);
     setStatus('Đang đọc hội thoại Zalo Web đang mở bằng extension...');
     try {
-      const result = await requestZaloSync({ limit: 500, maxScrolls: 40, pauseMs: 700 });
+      const result = await requestZaloSync({ limit: 500, maxScrolls: 34, pauseMs: 600 });
       if (!result.ok) {
         const diagnostics = result.scan_rounds
           ? ` (đã quét ${result.extension_count ?? 0} tin qua ${result.scan_rounds} lượt)`
@@ -1394,6 +1397,40 @@ export function CommentLeadInboxPanel() {
       setStatus('❌ Lỗi khi gọi extension đồng bộ Zalo');
     } finally {
       setZaloBusy(false);
+    }
+  }
+
+  async function deleteSelectedMessengerConversation() {
+    const conversationKey = selectedMessengerId || (selectedMessenger ? messengerConversationKey(selectedMessenger) : '');
+    if (!conversationKey) {
+      setStatus('❌ Chưa chọn hội thoại Messenger để xoá.');
+      return;
+    }
+    const label = safeConversationTitle(selectedMessenger?.customer_name || selectedMessenger?.title, conversationKey);
+    if (typeof window !== 'undefined' && !window.confirm(`Xoá hội thoại Messenger "${label}" khỏi hệ thống? Tin nhắn đã lưu cũng sẽ bị xoá. Thao tác này không xoá tin thật trên Messenger.`)) {
+      return;
+    }
+
+    setMessengerBusy(true);
+    setStatus('Đang xoá hội thoại Messenger...');
+    try {
+      const r = await api(`/api/messenger/conversations/${encodeURIComponent(conversationKey)}`, { method: 'DELETE' });
+      const data = await r.json().catch(() => ({ ok: false, error: `Server lỗi ${r.status}` }));
+      if (!r.ok || !data.ok) {
+        setStatus(`❌ ${data.error || 'Không xoá được hội thoại Messenger'}`);
+        return;
+      }
+      const remaining = messengerConversations.filter((item) => messengerConversationKey(item) !== conversationKey);
+      const nextId = remaining[0] ? messengerConversationKey(remaining[0]) : '';
+      setMessengerConversations(remaining);
+      setMessengerMessages([]);
+      setSelectedMessengerId(nextId);
+      await loadMessenger(nextId, messengerStaffFilter);
+      setStatus(data.warning ? `⚠️ Đã xoá hội thoại Messenger, nhưng có cảnh báo: ${data.warning}` : '✅ Đã xoá hội thoại Messenger khỏi hệ thống.');
+    } catch {
+      setStatus('❌ Lỗi kết nối khi xoá hội thoại Messenger');
+    } finally {
+      setMessengerBusy(false);
     }
   }
 
@@ -2288,7 +2325,7 @@ export function CommentLeadInboxPanel() {
           <div className="omni-messenger-note">
             <MaterialIcon name="info" style={{ fontSize: 18 }} />
             <span>
-              PoC này chỉ đọc tin nhắn đang hiển thị trong hội thoại Messenger bạn đã mở bằng Chrome. Muốn lấy sâu hơn thì cuộn hội thoại trước rồi bấm đồng bộ.
+              Extension tự cuộn lên để gom lịch sử Messenger đang mở, dừng sớm khi đã tới đầu hoặc DOM không còn tải thêm tin.
             </span>
           </div>
           <div className="omni-messenger-grid">
@@ -2333,11 +2370,18 @@ export function CommentLeadInboxPanel() {
                   <h3>{selectedMessenger?.customer_name || selectedMessenger?.title || 'Chọn hội thoại Messenger'}</h3>
                   <p>Chỉ hiển thị nội dung tin nhắn và ngày giờ đã đọc.</p>
                 </div>
-                {selectedMessenger?.conversation_url ? (
-                  <button type="button" className="omni-btn-ghost" onClick={() => window.open(selectedMessenger.conversation_url, '_blank', 'noopener,noreferrer')}>
-                    Mở gốc
-                  </button>
-                ) : null}
+                <div className="omni-thread-actions">
+                  {selectedMessenger?.conversation_url ? (
+                    <button type="button" className="omni-btn-ghost" onClick={() => window.open(selectedMessenger.conversation_url, '_blank', 'noopener,noreferrer')}>
+                      Mở gốc
+                    </button>
+                  ) : null}
+                  {selectedMessengerId ? (
+                    <button type="button" className="omni-btn-danger" onClick={() => void deleteSelectedMessengerConversation()} disabled={messengerBusy}>
+                      Xoá hội thoại
+                    </button>
+                  ) : null}
+                </div>
               </div>
               <div className="omni-messenger-messages">
                 {visibleMessengerMessages.length ? visibleMessengerMessages.map((message, index) => {

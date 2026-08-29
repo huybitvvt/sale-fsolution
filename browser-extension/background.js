@@ -52,7 +52,7 @@ async function saveFacebookPublicContact(payload) {
   return response.ok ? data : { ok: false, error: data.error || `Server ${response.status}` };
 }
 
-async function saveMessengerThread(payload) {
+async function saveMessengerThread(payload, preferredAppTabId) {
   const stored = await chrome.storage.local.get(STREAL_API_ORIGIN_KEY);
   const origin = String(stored?.[STREAL_API_ORIGIN_KEY] || '');
   if (!isAllowedApiOrigin(origin)) {
@@ -60,7 +60,9 @@ async function saveMessengerThread(payload) {
   }
   try {
     const appTabs = await chrome.tabs.query({ url: `${origin}/*` });
-    const appTab = appTabs.find((tab) => Number.isInteger(tab.id));
+    const appTab = appTabs.find((tab) => tab.id === preferredAppTabId)
+      || appTabs.find((tab) => tab.active && Number.isInteger(tab.id))
+      || appTabs.find((tab) => Number.isInteger(tab.id));
     if (appTab?.id) {
       const injected = await chrome.scripting.executeScript({
         target: { tabId: appTab.id },
@@ -247,7 +249,7 @@ async function collectMessengerThread(request, sender) {
       });
     }
     if (!result?.ok) return { ok: false, error: result?.error || result?.warning || 'Extension chua doc duoc hoi thoai Messenger.' };
-    const saved = await saveMessengerThread(result);
+    const saved = await saveMessengerThread(result, sender?.tab?.id);
     if (sender?.tab?.id) {
       try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
     }
@@ -255,6 +257,8 @@ async function collectMessengerThread(request, sender) {
       ...saved,
       messenger_tab_id: tab.id,
       extension_warning: result.warning || '',
+      extension_count: Number(result.count || 0),
+      scan_rounds: Number(result.scan_rounds || 0),
       error: saved?.error || saved?.warning || '',
     };
   } catch (error) {

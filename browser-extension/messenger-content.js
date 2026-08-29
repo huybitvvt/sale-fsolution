@@ -24,6 +24,23 @@
     return Math.abs(hash).toString(36);
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function nextPaint() {
+    return new Promise((resolve) => {
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        resolve();
+      };
+      setTimeout(finish, 50);
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(finish);
+    });
+  }
+
   function profileIdFromUrl(value) {
     try {
       const url = new URL(String(value || ''), window.location.href);
@@ -146,6 +163,29 @@
     };
   }
 
+  function findThreadScroller(shell, bounds) {
+    const candidates = [shell, ...shell.querySelectorAll('div, [role="grid"], [role="list"]')]
+      .filter((node) => {
+        if (!isVisible(node) || node.closest('[role="navigation"], aside')) return false;
+        const rect = node.getBoundingClientRect();
+        const center = rect.left + rect.width / 2;
+        if (center < bounds.left || center > bounds.right) return false;
+        if (rect.height < Math.min(240, window.innerHeight * 0.34)) return false;
+        return Number(node.scrollHeight || 0) > Number(node.clientHeight || 0) + 80;
+      });
+    candidates.sort((a, b) => {
+      const score = (node) => {
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        const overflowBonus = /auto|scroll/i.test(style.overflowY || '') ? 240 : 0;
+        const range = Math.min(400, Math.max(0, Number(node.scrollHeight || 0) - Number(node.clientHeight || 0)) / 8);
+        return overflowBonus + range + Math.min(180, rect.height / 4) - Math.abs(rect.left + rect.width / 2 - (bounds.left + bounds.right) / 2) / 5;
+      };
+      return score(b) - score(a);
+    });
+    return candidates[0] || shell;
+  }
+
   function isInsideThreadColumn(node, shell, bounds) {
     if (!isVisible(node)) return false;
     if (shell && shell !== document.body && !shell.contains(node)) return false;
@@ -247,7 +287,7 @@
     return '';
   }
 
-  function collectMessages(root, limit, title, bounds) {
+  function collectMessages(root, limit, title, bounds, round = 0) {
     const leaves = [...root.querySelectorAll('[dir="auto"]')]
       .filter((node) => node instanceof Element && isInsideThreadColumn(node, root, bounds) && !node.querySelector('[dir="auto"]'));
     const byKey = new Map();
@@ -275,6 +315,7 @@
         sent_at: timestamp && /^\d+$/.test(timestamp) ? new Date(Number(timestamp) * 1000).toISOString() : '',
         display_time: displayTime,
         dom_index: index,
+        capture_round: round,
         ...sender,
       });
     });
@@ -282,7 +323,114 @@
     return rows.slice(Math.max(0, rows.length - limit));
   }
 
-  function collectMessengerThread(payload = {}) {
+  function messageContentKey(row) {
+    return `${row?.direction || row?.sender_type || ''}|${normalize(row?.text)}|${normalize(row?.display_time)}`;
+  }
+
+  function mergeMessages(target, rows) {
+    rows.forEach((row) => {
+      const direct = target.get(row.message_id);
+      if (direct) {
+        target.set(row.message_id, { ...direct, ...row, sent_at: row.sent_at || direct.sent_at, display_time: row.display_time || direct.display_time });
+        return;
+      }
+      const contentKey = messageContentKey(row);
+      const existing = [...target.entries()].find(([, item]) => messageContentKey(item) === contentKey);
+      if (existing) {
+        target.set(existing[0], {
+          ...existing[1],
+          ...row,
+          message_id: existing[1].message_id,
+          sent_at: row.sent_at || existing[1].sent_at,
+          display_time: row.display_time || existing[1].display_time,
+        });
+        return;
+      }
+      target.set(row.message_id, row);
+    });
+  }
+
+  function visibleScrollerSignature(scroller) {
+    const text = normalize(scroller.innerText || scroller.textContent || '').slice(0, 4000);
+    return hashString(`${text}|${scroller.scrollHeight}|${scroller.scrollTop}`);
+  }
+
+  async function settleScroll(scroller, maxWaitMs, atTop) {
+    try { scroller.dispatchEvent(new Event('scroll', { bubbles: true })); } catch {}
+    const startedAt = Date.now();
+    const minimumWait = Math.min(maxWaitMs, atTop ? 320 : 200);
+    let previous = visibleScrollerSignature(scroller);
+    let stableChecks = 0;
+    while (Date.now() - startedAt < maxWaitMs) {
+      await sleep(80);
+      await nextPaint();
+      const current = visibleScrollerSignature(scroller);
+      stableChecks = current === previous ? stableChecks + 1 : 0;
+      previous = current;
+      if (Date.now() - startedAt >= minimumWait && stableChecks >= 2) break;
+    }
+  }
+
+  function sortCollectedMessages(rows) {
+    return rows.sort((a, b) => {
+      const aTime = Date.parse(a.sent_at || '');
+      const bTime = Date.parse(b.sent_at || '');
+      if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return aTime - bTime;
+      const roundOrder = Number(b.capture_round || 0) - Number(a.capture_round || 0);
+      if (roundOrder) return roundOrder;
+      return Number(a.dom_index || 0) - Number(b.dom_index || 0);
+    });
+  }
+
+  async function collectAcrossScroll(scroller, limit, title, bounds, payload = {}) {
+    const messages = new Map();
+    const originalBottomGap = Math.max(0, scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop);
+    const maxScrolls = Math.max(1, Math.min(Number(payload.maxScrolls || 34), 70));
+    const pauseMs = Math.max(320, Math.min(Number(payload.pauseMs || 560), 1200));
+    const deep = payload.deep !== false;
+    let rounds = 1;
+
+    mergeMessages(messages, collectMessages(scroller, limit, title, bounds, 0));
+    if (deep && messages.size < limit) {
+      let stableRounds = 0;
+      let stableTopRounds = 0;
+      for (let step = 0; step < maxScrolls && messages.size < limit; step += 1) {
+        const beforeTop = Number(scroller.scrollTop || 0);
+        const beforeHeight = Number(scroller.scrollHeight || 0);
+        const beforeCount = messages.size;
+        const beforeSignature = visibleScrollerSignature(scroller);
+        const jump = Math.max(320, Math.floor((scroller.clientHeight || window.innerHeight) * 0.82));
+        scroller.scrollTop = Math.max(0, beforeTop - jump);
+        const requestedTop = scroller.scrollTop <= 2;
+        await settleScroll(scroller, pauseMs, requestedTop);
+        rounds += 1;
+        mergeMessages(messages, collectMessages(scroller, limit, title, bounds, step + 1));
+
+        const afterTop = Number(scroller.scrollTop || 0);
+        const afterHeight = Number(scroller.scrollHeight || 0);
+        const afterSignature = visibleScrollerSignature(scroller);
+        const unchanged = messages.size === beforeCount
+          && Math.abs(afterTop - beforeTop) < 8
+          && Math.abs(afterHeight - beforeHeight) < 8
+          && afterSignature === beforeSignature;
+        stableRounds = unchanged ? stableRounds + 1 : 0;
+        const stableAtTop = requestedTop
+          && afterTop <= 2
+          && messages.size === beforeCount
+          && Math.abs(afterHeight - beforeHeight) < 8;
+        stableTopRounds = stableAtTop ? stableTopRounds + 1 : 0;
+        if (stableTopRounds >= 2 || stableRounds >= 3) break;
+      }
+    }
+
+    try {
+      scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight - originalBottomGap);
+      scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    } catch {}
+    return { messages: sortCollectedMessages([...messages.values()]).slice(-limit), rounds };
+  }
+
+  async function collectMessengerThread(payload = {}) {
     const host = window.location.hostname;
     const path = window.location.pathname;
     if (!host.endsWith('messenger.com') && !(host.endsWith('facebook.com') && /\/messages\b/.test(path))) {
@@ -290,9 +438,11 @@
     }
     const shell = findThreadShell();
     const bounds = threadBounds(shell);
-    const limit = Math.max(20, Math.min(Number(payload.limit || 120), 300));
+    const limit = Math.max(20, Math.min(Number(payload.limit || 300), 500));
     const title = findConversationTitle(shell, bounds);
-    const messages = collectMessages(shell, limit, title, bounds);
+    const scroller = findThreadScroller(shell, bounds);
+    const collected = await collectAcrossScroll(scroller, limit, title, bounds, payload);
+    const messages = collected.messages;
     const conversationUrl = window.location.href;
     const conversationId = conversationIdFromUrl(conversationUrl) || `url_${hashString(conversationUrl)}`;
     return {
@@ -306,18 +456,28 @@
       participants: collectParticipants(shell, title),
       messages,
       count: messages.length,
+      scan_rounds: collected.rounds,
       captured_at: new Date().toISOString(),
-      warning: messages.length ? 'Chỉ đọc các bong bóng chat thật đang hiển thị trong cột hội thoại Messenger.' : 'Không thấy bong bóng tin nhắn trong hội thoại đang mở.',
+      warning: messages.length
+        ? `Đã quét ${messages.length} tin nhắn Messenger qua ${collected.rounds} lượt cuộn.`
+        : 'Không thấy bong bóng tin nhắn trong hội thoại đang mở.',
     };
   }
 
+  globalThis.__STREAL_MESSENGER_TEST_API__ = {
+    collectMessengerThread,
+    collectAcrossScroll,
+    isTimestampText,
+    messageContentKey,
+    mergeMessages,
+  };
+  if (globalThis.__STREAL_MESSENGER_TEST_MODE__) return;
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== 'STREAL_MESSENGER_COLLECT_THREAD') return false;
-    try {
-      sendResponse(collectMessengerThread(message.payload || {}));
-    } catch (error) {
-      sendResponse({ ok: false, final: true, error: error?.message || String(error) });
-    }
-    return false;
+    collectMessengerThread(message.payload || {})
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, final: true, error: error?.message || String(error) }));
+    return true;
   });
 })();
