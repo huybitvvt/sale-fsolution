@@ -1059,6 +1059,14 @@ def _is_messenger_system_text(value: str) -> bool:
     text = _messenger_text(value, 600).casefold()
     if not text:
         return True
+    if re.fullmatch(r'(?:/-)?(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)', text):
+        return True
+    if re.fullmatch(r'(?:>|<|:o|:-o|:-h|:-\(\(|:\(\(|:\)|:-\)|;\)|;-\)|:d|:-d|:\*|:-\*)', text):
+        return True
+    if re.fullmatch(r'/[-a-z0-9_]+', text):
+        return True
+    if '/-' in text and re.search(r'/-(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)', text) and not re.search(r'[à-ỹ]', text):
+        return True
     if re.fullmatch(r'(\d{1,2}:\d{2})(\s+\d{1,2}/\d{1,2}/\d{2,4})?', text):
         return True
     system_prefixes = (
@@ -1463,6 +1471,15 @@ def _store_zalo_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
         for row in messages:
             row['raw_message'] = {**(row.get('raw_message') or {}), 'source': 'zalo_web_dom'}
             messages_by_key[row['message_key']] = {**messages_by_key.get(row['message_key'], {}), **row}
+        merged_for_conversation = [
+            row for row in messages_by_key.values()
+            if _messenger_row_conversation_key(row) == conversation['conversation_key']
+        ]
+        conversation['message_count'] = len(merged_for_conversation)
+        conversations_by_key[conversation['conversation_key']] = {
+            **conversations_by_key.get(conversation['conversation_key'], {}),
+            **conversation,
+        }
         stored_messages = sorted(
             messages_by_key.values(),
             key=lambda row: str(row.get('sent_at') or row.get('captured_at') or ''),

@@ -953,8 +953,10 @@ class FacebookPostHistoryTests(unittest.TestCase):
             'participants': [{'name': 'Khách Zalo'}],
             'messages': [
                 {'message_id': 'placeholder', 'sender_name': 'Khách hàng', 'text': 'Soạn'},
+                {'message_id': 'icon-noise', 'sender_is_self': True, 'sender_name': 'Sale A', 'text': '/-strong /-heart > :o :-(( :-h'},
                 {'message_id': 'm1', 'sender_name': 'Khách Zalo', 'text': 'Tư vấn demo 0912345678', 'display_time': '09:00'},
                 {'message_id': 'm2', 'sender_is_self': True, 'sender_name': 'Sale A', 'text': 'Em gửi demo ngay ạ', 'display_time': '09:01'},
+                {'message_id': 'm3', 'sender_name': 'Khách Zalo', 'text': '[Ảnh]', 'display_time': '09:02', 'media_urls': ['https://example.com/a.jpg']},
             ],
         }
 
@@ -974,12 +976,14 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertEqual(conversation['owner_key'], 'sale-1')
         self.assertEqual(conversation['customer_name'], 'Khách Zalo')
         self.assertEqual(conversation['customer_phone'], '0912345678')
-        self.assertEqual(len(messages), 2)
+        self.assertEqual(len(messages), 3)
         self.assertNotIn('Soạn', [item['text'] for item in messages])
+        self.assertNotIn('/-strong /-heart > :o :-(( :-h', [item['text'] for item in messages])
         self.assertEqual(messages[0]['sender_type'], 'customer')
         self.assertEqual(messages[0]['phone'], '0912345678')
         self.assertEqual(messages[1]['direction'], 'outgoing')
-        self.assertEqual(len(stored_threads['messages']), 2)
+        self.assertEqual(messages[2]['raw_message']['media_urls'], ['https://example.com/a.jpg'])
+        self.assertEqual(len(stored_threads['messages']), 3)
 
 
 if __name__ == '__main__':

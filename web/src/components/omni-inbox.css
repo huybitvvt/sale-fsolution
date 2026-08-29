@@ -1481,6 +1481,32 @@
   word-break: break-word;
 }
 
+.omni-message-media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+  max-width: 360px;
+}
+
+.omni-message-media-grid:first-child {
+  margin-top: 0;
+}
+
+.omni-message-media-grid a {
+  display: block;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.omni-message-media-grid img {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+}
+
 .omni-message-bubble small {
   display: block;
   margin-top: 6px;

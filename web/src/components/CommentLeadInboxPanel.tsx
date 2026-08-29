@@ -43,6 +43,11 @@ type MessengerMessage = {
   phones?: string[];
   display_time?: string;
   sent_at?: string;
+  raw_message?: {
+    media_urls?: string[];
+    media_type?: string;
+    [key: string]: unknown;
+  };
   owner_key?: string;
   captured_at?: string;
 };
@@ -390,6 +395,10 @@ function messengerConversationKey(row: MessengerConversation | MessengerMessage)
 function isMessengerSystemText(value?: string, conversation?: MessengerConversation | null) {
   const text = String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
   if (!text) return true;
+  if (/^(?:\/-)?(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)$/.test(text)) return true;
+  if (/^(?:>|<|:o|:-o|:-h|:-\(\(|:\(\(|:\)|:-\)|;\)|;-\)|:d|:-d|:\*|:-\*)$/.test(text)) return true;
+  if (/^\/[-a-z0-9_]+$/i.test(text)) return true;
+  if (text.includes('/-') && /\/-(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)/.test(text) && !/[à-ỹ]/.test(text)) return true;
   if (/^(\d{1,2}:\d{2})(\s+\d{1,2}\/\d{1,2}\/\d{2,4})?$/.test(text)) return true;
   const conversationNames = [
     conversation?.customer_name,
@@ -442,6 +451,28 @@ function isMessengerSystemText(value?: string, conversation?: MessengerConversat
     'đã xem',
     'seen',
   ].some((prefix) => text.startsWith(prefix));
+}
+
+function safeConversationTitle(value?: string, fallback = 'Hội thoại') {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return fallback;
+  const lower = text.toLowerCase();
+  if (
+    /^(?:\/-)?(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)$/.test(lower)
+    || /^(?:>|<|:o|:-o|:-h|:-\(\(|:\(\(|:\)|:-\)|;\)|;-\)|:d|:-d|:\*|:-\*)$/.test(lower)
+    || /^\/[-a-z0-9_]+$/i.test(lower)
+    || (lower.includes('/-') && /\/-(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)/.test(lower) && !/[à-ỹ]/.test(lower))
+  ) {
+    return fallback;
+  }
+  return text;
+}
+
+function messengerMediaUrls(row: MessengerMessage) {
+  const rawUrls = row.raw_message?.media_urls;
+  return Array.isArray(rawUrls)
+    ? rawUrls.map((item) => String(item || '').trim()).filter((item) => /^https:\/\//i.test(item)).slice(0, 6)
+    : [];
 }
 
 function authorInitials(name?: string) {
@@ -633,7 +664,7 @@ export function CommentLeadInboxPanel() {
     setMessengerBusy(true);
     setStatus('Đang tải lịch sử Messenger...');
     try {
-      const params = new URLSearchParams({ limit: '200' });
+      const params = new URLSearchParams({ limit: '500' });
       if (conversationKey) params.set('conversation_key', conversationKey);
       if (staffFilter) params.set('staff_id', staffFilter);
       const r = await api(`/api/messenger/conversations?${params.toString()}`);
@@ -666,7 +697,7 @@ export function CommentLeadInboxPanel() {
     setZaloBusy(true);
     setStatus('Đang tải lịch sử Zalo...');
     try {
-      const params = new URLSearchParams({ limit: '200' });
+      const params = new URLSearchParams({ limit: '500' });
       if (conversationKey) params.set('conversation_key', conversationKey);
       if (staffFilter) params.set('staff_id', staffFilter);
       const r = await api(`/api/zalo/conversations?${params.toString()}`);
@@ -1313,14 +1344,23 @@ export function CommentLeadInboxPanel() {
     setZaloBusy(true);
     setStatus('Đang đọc hội thoại Zalo Web đang mở bằng extension...');
     try {
-      const result = await requestZaloSync({ limit: 200 });
+      const result = await requestZaloSync({ limit: 500, maxScrolls: 28, pauseMs: 650 });
       if (!result.ok) {
         setStatus(`❌ ${result.error || result.warning || 'Không đồng bộ được Zalo'}`);
         return;
       }
       const conversationId = result.conversation ? messengerConversationKey(result.conversation) : '';
       if (conversationId) setSelectedZaloId(conversationId);
-      setZaloMessages(Array.isArray(result.messages) ? result.messages : []);
+      if (Array.isArray(result.messages) && result.messages.length) {
+        setZaloMessages((current) => {
+          const byKey = new Map<string, MessengerMessage>();
+          [...current, ...result.messages!].forEach((item, index) => {
+            const key = item.message_key || `${item.direction || ''}|${item.text || ''}|${item.display_time || ''}|${index}`;
+            byKey.set(key, { ...byKey.get(key), ...item });
+          });
+          return [...byKey.values()];
+        });
+      }
       await loadZalo(conversationId);
       const note = result.extension_warning ? ` (${result.extension_warning})` : '';
       setStatus(`✅ Đã đồng bộ ${result.count || 0} tin nhắn Zalo${note}`);
@@ -2269,7 +2309,7 @@ export function CommentLeadInboxPanel() {
           <div className="omni-messenger-note">
             <MaterialIcon name="info" style={{ fontSize: 18 }} />
             <span>
-              PoC này chỉ đọc tin nhắn đang hiển thị trong hội thoại Zalo Web bạn đã mở bằng Chrome. Muốn lấy sâu hơn thì cuộn hội thoại trước rồi bấm đồng bộ.
+              PoC này đọc hội thoại Zalo Web đang mở bằng Chrome, tự cuộn lên nhiều lượt để gom thêm tin cũ. Nếu cuộc trò chuyện quá dài, cuộn sâu hơn rồi đồng bộ lại.
             </span>
           </div>
           <div className="omni-messenger-grid">
@@ -2296,7 +2336,7 @@ export function CommentLeadInboxPanel() {
                   >
                     <div className="omni-avatar sm">{authorInitials(item.customer_name || item.title)}</div>
                     <span>
-                      <b>{item.customer_name || item.title || cid || 'Hội thoại Zalo'}</b>
+                      <b>{safeConversationTitle(item.customer_name || item.title, cid || 'Hội thoại Zalo')}</b>
                       <small>
                         {staffLabel}{item.message_count || 0} tin · {phones ? `SĐT ${phones} · ` : ''}{messengerTime(item.latest_message_at || item.updated_at || item.captured_at)}
                       </small>
@@ -2311,7 +2351,7 @@ export function CommentLeadInboxPanel() {
             <section className="omni-messenger-thread">
               <div className="omni-messenger-thread-head">
                 <div>
-                  <h3>{selectedZalo?.customer_name || selectedZalo?.title || 'Chọn hội thoại Zalo'}</h3>
+                  <h3>{safeConversationTitle(selectedZalo?.customer_name || selectedZalo?.title, 'Chọn hội thoại Zalo')}</h3>
                   <p>Chỉ hiển thị nội dung tin nhắn và ngày giờ đã đọc.</p>
                 </div>
                 {selectedZalo?.conversation_url ? (
@@ -2323,13 +2363,26 @@ export function CommentLeadInboxPanel() {
               <div className="omni-messenger-messages">
                 {visibleZaloMessages.length ? visibleZaloMessages.map((message, index) => {
                   const outgoing = message.direction === 'outgoing' || message.sender_type === 'staff';
+                  const mediaUrls = messengerMediaUrls(message);
                   return (
                     <div key={message.message_key || `${message.conversation_id}-${index}`} className={`omni-message-row ${outgoing ? 'outgoing' : 'incoming'}`}>
                       {!outgoing ? (
-                        <div className="omni-message-avatar">{authorInitials(message.sender_name || selectedZalo?.customer_name || selectedZalo?.title || 'K')}</div>
+                        <div className="omni-message-avatar">{authorInitials(message.sender_name || safeConversationTitle(selectedZalo?.customer_name || selectedZalo?.title, 'K'))}</div>
                       ) : null}
                       <div className="omni-message-bubble">
-                        <p>{message.text}</p>
+                        {message.text && message.text !== '[Ảnh]' ? <p>{message.text}</p> : null}
+                        {mediaUrls.length ? (
+                          <div className="omni-message-media-grid">
+                            {mediaUrls.map((url) => (
+                              <a key={url} href={url} target="_blank" rel="noreferrer">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img src={url} alt="Ảnh Zalo" loading="lazy" />
+                              </a>
+                            ))}
+                          </div>
+                        ) : message.text === '[Ảnh]' ? (
+                          <p>[Ảnh]</p>
+                        ) : null}
                         <small>{messengerDisplayTime(message)}</small>
                       </div>
                     </div>
