@@ -88,6 +88,39 @@ create table if not exists public.zalo_sync_targets (
   updated_at timestamptz not null default now()
 );
 
+-- AI only suggests replies. It never writes into Zalo or sends a message.
+create table if not exists public.zalo_ai_suggestions (
+  id uuid primary key default gen_random_uuid(),
+  suggestion_key text not null unique,
+  conversation_key text not null,
+  conversation_id text,
+  trigger_message_key text not null,
+  trigger_message_id text,
+  trigger_text text not null default '',
+  customer_name text,
+  intent_label text,
+  customer_need text,
+  sentiment text,
+  urgency text,
+  confidence double precision not null default 0,
+  recommended_approach text,
+  suggested_replies jsonb not null default '[]'::jsonb,
+  matched_templates jsonb not null default '[]'::jsonb,
+  context_message_count integer not null default 0,
+  context_included_count integer not null default 0,
+  status text not null default 'ready'
+    check (status in ('ready', 'failed')),
+  error text,
+  provider text,
+  model text,
+  captured_by_staff_id text,
+  captured_by_staff_name text,
+  captured_by_staff_username text,
+  owner_key text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 alter table public.zalo_conversations
   add column if not exists conversation_key text,
   add column if not exists customer_id text,
@@ -163,6 +196,12 @@ create index if not exists zalo_sync_targets_staff_status_idx
 create index if not exists zalo_sync_targets_owner_idx
   on public.zalo_sync_targets (owner_key, updated_at desc);
 
+create index if not exists zalo_ai_suggestions_conversation_idx
+  on public.zalo_ai_suggestions (conversation_key, updated_at desc);
+
+create index if not exists zalo_ai_suggestions_owner_idx
+  on public.zalo_ai_suggestions (owner_key, updated_at desc);
+
 create or replace function public.set_zalo_conversations_updated_at()
 returns trigger language plpgsql as $$
 begin
@@ -179,12 +218,14 @@ for each row execute function public.set_zalo_conversations_updated_at();
 alter table public.zalo_conversations enable row level security;
 alter table public.zalo_messages enable row level security;
 alter table public.zalo_sync_targets enable row level security;
+alter table public.zalo_ai_suggestions enable row level security;
 
 drop policy if exists "zalo_conversations_app_all" on public.zalo_conversations;
 drop policy if exists "zalo_messages_app_all" on public.zalo_messages;
 drop policy if exists "zalo_conversations_service_all" on public.zalo_conversations;
 drop policy if exists "zalo_messages_service_all" on public.zalo_messages;
 drop policy if exists "zalo_sync_targets_service_all" on public.zalo_sync_targets;
+drop policy if exists "zalo_ai_suggestions_service_all" on public.zalo_ai_suggestions;
 
 create policy "zalo_conversations_service_all" on public.zalo_conversations
   for all to service_role
@@ -201,11 +242,18 @@ create policy "zalo_sync_targets_service_all" on public.zalo_sync_targets
   using (true)
   with check (true);
 
+create policy "zalo_ai_suggestions_service_all" on public.zalo_ai_suggestions
+  for all to service_role
+  using (true)
+  with check (true);
+
 revoke all on public.zalo_conversations from anon, authenticated;
 revoke all on public.zalo_messages from anon, authenticated;
 revoke all on public.zalo_sync_targets from anon, authenticated;
+revoke all on public.zalo_ai_suggestions from anon, authenticated;
 grant select, insert, update, delete on public.zalo_conversations to service_role;
 grant select, insert, update, delete on public.zalo_messages to service_role;
 grant select, insert, update, delete on public.zalo_sync_targets to service_role;
+grant select, insert, update, delete on public.zalo_ai_suggestions to service_role;
 
 notify pgrst, 'reload schema';

@@ -92,6 +92,33 @@ type ZaloSyncTarget = {
   updated_at?: string;
 };
 
+type ZaloSuggestedReply = {
+  label?: string;
+  text: string;
+};
+
+type ZaloAiSuggestion = {
+  suggestion_key: string;
+  conversation_key?: string;
+  trigger_message_key?: string;
+  trigger_message_id?: string;
+  trigger_text?: string;
+  customer_name?: string;
+  intent_label?: string;
+  customer_need?: string;
+  sentiment?: string;
+  urgency?: string;
+  confidence?: number;
+  recommended_approach?: string;
+  suggested_replies?: ZaloSuggestedReply[];
+  matched_templates?: Array<{ id?: string; title?: string; trigger?: string; text?: string }>;
+  context_message_count?: number;
+  context_included_count?: number;
+  status?: 'ready' | 'failed';
+  error?: string;
+  updated_at?: string;
+};
+
 type MessengerSyncResult = {
   ok?: boolean;
   conversation?: MessengerConversation;
@@ -109,6 +136,7 @@ type MessengerSyncResult = {
   media_upload_count?: number;
   approval_required?: boolean;
   target?: ZaloSyncTarget;
+  ai_suggestion?: ZaloAiSuggestion;
 };
 
 type TikTokBridgeResult = {
@@ -578,6 +606,8 @@ export function CommentLeadInboxPanel() {
   const [zaloBusy, setZaloBusy] = useState(false);
   const [zaloSyncTargets, setZaloSyncTargets] = useState<ZaloSyncTarget[]>([]);
   const [zaloActiveStaffId, setZaloActiveStaffId] = useState('');
+  const [zaloAiSuggestions, setZaloAiSuggestions] = useState<ZaloAiSuggestion[]>([]);
+  const [zaloAiBusy, setZaloAiBusy] = useState(false);
 
   const processedSet = useMemo(() => new Set(processedIds), [processedIds]);
   const starredSet = useMemo(() => new Set(starredIds), [starredIds]);
@@ -722,9 +752,11 @@ export function CommentLeadInboxPanel() {
     }
   }, [messengerStaffFilter, selectedMessengerId]);
 
-  const loadZalo = useCallback(async (conversationKey = selectedZaloId, staffFilter = zaloStaffFilter) => {
-    setZaloBusy(true);
-    setStatus('Đang tải lịch sử Zalo...');
+  const loadZalo = useCallback(async (conversationKey = selectedZaloId, staffFilter = zaloStaffFilter, silent = false) => {
+    if (!silent) {
+      setZaloBusy(true);
+      setStatus('Đang tải lịch sử Zalo...');
+    }
     try {
       const params = new URLSearchParams({ limit: '500' });
       if (conversationKey) params.set('conversation_key', conversationKey);
@@ -739,9 +771,11 @@ export function CommentLeadInboxPanel() {
       const messages = Array.isArray(data.messages) ? data.messages as MessengerMessage[] : [];
       const staff = Array.isArray(data.staff) ? data.staff as MessengerStaffOption[] : [];
       const syncTargets = Array.isArray(data.sync_targets) ? data.sync_targets as ZaloSyncTarget[] : [];
+      const aiSuggestions = Array.isArray(data.ai_suggestions) ? data.ai_suggestions as ZaloAiSuggestion[] : [];
       setZaloConversations(conversations);
       setZaloMessages(messages);
       setZaloSyncTargets(syncTargets);
+      setZaloAiSuggestions(aiSuggestions);
       setZaloCanManage(Boolean(data.can_manage));
       setZaloStaffOptions(staff);
       setZaloActiveStaffId(String(data.active_staff_id || ''));
@@ -750,13 +784,15 @@ export function CommentLeadInboxPanel() {
         if (current && conversations.some((item) => messengerConversationKey(item) === current)) return current;
         return conversations[0] ? messengerConversationKey(conversations[0]) : '';
       });
-      setStatus(data.warning ? `⚠️ ${data.warning}` : conversations.length ? `✅ Đã tải ${conversations.length} hội thoại Zalo` : 'Chưa có lịch sử Zalo. Mở một hội thoại Zalo Web rồi bấm đồng bộ.');
+      if (!silent) {
+        setStatus(data.warning ? `⚠️ ${data.warning}` : conversations.length ? `✅ Đã tải ${conversations.length} hội thoại Zalo` : 'Chưa có lịch sử Zalo. Mở một hội thoại Zalo Web rồi bấm đồng bộ.');
+      }
       return conversations.length;
     } catch {
-      setStatus('❌ Lỗi kết nối khi tải Zalo');
+      if (!silent) setStatus('❌ Lỗi kết nối khi tải Zalo');
       return -1;
     } finally {
-      setZaloBusy(false);
+      if (!silent) setZaloBusy(false);
     }
   }, [selectedZaloId, zaloStaffFilter]);
 
@@ -792,6 +828,34 @@ export function CommentLeadInboxPanel() {
   useEffect(() => {
     if (tab === 'zalo') void loadZalo();
   }, [tab, loadZalo]);
+
+  useEffect(() => {
+    if (tab !== 'zalo' || !selectedZaloId) return undefined;
+    const timer = window.setInterval(() => {
+      void loadZalo(selectedZaloId, zaloStaffFilter, true);
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [tab, selectedZaloId, zaloStaffFilter, loadZalo]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleZaloSuggestion = (event: MessageEvent) => {
+      if (event.source !== window) return;
+      const data = event.data || {};
+      if (data.source !== 'streal-tiktok-extension' || data.type !== 'STREAL_ZALO_AI_SUGGESTION_READY') return;
+      const suggestion = data.suggestion as ZaloAiSuggestion | undefined;
+      if (!suggestion?.suggestion_key) return;
+      setZaloAiSuggestions((current) => [
+        suggestion,
+        ...current.filter((item) => item.suggestion_key !== suggestion.suggestion_key),
+      ]);
+      if (suggestion.conversation_key && suggestion.conversation_key === selectedZaloId) {
+        void loadZalo(selectedZaloId, zaloStaffFilter, true);
+      }
+    };
+    window.addEventListener('message', handleZaloSuggestion);
+    return () => window.removeEventListener('message', handleZaloSuggestion);
+  }, [selectedZaloId, zaloStaffFilter, loadZalo]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1427,6 +1491,48 @@ export function CommentLeadInboxPanel() {
     }
   }
 
+  async function generateZaloAiSuggestion() {
+    if (!selectedZaloId) {
+      setStatus('❌ Chưa chọn hội thoại Zalo để tạo gợi ý.');
+      return;
+    }
+    setZaloAiBusy(true);
+    setStatus('AI đang đọc ngữ cảnh và đối chiếu kho mẫu câu...');
+    try {
+      const r = await api('/api/zalo/ai-suggestions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversation_key: selectedZaloId, force: true }),
+      });
+      const data = await r.json().catch(() => ({ ok: false, error: `Server lỗi ${r.status}` }));
+      const suggestion = data.suggestion as ZaloAiSuggestion | undefined;
+      if (suggestion?.suggestion_key) {
+        setZaloAiSuggestions((current) => [
+          suggestion,
+          ...current.filter((item) => item.suggestion_key !== suggestion.suggestion_key),
+        ]);
+      }
+      if (!r.ok || !data.ok) {
+        setStatus(`❌ ${data.error || suggestion?.error || 'AI chưa tạo được gợi ý'}`);
+        return;
+      }
+      setStatus(data.warning ? `⚠️ AI đã tạo gợi ý, nhưng có cảnh báo: ${data.warning}` : '✅ AI đã tạo gợi ý. Sale cần duyệt trước khi dùng.');
+    } catch {
+      setStatus('❌ Lỗi kết nối khi tạo gợi ý AI cho Zalo');
+    } finally {
+      setZaloAiBusy(false);
+    }
+  }
+
+  async function copyZaloAiReply(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus('✅ Đã sao chép gợi ý. Hãy kiểm tra rồi gửi thủ công trên Zalo.');
+    } catch {
+      setStatus('❌ Không sao chép được gợi ý trên trình duyệt này.');
+    }
+  }
+
   async function deleteSelectedMessengerConversation() {
     const conversationKey = selectedMessengerId || (selectedMessenger ? messengerConversationKey(selectedMessenger) : '');
     if (!conversationKey) {
@@ -1485,6 +1591,7 @@ export function CommentLeadInboxPanel() {
       const nextId = remaining[0] ? messengerConversationKey(remaining[0]) : '';
       setZaloConversations(remaining);
       setZaloMessages([]);
+      setZaloAiSuggestions([]);
       setSelectedZaloId(nextId);
       await loadZalo(nextId, zaloStaffFilter);
       setStatus(data.warning ? `⚠️ Đã xoá hội thoại Zalo, nhưng có cảnh báo: ${data.warning}` : '✅ Đã xoá hội thoại Zalo khỏi hệ thống.');
@@ -1889,6 +1996,7 @@ export function CommentLeadInboxPanel() {
   const visibleMessengerMessages = messengerMessages.filter((message) => !isMessengerSystemText(message.text, selectedMessenger));
   const selectedZalo = zaloConversations.find((item) => messengerConversationKey(item) === selectedZaloId) || null;
   const visibleZaloMessages = zaloMessages.filter((message) => !isMessengerSystemText(message.text, selectedZalo));
+  const selectedZaloSuggestion = zaloAiSuggestions.find((item) => item.conversation_key === selectedZaloId) || null;
 
   return (
     <section className="omni-inbox module-panel">
@@ -2475,7 +2583,7 @@ export function CommentLeadInboxPanel() {
           <div className="omni-messenger-note">
             <MaterialIcon name="info" style={{ fontSize: 18 }} />
             <span>
-              Chỉ nhóm Zalo được Admin cho phép mới được lưu. Chat riêng và nhóm chưa duyệt không gửi nội dung tin nhắn lên hệ thống.
+              Extension tự theo dõi hội thoại Zalo Web đang mở. Chat riêng được đồng bộ trực tiếp; nhóm chỉ được lưu nội dung sau khi Admin cho phép.
             </span>
           </div>
           {zaloCanManage ? (
@@ -2539,8 +2647,8 @@ export function CommentLeadInboxPanel() {
           <div className="omni-messenger-grid">
             <aside className="omni-messenger-list">
               <div className="omni-messenger-list-head">
-                <b>Nhóm Zalo đã lưu</b>
-                <small>{zaloConversations.length} nhóm</small>
+                <b>Hội thoại Zalo đã lưu</b>
+                <small>{zaloConversations.length} hội thoại</small>
               </div>
               {zaloConversations.length ? zaloConversations.map((item, index) => {
                 const cid = messengerConversationKey(item);
@@ -2568,7 +2676,7 @@ export function CommentLeadInboxPanel() {
                   </button>
                 );
               }) : (
-                <div className="omni-empty">Chưa có nhóm đã được duyệt. Mở nhóm Zalo Web rồi bấm đồng bộ.</div>
+                <div className="omni-empty">Chưa có hội thoại đã lưu. Mở chat riêng hoặc nhóm Zalo đã được duyệt rồi bấm đồng bộ.</div>
               )}
             </aside>
 
@@ -2576,7 +2684,7 @@ export function CommentLeadInboxPanel() {
               <div className="omni-messenger-thread-head">
                 <div>
                   <h3>{safeConversationTitle(selectedZalo?.customer_name || selectedZalo?.title, 'Chọn hội thoại Zalo')}</h3>
-                  <p>Chỉ hiển thị nội dung tin nhắn và ngày giờ đã đọc.</p>
+                  <p>Tin nhắn đã lưu và gợi ý AI để sale duyệt trước khi dùng.</p>
                 </div>
                 <div className="omni-thread-actions">
                   {selectedZalo?.conversation_url ? (
@@ -2591,6 +2699,65 @@ export function CommentLeadInboxPanel() {
                   ) : null}
                 </div>
               </div>
+              {selectedZaloId ? (
+                <div className={`omni-zalo-ai-panel ${selectedZaloSuggestion?.status === 'failed' ? 'failed' : ''}`}>
+                  <div className="omni-zalo-ai-head">
+                    <div>
+                      <span className="omni-zalo-ai-label">
+                        <MaterialIcon name="auto_awesome" style={{ fontSize: 17 }} />
+                        AI gợi ý trả lời
+                      </span>
+                      <small>Chỉ gợi ý để sale duyệt và sao chép, không tự gửi tin.</small>
+                    </div>
+                    <button
+                      type="button"
+                      className="omni-btn-ghost"
+                      onClick={() => void generateZaloAiSuggestion()}
+                      disabled={zaloAiBusy}
+                    >
+                      {zaloAiBusy ? 'Đang tạo...' : selectedZaloSuggestion ? 'Tạo lại' : 'Tạo gợi ý'}
+                    </button>
+                  </div>
+                  {selectedZaloSuggestion?.status === 'ready' ? (
+                    <>
+                      {selectedZaloSuggestion.trigger_text ? (
+                        <p className="omni-zalo-ai-trigger">
+                          <b>Khách vừa nhắn:</b> “{selectedZaloSuggestion.trigger_text}”
+                        </p>
+                      ) : null}
+                      {selectedZaloSuggestion.recommended_approach ? (
+                        <p className="omni-zalo-ai-approach">
+                          <b>Hướng xử lý:</b> {selectedZaloSuggestion.recommended_approach}
+                        </p>
+                      ) : null}
+                      <div className="omni-zalo-ai-replies">
+                        {(selectedZaloSuggestion.suggested_replies || []).map((reply, index) => (
+                          <div key={`${selectedZaloSuggestion.suggestion_key}-${index}`} className="omni-zalo-ai-reply">
+                            <div>
+                              <b>{reply.label || `Gợi ý ${index + 1}`}</b>
+                              <p>{reply.text}</p>
+                            </div>
+                            <button type="button" className="omni-btn-primary" onClick={() => void copyZaloAiReply(reply.text)}>
+                              Sao chép
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="omni-zalo-ai-meta">
+                        {selectedZaloSuggestion.intent_label ? <span>Ý định: {selectedZaloSuggestion.intent_label}</span> : null}
+                        {selectedZaloSuggestion.context_included_count ? <span>Đã đọc {selectedZaloSuggestion.context_included_count} tin gần nhất</span> : null}
+                        {typeof selectedZaloSuggestion.confidence === 'number' ? <span>Độ tin cậy {Math.round(selectedZaloSuggestion.confidence * 100)}%</span> : null}
+                      </div>
+                    </>
+                  ) : selectedZaloSuggestion?.status === 'failed' ? (
+                    <p className="omni-zalo-ai-error">{selectedZaloSuggestion.error || 'AI chưa tạo được gợi ý. Kiểm tra cấu hình AI rồi thử lại.'}</p>
+                  ) : (
+                    <p className="omni-zalo-ai-empty">
+                      Khi khách gửi tin mới trong hội thoại Zalo Web đang mở, extension sẽ đồng bộ và tạo gợi ý tự động.
+                    </p>
+                  )}
+                </div>
+              ) : null}
               <div className="omni-messenger-messages">
                 {visibleZaloMessages.length ? visibleZaloMessages.map((message, index) => {
                   const outgoing = message.direction === 'outgoing' || message.sender_type === 'staff';

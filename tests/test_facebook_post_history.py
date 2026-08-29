@@ -1268,12 +1268,12 @@ class FacebookPostHistoryTests(unittest.TestCase):
                     'messages': [{'message_id': 'p1', 'sender_name': 'Khách riêng', 'text': 'Tin riêng'}],
                 })
                 visible_conversations, visible_messages, _ = backend._load_zalo_threads(
-                    allowed_conversation_keys={approved_conversation['conversation_key']},
+                    blocked_conversation_keys={unknown_candidate['target_key']},
                 )
                 stored_targets = list(backend._zalo_threads['sync_targets'])
 
         self.assertEqual(private_target, {})
-        self.assertIn('không đồng bộ tin nhắn riêng', private_error)
+        self.assertIn('không cần đăng ký duyệt nhóm', private_error)
         self.assertEqual(warning, '')
         self.assertEqual(pending['approval_status'], 'pending')
         self.assertEqual(unknown_warning, '')
@@ -1284,8 +1284,99 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertEqual(repeat_warning, '')
         self.assertEqual(registered_again['approval_status'], 'approved')
         self.assertEqual(len(stored_targets), 2)
-        self.assertEqual([row['title'] for row in visible_conversations], ['Nhóm khách hàng VIP'])
-        self.assertEqual([row['text'] for row in visible_messages], ['Tin trong nhóm'])
+        self.assertEqual(
+            {row['title'] for row in visible_conversations},
+            {'Nhóm khách hàng VIP', 'Chat riêng cũ'},
+        )
+        self.assertIn(visible_messages[0]['text'], {'Tin trong nhóm', 'Tin riêng'})
+
+    def test_zalo_private_chat_syncs_without_admin_approval(self):
+        staff = {'id': 'sale-1', 'name': 'Sale A', 'username': 'salea', 'role': 'staff'}
+        payload = {
+            'conversation_url': 'https://chat.zalo.me/',
+            'conversation_id': 'zalo-private-1',
+            'conversation_title': 'Khách riêng',
+            'conversation_type': 'private',
+            'is_group': False,
+            'is_group_candidate': False,
+            'group_evidence': 'private_header',
+            'messages': [{'message_id': 'private-1', 'sender_name': 'Khách riêng', 'text': 'Tin nhắn riêng'}],
+        }
+        client = backend.app.test_client()
+
+        with (
+            patch.object(backend, '_zalo_threads', {'conversations': [], 'messages': [], 'sync_targets': []}),
+            patch.object(backend, '_current_staff', return_value=staff),
+            patch.object(backend, '_is_admin', return_value=False),
+            patch.object(backend, 'USE_SUPABASE', False),
+            patch.object(backend, '_save_zalo_threads'),
+        ):
+            target_key, _, _ = backend._zalo_sync_target_identity(payload)
+            backend._zalo_threads['sync_targets'] = [{
+                'target_key': target_key,
+                'conversation_id': payload['conversation_id'],
+                'title': payload['conversation_title'],
+                'is_group': False,
+                'approval_status': 'pending',
+                'owner_key': 'sale-1',
+            }]
+            authorize_response = client.post('/api/zalo/sync/authorize', json=payload)
+            sync_response = client.post('/api/zalo/sync', json=payload)
+            stored = {
+                'conversations': list(backend._zalo_threads['conversations']),
+                'messages': list(backend._zalo_threads['messages']),
+                'sync_targets': list(backend._zalo_threads['sync_targets']),
+            }
+
+        self.assertEqual(authorize_response.status_code, 200)
+        self.assertTrue(authorize_response.get_json()['private_chat'])
+        self.assertEqual(sync_response.status_code, 200)
+        self.assertTrue(sync_response.get_json()['ok'])
+        self.assertEqual([row['title'] for row in stored['conversations']], ['Khách riêng'])
+        self.assertEqual([row['text'] for row in stored['messages']], ['Tin nhắn riêng'])
+        self.assertEqual(stored['sync_targets'], [])
+
+    def test_zalo_private_classification_cannot_bypass_a_blocked_group(self):
+        staff = {'id': 'sale-1', 'name': 'Sale A', 'username': 'salea', 'role': 'staff'}
+        payload = {
+            'conversation_url': 'https://chat.zalo.me/',
+            'conversation_id': 'zalo-protected-group',
+            'conversation_title': 'Nhóm đã chặn',
+            'conversation_type': 'private',
+            'is_group': False,
+            'is_group_candidate': False,
+            'messages': [{'message_id': 'blocked-1', 'sender_name': 'Thành viên', 'text': 'Không được lưu'}],
+        }
+        client = backend.app.test_client()
+
+        with (
+            patch.object(backend, '_zalo_threads', {'conversations': [], 'messages': [], 'sync_targets': []}),
+            patch.object(backend, '_current_staff', return_value=staff),
+            patch.object(backend, '_is_admin', return_value=False),
+            patch.object(backend, 'USE_SUPABASE', False),
+            patch.object(backend, '_save_zalo_threads'),
+        ):
+            target_key, _, _ = backend._zalo_sync_target_identity(payload)
+            backend._zalo_threads['sync_targets'] = [{
+                'target_key': target_key,
+                'conversation_id': payload['conversation_id'],
+                'title': payload['conversation_title'],
+                'is_group': True,
+                'approval_status': 'blocked',
+                'approved_at': '2026-08-30T00:00:00Z',
+                'owner_key': 'sale-1',
+            }]
+            authorize_response = client.post('/api/zalo/sync/authorize', json=payload)
+            sync_response = client.post('/api/zalo/sync', json=payload)
+            stored = {
+                'conversations': list(backend._zalo_threads['conversations']),
+                'messages': list(backend._zalo_threads['messages']),
+            }
+
+        self.assertEqual(authorize_response.status_code, 409)
+        self.assertTrue(authorize_response.get_json()['approval_required'])
+        self.assertEqual(sync_response.status_code, 409)
+        self.assertEqual(stored, {'conversations': [], 'messages': []})
 
     def test_zalo_sync_api_does_not_store_messages_while_group_is_pending(self):
         staff = {'id': 'sale-1', 'name': 'Sale A', 'username': 'salea', 'role': 'staff'}

@@ -147,16 +147,6 @@ async function saveZaloThread(payload, preferredAppTabId) {
         world: 'MAIN',
         args: [payload || {}],
         func: async (thread) => {
-          const authorizationPayload = { ...(thread || {}) };
-          delete authorizationPayload.messages;
-          delete authorizationPayload.ignored_message_ids;
-          const authorizationResponse = await fetch('/api/zalo/sync/authorize', {
-            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(authorizationPayload),
-          });
-          const authorizationData = await authorizationResponse.json().catch(() => ({ ok: false, error: `Server ${authorizationResponse.status}` }));
-          if (!authorizationResponse.ok || !authorizationData.ok) {
-            return { ...authorizationData, ok: false, error: authorizationData.error || `Server ${authorizationResponse.status}` };
-          }
           let uploadedCount = 0;
           const mediaWarnings = new Set();
           const messages = [];
@@ -221,19 +211,6 @@ async function saveZaloThread(payload, preferredAppTabId) {
       return message;
     }),
   };
-  const authorizationPayload = { ...(payload || {}) };
-  delete authorizationPayload.messages;
-  delete authorizationPayload.ignored_message_ids;
-  const authorizationResponse = await fetch(`${origin}/api/zalo/sync/authorize`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(authorizationPayload),
-  });
-  const authorizationData = await authorizationResponse.json().catch(() => ({ ok: false, error: `Server ${authorizationResponse.status}` }));
-  if (!authorizationResponse.ok || !authorizationData.ok) {
-    return { ...authorizationData, ok: false, error: authorizationData.error || `Server ${authorizationResponse.status}` };
-  }
   const response = await fetch(`${origin}/api/zalo/sync`, {
     method: 'POST',
     credentials: 'include',
@@ -242,6 +219,24 @@ async function saveZaloThread(payload, preferredAppTabId) {
   });
   const data = await response.json().catch(() => ({ ok: false, error: `Server ${response.status}` }));
   return response.ok ? data : { ok: false, error: data.error || `Server ${response.status}` };
+}
+
+async function notifyZaloAiSuggestion(suggestion) {
+  if (!suggestion?.suggestion_key) return;
+  try {
+    const stored = await chrome.storage.local.get(STREAL_API_ORIGIN_KEY);
+    const origin = String(stored?.[STREAL_API_ORIGIN_KEY] || '');
+    if (!isAllowedApiOrigin(origin)) return;
+    const appTabs = await chrome.tabs.query({ url: `${origin}/*` });
+    await Promise.all(appTabs
+      .filter((tab) => Number.isInteger(tab.id))
+      .map((tab) => chrome.tabs.sendMessage(tab.id, {
+        type: 'STREAL_ZALO_AI_SUGGESTION_READY',
+        suggestion,
+      }).catch(() => null)));
+  } catch {
+    // Giao diện vẫn có polling dự phòng nếu tab ứng dụng chưa sẵn sàng.
+  }
 }
 
 async function findOpenMessengerTab() {
@@ -331,7 +326,16 @@ async function collectMessengerThread(request, sender) {
 }
 
 async function collectZaloThread(request, sender) {
-  const tab = await findOpenZaloTab();
+  const automatic = request?.payload?.autoDetected === true;
+  const senderTab = sender?.tab;
+  const senderIsZalo = (() => {
+    try {
+      return new URL(senderTab?.url || '').hostname.endsWith('zalo.me');
+    } catch {
+      return false;
+    }
+  })();
+  const tab = automatic && senderIsZalo ? senderTab : await findOpenZaloTab();
   if (!tab?.id) {
     return { ok: false, error: 'Hay mo san mot hoi thoai tren https://chat.zalo.me roi bam dong bo lai.' };
   }
@@ -370,9 +374,10 @@ async function collectZaloThread(request, sender) {
         actual_conversation_id: metadata.conversation_id || '',
       };
     }
+    const isPrivateChat = metadata.conversation_type === 'private' && metadata.is_group !== true;
     const authorization = await authorizeZaloThread(metadata, sender?.tab?.id);
     if (!authorization?.ok) {
-      if (sender?.tab?.id) {
+      if (!automatic && sender?.tab?.id) {
         try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
       }
       return {
@@ -386,26 +391,37 @@ async function collectZaloThread(request, sender) {
         error: authorization?.error || authorization?.warning || 'Nhóm Zalo chưa được phép đồng bộ.',
       };
     }
-    try { await chrome.tabs.update(tab.id, { active: true }); } catch {}
+    if (!automatic) {
+      try { await chrome.tabs.update(tab.id, { active: true }); } catch {}
+    }
     const result = await sendTabMessage(tab.id, {
       type: 'STREAL_ZALO_COLLECT_THREAD',
       requestId: request.requestId,
-      payload: { ...(request.payload || {}), authorizedGroup: true },
+      payload: { ...(request.payload || {}), authorizedGroup: !isPrivateChat },
     });
     if (!result?.ok) {
-      if (sender?.tab?.id) {
+      if (!automatic && sender?.tab?.id) {
         try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
       }
-      return { ok: false, error: result?.error || result?.warning || 'Extension chua doc duoc tin nhan nhom Zalo.' };
+      return { ok: false, error: result?.error || result?.warning || 'Extension chua doc duoc tin nhan Zalo.' };
     }
     if (metadata.conversation_id && result.conversation_id !== metadata.conversation_id) {
-      if (sender?.tab?.id) {
+      if (!automatic && sender?.tab?.id) {
         try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
       }
-      return { ok: false, error: 'Nhóm Zalo đã thay đổi sau khi kiểm tra quyền. Hãy giữ nguyên nhóm rồi đồng bộ lại.' };
+      return { ok: false, error: 'Hội thoại Zalo đã thay đổi sau khi kiểm tra quyền. Hãy giữ nguyên hội thoại rồi đồng bộ lại.' };
     }
-    const saved = await saveZaloThread(result, sender?.tab?.id);
-    if (sender?.tab?.id) {
+    const savePayload = automatic ? {
+      ...result,
+      auto_detected: true,
+      trigger_message_id: String(request?.payload?.trigger_message_id || ''),
+      trigger_text: String(request?.payload?.trigger_text || ''),
+    } : result;
+    const saved = await saveZaloThread(savePayload, sender?.tab?.id);
+    if (automatic && saved?.ai_suggestion) {
+      await notifyZaloAiSuggestion(saved.ai_suggestion);
+    }
+    if (!automatic && sender?.tab?.id) {
       try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
     }
     return {
@@ -422,6 +438,41 @@ async function collectZaloThread(request, sender) {
     };
   } catch (error) {
     return { ok: false, error: error?.message || String(error) };
+  }
+}
+
+const zaloAutoSyncQueues = new Map();
+
+async function enqueueAutomaticZaloSync(message, sender) {
+  const tabId = sender?.tab?.id;
+  if (!Number.isInteger(tabId)) return { ok: false, error: 'Không xác định được tab Zalo phát hiện tin mới.' };
+  const state = zaloAutoSyncQueues.get(tabId) || { running: false, queued: null };
+  state.queued = { message, sender };
+  zaloAutoSyncQueues.set(tabId, state);
+  if (state.running) return { ok: true, queued: true };
+  state.running = true;
+  let lastResult = { ok: true };
+  try {
+    while (state.queued) {
+      const current = state.queued;
+      state.queued = null;
+      lastResult = await collectZaloThread({
+        ...current.message,
+        requestId: current.message.requestId || `zalo-auto-${Date.now()}`,
+        payload: {
+          ...(current.message.payload || {}),
+          autoDetected: true,
+          deep: false,
+          limit: 60,
+          maxScrolls: 1,
+          pauseMs: 320,
+        },
+      }, current.sender);
+    }
+    return lastResult;
+  } finally {
+    state.running = false;
+    if (!state.queued) zaloAutoSyncQueues.delete(tabId);
   }
 }
 
@@ -1827,6 +1878,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'STREAL_EXTENSION_COLLECT_ZALO_THREAD') {
     collectZaloThread(message, sender)
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+  if (message?.type === 'STREAL_ZALO_INCOMING_MESSAGE_DETECTED') {
+    enqueueAutomaticZaloSync(message, sender)
       .then((response) => sendResponse(response))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;

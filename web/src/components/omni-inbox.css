@@ -1500,6 +1500,107 @@
   background: #fff;
 }
 
+.omni-zalo-ai-panel {
+  padding: 14px 16px;
+  border-bottom: 1px solid #c7d2fe;
+  background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
+  color: #312e81;
+}
+
+.omni-zalo-ai-panel.failed {
+  border-bottom-color: #fecaca;
+  background: #fff7f7;
+  color: #991b1b;
+}
+
+.omni-zalo-ai-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.omni-zalo-ai-head > div {
+  min-width: 0;
+}
+
+.omni-zalo-ai-head small {
+  display: block;
+  margin-top: 3px;
+  color: #6366f1;
+  font-size: 11px;
+}
+
+.omni-zalo-ai-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.omni-zalo-ai-trigger,
+.omni-zalo-ai-approach,
+.omni-zalo-ai-empty,
+.omni-zalo-ai-error {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.omni-zalo-ai-replies {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.omni-zalo-ai-reply {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 11px;
+  border: 1px solid #d8b4fe;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #1f2937;
+}
+
+.omni-zalo-ai-reply > div {
+  min-width: 0;
+}
+
+.omni-zalo-ai-reply b {
+  font-size: 12px;
+}
+
+.omni-zalo-ai-reply p {
+  margin: 3px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.omni-zalo-ai-reply button {
+  flex: 0 0 auto;
+}
+
+.omni-zalo-ai-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.omni-zalo-ai-meta span {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 3px 7px;
+  color: #4f46e5;
+  font-size: 11px;
+}
+
 .omni-messenger-messages {
   display: flex;
   flex: 1;
@@ -1633,4 +1734,5 @@
   .omni-stream { width: 100%; max-height: 42vh; border-right: none; border-bottom: 1px solid var(--omni-outline-variant); }
   .omni-thread { min-height: 50vh; }
   .omni-message-bubble { max-width: 90%; }
+  .omni-zalo-ai-reply { align-items: flex-start; flex-direction: column; }
 }

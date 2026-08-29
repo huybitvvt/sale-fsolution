@@ -9,8 +9,10 @@
   }
 
   chrome.runtime.onMessage.addListener((message) => {
-    if (message?.type !== 'STREAL_FACEBOOK_GROUP_QUEUE_PROGRESS') return false;
-    postToPage(message);
+    if (message?.type === 'STREAL_FACEBOOK_GROUP_QUEUE_PROGRESS'
+      || message?.type === 'STREAL_ZALO_AI_SUGGESTION_READY') {
+      postToPage(message);
+    }
     return false;
   });
 

@@ -57,12 +57,52 @@ test('only classifies explicit Zalo group headers as groups', () => {
   assert.equal(api.classifyConversationKind({ text: 'Nhóm khách hàng' }).type, 'unknown');
 });
 
+test('allows private chats without weakening group approval', () => {
+  assert.equal(api.requiresGroupApproval({ type: 'private' }), false);
+  assert.equal(api.requiresGroupApproval({ type: 'group' }), true);
+  assert.equal(api.requiresGroupApproval({ type: 'unknown' }), true);
+});
+
+test('refines known-contact chats from visible sender layout', () => {
+  const unknown = { type: 'unknown', isGroup: false, evidence: 'no_group_evidence' };
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.refineConversationKind(unknown, [
+      { direction: 'incoming', sender_name: 'Khách hàng', sender_id: 'avatar-one' },
+      { direction: 'outgoing', sender_name: 'Nhân viên' },
+    ]))),
+    { type: 'private', isGroup: false, evidence: 'private_message_layout' },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.refineConversationKind(unknown, [
+      { direction: 'incoming', sender_name: 'Thành viên A', sender_id: 'avatar-a' },
+    ]))),
+    { type: 'group', isGroup: true, evidence: 'group_message_senders' },
+  );
+  assert.equal(api.refineConversationKind(unknown, []).type, 'unknown');
+});
+
 test('uses a loose minute key to merge the same bubble across scans', () => {
   const base = { direction: 'outgoing', text: 'bác còn gpt k ạ', media_urls: [] };
   assert.equal(
     api.messageContentKey({ ...base, display_time: '17:58' }, { looseTime: true }),
     api.messageContentKey({ ...base, display_time: '17:58 18/8/2026' }, { looseTime: true }),
   );
+});
+
+test('detects only the latest incoming bubble for automatic suggestions', () => {
+  const signal = api.latestIncomingSignal([
+    { direction: 'incoming', sender_id: 'customer-a', text: 'Tin cũ', display_time: '10:00', media_urls: [], message_id: 'm1' },
+    { direction: 'outgoing', sender_id: 'sale', text: 'Sale trả lời', display_time: '10:01', media_urls: [], message_id: 'm2' },
+    { direction: 'incoming', sender_id: 'customer-a', text: 'Giá này đắt quá', display_time: '10:02', media_urls: [], message_id: 'm3' },
+  ]);
+  assert.equal(signal.messageId, 'm3');
+  assert.equal(signal.text, 'Giá này đắt quá');
+  assert.match(signal.key, /Giá này đắt quá/);
+  assert.equal(api.latestIncomingSignal([{ direction: 'outgoing', text: 'Chỉ có sale' }]), null);
+  assert.equal(api.latestIncomingSignal([
+    { direction: 'incoming', text: 'Khách đã hỏi' },
+    { direction: 'outgoing', text: 'Sale đã trả lời' },
+  ]), null);
 });
 
 test('removes Zalo reaction artifacts and the rendered bubble timestamp', () => {

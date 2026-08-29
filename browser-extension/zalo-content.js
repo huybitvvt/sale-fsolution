@@ -506,6 +506,29 @@
     return classifyConversationKind({ text: textParts.join(' '), attributes: attributeParts.join(' ') });
   }
 
+  function requiresGroupApproval(kind = {}) {
+    return kind.type !== 'private';
+  }
+
+  function refineConversationKind(kind = {}, visibleMessages = []) {
+    if (kind.type !== 'unknown') return kind;
+    const incoming = (Array.isArray(visibleMessages) ? visibleMessages : [])
+      .filter((row) => row?.direction === 'incoming');
+    const namedSenders = new Set(incoming
+      .map((row) => normalize(row?.sender_name || ''))
+      .filter((name) => name && name !== 'Khách hàng'));
+    const senderIds = new Set(incoming
+      .map((row) => normalize(row?.sender_id || ''))
+      .filter(Boolean));
+    if (namedSenders.size || senderIds.size > 1) {
+      return { type: 'group', isGroup: true, evidence: 'group_message_senders' };
+    }
+    if (incoming.length) {
+      return { type: 'private', isGroup: false, evidence: 'private_message_layout' };
+    }
+    return kind;
+  }
+
   function classTrail(node, stopNode) {
     const values = [];
     let current = node;
@@ -1056,6 +1079,17 @@
     return `${row.direction}|${sender}|${normalize(row.text)}|${time}|${(row.media_urls || []).join('|')}`;
   }
 
+  function latestIncomingSignal(rows = []) {
+    const list = Array.isArray(rows) ? rows : [];
+    const latest = list[list.length - 1];
+    if (!latest || latest.direction !== 'incoming') return null;
+    return {
+      key: messageContentKey(latest, { looseTime: true }),
+      messageId: String(latest.message_id || ''),
+      text: normalize(latest.text || ''),
+    };
+  }
+
   function collectMessages(scroller, limit, title, seed = '', round = 0, ignoredReplyIds = null, skippedReplyIds = null) {
     const roots = collectMessageRoots(scroller);
     const dateMarkers = timelineDateMarkers(scroller);
@@ -1311,17 +1345,12 @@
       return { ok: false, final: true, error: 'Chưa đọc được tên hội thoại từ phần đầu khung chat Zalo.' };
     }
     const identity = conversationIdentity(title, header.node, scroller);
-    const kind = conversationKind(header.node, scroller);
-    if (kind.type === 'private') {
-      return {
-        ok: false,
-        final: true,
-        conversation_type: kind.type,
-        group_evidence: kind.evidence,
-        error: 'Hội thoại đang mở là chat riêng. Hệ thống chỉ đồng bộ các nhóm Zalo được Admin chỉ định.',
-      };
-    }
-    if (!kind.isGroup && !payload.metadataOnly && !payload.authorizedGroup) {
+    const headerKind = conversationKind(header.node, scroller);
+    const visibleMessages = headerKind.type === 'unknown'
+      ? collectMessages(scroller, 80, title, identity.id)
+      : [];
+    const kind = refineConversationKind(headerKind, visibleMessages);
+    if (requiresGroupApproval(kind) && !kind.isGroup && !payload.metadataOnly && !payload.authorizedGroup) {
       return {
         ok: false,
         final: true,
@@ -1331,14 +1360,17 @@
       };
     }
     const approvedAsGroup = kind.isGroup || payload.authorizedGroup === true;
+    const conversationType = kind.type === 'private'
+      ? 'private'
+      : approvedAsGroup ? 'group' : 'unknown';
     const threadMetadata = {
       source: 'zalo_web_dom',
       conversation_id: identity.id,
       conversation_url: window.location.href,
       conversation_title: title,
-      conversation_type: approvedAsGroup ? 'group' : 'unknown',
+      conversation_type: conversationType,
       is_group: approvedAsGroup,
-      is_group_candidate: true,
+      is_group_candidate: conversationType !== 'private',
       group_evidence: kind.evidence,
       customer_name: title,
       customer_id: identity.confidence === 'high' ? identity.id : '',
@@ -1354,9 +1386,11 @@
         ...threadMetadata,
         messages: [],
         count: 0,
-        warning: kind.isGroup
-          ? 'Đã nhận diện nhóm Zalo để kiểm tra quyền đồng bộ.'
-          : 'Đã gửi tên hội thoại để Admin xác nhận đây là nhóm Zalo.',
+        warning: conversationType === 'private'
+          ? 'Đã nhận diện chat riêng Zalo để đồng bộ trực tiếp.'
+          : kind.isGroup
+            ? 'Đã nhận diện nhóm Zalo để kiểm tra quyền đồng bộ.'
+            : 'Đã gửi tên hội thoại để Admin xác nhận đây là nhóm Zalo.',
       };
     }
     const limit = Math.max(20, Math.min(Number(payload.limit || 500), 1000));
@@ -1396,11 +1430,14 @@
     markerDisplayTime,
     markerIso,
     messageContentKey,
+    latestIncomingSignal,
     parseTimelineMarker,
     cleanMessageText,
     containsReplyQuote,
     stripZaloIconArtifacts,
     classifyConversationKind,
+    requiresGroupApproval,
+    refineConversationKind,
     stableAttributeValue,
     stableIdValue,
     srcsetCandidates,
@@ -1412,6 +1449,68 @@
     globalThis.__STREAL_ZALO_TEST_API__ = testApi;
     return;
   }
+
+  function startIncomingMessageWatcher() {
+    if (globalThis.__STREAL_ZALO_AUTO_WATCHER__) return;
+    globalThis.__STREAL_ZALO_AUTO_WATCHER__ = true;
+    let timer = null;
+    let running = false;
+    let conversationId = '';
+    let lastIncomingKey = '';
+
+    const inspect = async () => {
+      if (running) return;
+      running = true;
+      try {
+        const composer = findComposer();
+        const shell = findThreadShell(composer);
+        const scroller = findMessageScroller(shell, composer);
+        if (!scroller) return;
+        const bottomGap = Math.max(0, scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop);
+        if (bottomGap > 180) return;
+        const header = findConversationHeader(scroller);
+        const title = cleanTitleText(header.text);
+        if (!title) return;
+        const identity = conversationIdentity(title, header.node, scroller);
+        const firstInspection = !conversationId;
+        const conversationChanged = Boolean(conversationId && conversationId !== identity.id);
+        if (firstInspection || conversationChanged) {
+          conversationId = identity.id;
+          lastIncomingKey = '';
+        }
+        const signal = latestIncomingSignal(collectMessages(scroller, 100, title, identity.id));
+        if (!signal?.key) return;
+        if (firstInspection) {
+          lastIncomingKey = signal.key;
+          return;
+        }
+        if (signal.key === lastIncomingKey) return;
+        lastIncomingKey = signal.key;
+        await chrome.runtime.sendMessage({
+          type: 'STREAL_ZALO_INCOMING_MESSAGE_DETECTED',
+          payload: {
+            autoDetected: true,
+            expectedConversationId: identity.id,
+            trigger_message_id: signal.messageId,
+            trigger_text: signal.text,
+          },
+        }).catch(() => null);
+      } finally {
+        running = false;
+      }
+    };
+
+    const schedule = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => void inspect(), 350);
+    };
+    const observer = new MutationObserver(schedule);
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    setInterval(() => void inspect(), 2000);
+    setTimeout(() => void inspect(), 800);
+  }
+
+  startIncomingMessageWatcher();
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== 'STREAL_ZALO_COLLECT_THREAD') return false;

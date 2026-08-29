@@ -103,6 +103,37 @@ Trả về JSON object có đúng các trường:
 
 CHỈ trả về JSON object."""
 
+ZALO_REPLY_SUGGESTION_PROMPT = """Bạn là trợ lý sale đọc hội thoại Zalo tiếng Việt và gợi ý câu trả lời để nhân viên duyệt rồi tự gửi.
+
+Nguyên tắc bắt buộc:
+- Đọc ngữ cảnh hội thoại theo đúng thứ tự thời gian, đặc biệt các cam kết, giá, nhu cầu và câu hỏi trước đó.
+- Tin cuối được đánh dấu LATEST_CUSTOMER_MESSAGE là tin phải trả lời.
+- So sánh với REPLY_TEMPLATES nhưng chỉ dùng mẫu phù hợp; được viết lại cho tự nhiên theo ngữ cảnh.
+- Không bịa giá, ưu đãi, tồn kho, bảo hành, địa chỉ, chính sách hoặc cam kết không có trong dữ liệu.
+- Nếu thiếu dữ liệu quan trọng thì hỏi lại ngắn gọn thay vì đoán.
+- Không tự nhận đã gửi tin. Đây chỉ là gợi ý cho sale copy sau khi kiểm tra.
+- Trả lời tự nhiên, lịch sự, không dùng markdown và không giải thích ngoài JSON.
+
+Dữ liệu:
+{context}
+
+Trả về JSON object có đúng các trường:
+{{
+  "intent_label": "hỏi giá|chê giá cao|cần tư vấn|muốn mua|hỏi còn hàng|hỏi địa điểm|khiếu nại|khác",
+  "customer_need": "ý khách hàng trong ngữ cảnh, một câu ngắn",
+  "sentiment": "positive|neutral|negative|mixed|unknown",
+  "urgency": "low|medium|high",
+  "confidence": 0.0,
+  "recommended_approach": "hướng xử lý cho sale, một câu ngắn",
+  "suggested_replies": [
+    {{ "label": "Khuyến nghị", "text": "câu trả lời phù hợp nhất" }},
+    {{ "label": "Ngắn gọn", "text": "phương án ngắn hơn nếu phù hợp" }},
+    {{ "label": "Khai thác thêm", "text": "phương án hỏi thêm thông tin nếu cần" }}
+  ]
+}}
+
+CHỈ trả về JSON object."""
+
 BUSINESS_TEXT_PROMPT = """Bạn là copywriter bán hàng tiếng Việt. Nhiệm vụ của bạn là viết lại thông tin bên bán thành văn bản rõ ràng để AI sale dùng khi trả lời khách.
 
 Ngữ cảnh:
@@ -341,6 +372,38 @@ class AIClassifier:
             print(f'AI reply suggestion error: {e}')
             return {}
 
+    def suggest_zalo_reply(
+        self,
+        conversation: Dict,
+        messages: List[Dict],
+        latest_message: Dict,
+        templates: List[Dict] = None,
+        business_profile: Dict = None,
+    ) -> Dict:
+        """Suggest replies for the latest incoming Zalo message using stored context."""
+        if not conversation or not latest_message or not self.api_key:
+            return {}
+        context, included_count = self._format_zalo_reply_context(
+            conversation,
+            messages or [],
+            latest_message,
+            templates or [],
+            business_profile or {},
+        )
+        prompt = ZALO_REPLY_SUGGESTION_PROMPT.format(context=context)
+        try:
+            resp = self._call_api(prompt)
+            self.last_error = ''
+            result = self._parse_zalo_reply_response(resp, latest_message, business_profile or {})
+            if result:
+                result['context_message_count'] = len(messages or [])
+                result['context_included_count'] = included_count
+            return result
+        except Exception as e:
+            self.last_error = str(e)
+            print(f'AI Zalo reply suggestion error: {e}')
+            return {}
+
     def generate_business_text(self, profile: Dict) -> Dict:
         """Rewrite rough business profile fields into sales-ready text."""
         if not self.api_key:
@@ -487,6 +550,63 @@ class AIClassifier:
                 f'  TEXT: {_compact_text(ctext, 650) or "[Không có nội dung]"}',
             ])
         return '\n'.join(lines), source_meta
+
+    def _format_zalo_reply_context(
+        self,
+        conversation: Dict,
+        messages: List[Dict],
+        latest_message: Dict,
+        templates: List[Dict],
+        business_profile: Dict,
+    ) -> tuple[str, int]:
+        business_profile = business_profile or {}
+        history_lines = []
+        total_chars = 0
+        for row in reversed(messages[-500:]):
+            direction = str(row.get('direction') or '').lower()
+            role = 'SALE' if direction == 'outgoing' or row.get('sender_type') == 'staff' else 'KHÁCH'
+            sender = _compact_text(str(row.get('sender_name') or role), 80)
+            timestamp = _compact_text(str(row.get('display_time') or row.get('sent_at') or ''), 80)
+            text = _compact_text(str(row.get('text') or ''), 650)
+            if not text:
+                continue
+            line = f'- [{timestamp}] {role} ({sender}): {text}'
+            if history_lines and total_chars + len(line) > 60000:
+                break
+            history_lines.append(line)
+            total_chars += len(line)
+        history_lines.reverse()
+
+        template_lines = []
+        for idx, item in enumerate((templates or [])[:10], 1):
+            title = _compact_text(str(item.get('title') or item.get('trigger') or f'Mẫu {idx}'), 100)
+            trigger = _compact_text(str(item.get('trigger') or ''), 60)
+            text = _compact_text(str(item.get('text') or ''), 700)
+            if text:
+                template_lines.append(f'- TEMPLATE {idx} | {title} | /{trigger}: {text}')
+
+        latest_text = _compact_text(str(latest_message.get('text') or ''), 1200)
+        lines = [
+            f'CONVERSATION_ID: {_compact_text(str(conversation.get("conversation_id") or ""), 220)}',
+            f'CONVERSATION_TITLE: {_compact_text(str(conversation.get("title") or conversation.get("customer_name") or ""), 220)}',
+            'SELLER_PROFILE:',
+            f'BUSINESS_NAME: {_compact_text(str(business_profile.get("business_name") or ""), 120)}',
+            f'PHONE: {_compact_text(str(business_profile.get("phone") or ""), 80)}',
+            f'ADDRESS: {_compact_text(str(business_profile.get("address") or ""), 180)}',
+            f'WHY_CHOOSE_US: {_compact_text(str(business_profile.get("why_choose_us") or ""), 1000)}',
+            f'EXTRA_NOTES: {_compact_text(str(business_profile.get("extra_notes") or ""), 800)}',
+            f'STORED_MESSAGE_COUNT: {len(messages or [])}',
+            f'INCLUDED_MESSAGE_COUNT: {len(history_lines)}',
+            'CONVERSATION_HISTORY_OLDEST_TO_NEWEST:',
+            *(history_lines or ['- [Chưa có lịch sử]']),
+            'REPLY_TEMPLATES:',
+            *(template_lines or ['- [Không có mẫu câu phù hợp]']),
+            'LATEST_CUSTOMER_MESSAGE:',
+            f'MESSAGE_ID: {_compact_text(str(latest_message.get("message_id") or latest_message.get("message_key") or ""), 220)}',
+            f'CUSTOMER_NAME: {_compact_text(str(latest_message.get("sender_name") or conversation.get("customer_name") or "Khách hàng"), 120)}',
+            f'TEXT: {latest_text or "[Không có nội dung chữ]"}',
+        ]
+        return '\n'.join(lines), len(history_lines)
 
     def _format_comment_summary_context(self, post: Dict, comments: List[Dict], total_count: int) -> str:
         pid = str(post.get('id') or '')
@@ -689,6 +809,42 @@ class AIClassifier:
             'confidence': _as_float(payload.get('confidence'), 0.5),
             'recommended_approach': _compact_text(str(payload.get('recommended_approach') or ''), 260),
             'business_phone': business_phone,
+            'suggested_replies': clean_replies,
+        }
+
+    def _parse_zalo_reply_response(self, text: str, latest_message: Dict, business_profile: Dict = None) -> Dict:
+        payload = _load_json_payload(text)
+        if not isinstance(payload, dict):
+            return {}
+        replies = payload.get('suggested_replies') or []
+        clean_replies = []
+        if isinstance(replies, list):
+            for idx, item in enumerate(replies[:4], 1):
+                if isinstance(item, dict):
+                    label = _compact_text(str(item.get('label') or f'Mẫu {idx}'), 50)
+                    reply_text = _compact_text(str(item.get('text') or ''), 1000)
+                else:
+                    label = f'Mẫu {idx}'
+                    reply_text = _compact_text(str(item), 1000)
+                if reply_text:
+                    clean_replies.append({'label': label, 'text': reply_text})
+        if not clean_replies:
+            return {}
+        business_profile = business_profile or {}
+        business_phone = normalize_phone(str(business_profile.get('phone') or ''))
+        business_name = _compact_text(str(business_profile.get('business_name') or ''), 120)
+        clean_replies = _ensure_phone_in_replies(clean_replies, business_phone, business_name)
+        return {
+            'trigger_message_key': str(latest_message.get('message_key') or '')[:180],
+            'trigger_message_id': str(latest_message.get('message_id') or '')[:180],
+            'trigger_text': _compact_text(str(latest_message.get('text') or ''), 1200),
+            'customer_name': _compact_text(str(latest_message.get('sender_name') or 'Khách hàng'), 120),
+            'intent_label': _compact_text(str(payload.get('intent_label') or 'khác'), 80),
+            'customer_need': _compact_text(str(payload.get('customer_need') or ''), 300),
+            'sentiment': str(payload.get('sentiment') or 'unknown')[:20],
+            'urgency': str(payload.get('urgency') or 'low')[:20],
+            'confidence': _as_float(payload.get('confidence'), 0.5),
+            'recommended_approach': _compact_text(str(payload.get('recommended_approach') or ''), 500),
             'suggested_replies': clean_replies,
         }
 

@@ -134,6 +134,7 @@ SUPABASE_MESSENGER_MESSAGE_TABLE = os.environ.get('SUPABASE_MESSENGER_MESSAGE_TA
 SUPABASE_ZALO_CONVERSATION_TABLE = os.environ.get('SUPABASE_ZALO_CONVERSATION_TABLE', 'zalo_conversations')
 SUPABASE_ZALO_MESSAGE_TABLE = os.environ.get('SUPABASE_ZALO_MESSAGE_TABLE', 'zalo_messages')
 SUPABASE_ZALO_SYNC_TARGET_TABLE = os.environ.get('SUPABASE_ZALO_SYNC_TARGET_TABLE', 'zalo_sync_targets')
+SUPABASE_ZALO_SUGGESTION_TABLE = os.environ.get('SUPABASE_ZALO_SUGGESTION_TABLE', 'zalo_ai_suggestions')
 SUPABASE_LEAD_TABLE = os.environ.get('SUPABASE_LEAD_TABLE', 'leads')
 SUPABASE_STAFF_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 SUPABASE_CHANNEL_TABLE = os.environ.get('SUPABASE_CHANNEL_TABLE', 'managed_channels')
@@ -276,7 +277,7 @@ _tiktok_config: dict = {}
 _content_pipeline: dict = {}
 _facebook_posts: list = []
 _messenger_threads: dict = {'conversations': [], 'messages': []}
-_zalo_threads: dict = {'conversations': [], 'messages': [], 'sync_targets': []}
+_zalo_threads: dict = {'conversations': [], 'messages': [], 'sync_targets': [], 'suggestions': []}
 _comment_templates: list = []
 _comment_tags: list = []
 _comment_tag_assignments: dict = {}
@@ -287,6 +288,8 @@ _scheduled_posts_lock = threading.Lock()
 _facebook_posts_lock = threading.Lock()
 _messenger_threads_lock = threading.Lock()
 _zalo_threads_lock = threading.Lock()
+_zalo_ai_inflight_lock = threading.Lock()
+_zalo_ai_inflight: set[str] = set()
 
 
 def _default_business_profile() -> dict:
@@ -725,13 +728,15 @@ def _load_state():
             loaded_zalo_threads = sb.kv_get('zalo_threads', loaded_zalo_threads) or loaded_zalo_threads
         except Exception as e:
             print(f'[supabase] load zalo_threads fallback failed: {e}')
-    _zalo_threads = loaded_zalo_threads if isinstance(loaded_zalo_threads, dict) else {'conversations': [], 'messages': [], 'sync_targets': []}
+    _zalo_threads = loaded_zalo_threads if isinstance(loaded_zalo_threads, dict) else {'conversations': [], 'messages': [], 'sync_targets': [], 'suggestions': []}
     if not isinstance(_zalo_threads.get('conversations'), list):
         _zalo_threads['conversations'] = []
     if not isinstance(_zalo_threads.get('messages'), list):
         _zalo_threads['messages'] = []
     if not isinstance(_zalo_threads.get('sync_targets'), list):
         _zalo_threads['sync_targets'] = []
+    if not isinstance(_zalo_threads.get('suggestions'), list):
+        _zalo_threads['suggestions'] = []
     loaded_templates = _read_json(COMMENT_TEMPLATES_FILE, [])
     loaded_tags = _read_json(COMMENT_TAGS_FILE, [])
     loaded_tag_assignments = _read_json(COMMENT_TAG_ASSIGNMENTS_FILE, {})
@@ -1688,13 +1693,44 @@ def _save_zalo_sync_target(row: dict) -> str:
     return ''
 
 
+def _delete_zalo_sync_target(target_key: str) -> str:
+    global _zalo_threads
+    target_key = _messenger_text(target_key, 180)
+    if not target_key:
+        return ''
+    with _zalo_threads_lock:
+        current = [
+            item for item in (_zalo_threads.get('sync_targets') or [])
+            if isinstance(item, dict) and _messenger_text(item.get('target_key'), 180) != target_key
+        ]
+        if len(current) != len(_zalo_threads.get('sync_targets') or []):
+            _zalo_threads['sync_targets'] = current
+            _save_zalo_threads()
+
+    if not (USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY):
+        return ''
+    headers = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
+    try:
+        response = _req.delete(
+            f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_ZALO_SYNC_TARGET_TABLE}",
+            headers=headers,
+            params={'target_key': f'eq.{target_key}'},
+            timeout=20,
+        )
+        if response.status_code not in (200, 202, 204):
+            return response.text[:300]
+    except Exception as exc:
+        return str(exc)[:300]
+    return ''
+
+
 def _register_zalo_sync_target(body: dict) -> tuple[dict, str]:
     body = body if isinstance(body, dict) else {}
     conversation_type = _messenger_text(body.get('conversation_type'), 40).lower()
     recognised_group = body.get('is_group') is True and conversation_type == 'group'
     group_candidate = body.get('is_group_candidate') is True and conversation_type == 'unknown'
     if not (recognised_group or group_candidate):
-        return {}, 'Hệ thống chỉ đồng bộ nhóm Zalo, không đồng bộ tin nhắn riêng.'
+        return {}, 'Chat riêng Zalo không cần đăng ký duyệt nhóm.'
     target_key, conversation_id, staff = _zalo_sync_target_identity(body)
     existing_rows, load_warning = _load_zalo_sync_targets()
     existing = next((item for item in existing_rows if item.get('target_key') == target_key), {})
@@ -1736,10 +1772,14 @@ def _set_zalo_sync_target_status(target_key: str, approval_status: str) -> tuple
     row = {
         **existing,
         'approval_status': approval_status,
-        'is_group': approval_status == 'approved',
-        'approved_at': now if approval_status == 'approved' else None,
-        'approved_by_staff_id': staff.get('id', '') if approval_status == 'approved' else '',
-        'approved_by_staff_name': staff.get('name', '') if approval_status == 'approved' else '',
+        'is_group': approval_status == 'approved' or existing.get('is_group') is True,
+        'approved_at': now if approval_status == 'approved' else existing.get('approved_at'),
+        'approved_by_staff_id': (
+            staff.get('id', '') if approval_status == 'approved' else existing.get('approved_by_staff_id', '')
+        ),
+        'approved_by_staff_name': (
+            staff.get('name', '') if approval_status == 'approved' else existing.get('approved_by_staff_name', '')
+        ),
         'updated_at': now,
     }
     save_warning = _save_zalo_sync_target(row)
@@ -1840,6 +1880,7 @@ def _store_zalo_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
             )[:1000],
             'messages': stored_messages,
             'sync_targets': list(_zalo_threads.get('sync_targets') or []),
+            'suggestions': list(_zalo_threads.get('suggestions') or []),
         }
         _save_zalo_threads()
 
@@ -2161,6 +2202,7 @@ def _load_zalo_threads(
     staff_id: str = '',
     limit: int = 100,
     allowed_conversation_keys: set[str] | None = None,
+    blocked_conversation_keys: set[str] | None = None,
 ) -> tuple[list[dict], list[dict], str]:
     limit = max(1, min(int(limit or 100), 500))
     conversation_key = _messenger_text(conversation_key, 180)
@@ -2221,6 +2263,11 @@ def _load_zalo_threads(
         conversations = [
             row for row in conversations
             if _messenger_row_conversation_key(row) in allowed_conversation_keys
+        ]
+    if blocked_conversation_keys:
+        conversations = [
+            row for row in conversations
+            if _messenger_row_conversation_key(row) not in blocked_conversation_keys
         ]
     conversations.sort(key=lambda row: str(row.get('updated_at') or row.get('captured_at') or ''), reverse=True)
 
@@ -2295,6 +2342,314 @@ def _load_zalo_threads(
     return conversations[:1000], messages[-limit:] if len(messages) > limit else messages, warning
 
 
+def _zalo_suggestion_key(conversation_key: str, trigger_message_key: str) -> str:
+    seed = f'{_messenger_text(conversation_key, 180)}|{_messenger_text(trigger_message_key, 180)}'
+    return hashlib.sha1(seed.encode('utf-8', errors='ignore')).hexdigest()
+
+
+def _normalise_zalo_ai_suggestion(row: dict) -> dict:
+    row = row.copy() if isinstance(row, dict) else {}
+    replies = []
+    for index, item in enumerate(row.get('suggested_replies') if isinstance(row.get('suggested_replies'), list) else []):
+        if isinstance(item, dict):
+            label = _messenger_text(item.get('label') or f'Mẫu {index + 1}', 60)
+            text = _messenger_text(item.get('text'), 1200)
+        else:
+            label = f'Mẫu {index + 1}'
+            text = _messenger_text(item, 1200)
+        if text:
+            replies.append({'label': label, 'text': text})
+    status = _messenger_text(row.get('status'), 20).lower()
+    if status not in {'ready', 'failed'}:
+        status = 'ready' if replies else 'failed'
+    row.update({
+        'suggestion_key': _messenger_text(row.get('suggestion_key'), 180),
+        'conversation_key': _messenger_text(row.get('conversation_key'), 180),
+        'conversation_id': _messenger_text(row.get('conversation_id'), 220),
+        'trigger_message_key': _messenger_text(row.get('trigger_message_key'), 180),
+        'trigger_message_id': _messenger_text(row.get('trigger_message_id'), 180),
+        'trigger_text': _messenger_text(row.get('trigger_text'), 1200),
+        'customer_name': _messenger_text(row.get('customer_name'), 180),
+        'intent_label': _messenger_text(row.get('intent_label'), 80),
+        'customer_need': _messenger_text(row.get('customer_need'), 400),
+        'sentiment': _messenger_text(row.get('sentiment'), 20),
+        'urgency': _messenger_text(row.get('urgency'), 20),
+        'recommended_approach': _messenger_text(row.get('recommended_approach'), 700),
+        'suggested_replies': replies[:4],
+        'matched_templates': row.get('matched_templates') if isinstance(row.get('matched_templates'), list) else [],
+        'status': status,
+        'error': _messenger_text(row.get('error'), 500),
+        'provider': _messenger_text(row.get('provider'), 40),
+        'model': _messenger_text(row.get('model'), 120),
+        'owner_key': _messenger_row_owner_key(row),
+    })
+    try:
+        row['confidence'] = max(0.0, min(1.0, float(row.get('confidence') or 0)))
+    except (TypeError, ValueError):
+        row['confidence'] = 0.0
+    for field in ('context_message_count', 'context_included_count'):
+        try:
+            row[field] = max(0, int(row.get(field) or 0))
+        except (TypeError, ValueError):
+            row[field] = 0
+    return row
+
+
+def _load_zalo_ai_suggestions(
+    conversation_key: str = '',
+    staff_id: str = '',
+    limit: int = 50,
+) -> tuple[list[dict], str]:
+    conversation_key = _messenger_text(conversation_key, 180)
+    staff_id = _messenger_text(staff_id, 180)
+    limit = max(1, min(int(limit or 50), 500))
+    warning = ''
+    remote_rows: list[dict] = []
+    if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
+        headers = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
+        params = {'select': '*', 'order': 'updated_at.desc', 'limit': str(limit * 3)}
+        if conversation_key:
+            params['conversation_key'] = f'eq.{conversation_key}'
+        try:
+            response = _req.get(
+                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_ZALO_SUGGESTION_TABLE}",
+                headers=headers,
+                params=params,
+                timeout=20,
+            )
+            if response.status_code in (200, 206):
+                data = response.json()
+                remote_rows = [item for item in (data if isinstance(data, list) else []) if isinstance(item, dict)]
+            else:
+                warning = response.text[:300]
+        except Exception as exc:
+            warning = str(exc)[:300]
+
+    with _zalo_threads_lock:
+        local_rows = [
+            item for item in (_zalo_threads.get('suggestions') or [])
+            if isinstance(item, dict)
+        ]
+
+    by_key: dict[str, dict] = {}
+    for item in local_rows + remote_rows:
+        row = _normalise_zalo_ai_suggestion(item)
+        suggestion_key = row.get('suggestion_key')
+        if not suggestion_key:
+            continue
+        if conversation_key and row.get('conversation_key') != conversation_key:
+            continue
+        previous = by_key.get(suggestion_key, {})
+        if previous and str(previous.get('updated_at') or previous.get('created_at') or '') > str(row.get('updated_at') or row.get('created_at') or ''):
+            continue
+        by_key[suggestion_key] = {**previous, **row}
+
+    rows = list(by_key.values())
+    current_staff = _current_staff()
+    filter_identity: dict | str = ''
+    if _is_admin():
+        if staff_id and staff_id != 'all':
+            filter_identity, staff_warning = _messenger_resolve_staff_filter(staff_id)
+            warning = ' | '.join([item for item in (warning, staff_warning) if item])
+    elif current_staff:
+        filter_identity = current_staff
+    else:
+        filter_identity = '__no_staff__'
+    if filter_identity:
+        rows = [row for row in rows if _messenger_staff_matches(row, filter_identity)]
+    rows.sort(key=lambda row: str(row.get('updated_at') or row.get('created_at') or ''), reverse=True)
+    return rows[:limit], warning
+
+
+def _save_zalo_ai_suggestion(row: dict) -> str:
+    global _zalo_threads
+    row = _normalise_zalo_ai_suggestion(row)
+    suggestion_key = row.get('suggestion_key')
+    if not suggestion_key:
+        return 'Thiếu mã gợi ý AI Zalo.'
+    with _zalo_threads_lock:
+        current = [
+            item for item in (_zalo_threads.get('suggestions') or [])
+            if isinstance(item, dict) and _messenger_text(item.get('suggestion_key'), 180) != suggestion_key
+        ]
+        current.append(row)
+        current.sort(key=lambda item: str(item.get('updated_at') or item.get('created_at') or ''), reverse=True)
+        _zalo_threads['suggestions'] = current[:2000]
+        _save_zalo_threads()
+
+    if not (USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY):
+        return ''
+    headers = {
+        'apikey': SUPABASE_KEY,
+        'Authorization': f'Bearer {SUPABASE_KEY}',
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates,return=minimal',
+    }
+    try:
+        response = _req.post(
+            f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_ZALO_SUGGESTION_TABLE}",
+            headers=headers,
+            params={'on_conflict': 'suggestion_key'},
+            json=row,
+            timeout=20,
+        )
+        if response.status_code not in (200, 201, 204):
+            return response.text[:300]
+    except Exception as exc:
+        return str(exc)[:300]
+    return ''
+
+
+def _zalo_template_tokens(value: str) -> set[str]:
+    return {
+        token for token in re.findall(r'[^\W_]+', str(value or '').casefold(), flags=re.UNICODE)
+        if len(token) > 1
+    }
+
+
+def _select_zalo_reply_templates(messages: list[dict], latest_message: dict, limit: int = 8) -> list[dict]:
+    recent_text = ' '.join(
+        str(row.get('text') or '')
+        for row in (messages or [])[-12:]
+        if isinstance(row, dict)
+    )
+    query_text = f"{latest_message.get('text') or ''} {recent_text}".casefold()
+    query_tokens = _zalo_template_tokens(query_text)
+    ranked = []
+    for index, raw in enumerate(_comment_templates or []):
+        if not isinstance(raw, dict):
+            continue
+        text = _messenger_text(raw.get('text'), 1200)
+        if not text:
+            continue
+        title = _messenger_text(raw.get('title'), 160)
+        trigger = _messenger_text(raw.get('trigger'), 80).lstrip('/')
+        template_tokens = _zalo_template_tokens(f'{title} {trigger} {text}')
+        overlap = len(query_tokens.intersection(template_tokens))
+        score = overlap * 4
+        if trigger and trigger.casefold() in query_text:
+            score += 12
+        if title and title.casefold() in query_text:
+            score += 8
+        if raw.get('system'):
+            score += 1
+        ranked.append((score, -index, {
+            'id': _messenger_text(raw.get('id'), 160),
+            'title': title,
+            'trigger': trigger,
+            'text': text,
+        }))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    positive = [item[2] for item in ranked if item[0] > 1]
+    fallback = [item[2] for item in ranked if item[0] <= 1]
+    return (positive + fallback)[:max(1, min(limit, 12))]
+
+
+def _generate_zalo_ai_suggestion(
+    conversation_key: str,
+    trigger_message_key: str = '',
+    trigger_message_id: str = '',
+    force: bool = False,
+) -> tuple[dict, str]:
+    conversation_key = _messenger_text(conversation_key, 180)
+    trigger_message_key = _messenger_text(trigger_message_key, 180)
+    trigger_message_id = _messenger_text(trigger_message_id, 180)
+    conversations, messages, load_warning = _load_zalo_threads(
+        conversation_key=conversation_key,
+        limit=500,
+    )
+    conversation = next(
+        (row for row in conversations if _messenger_row_conversation_key(row) == conversation_key),
+        None,
+    )
+    if not conversation:
+        return {}, 'Không tìm thấy hội thoại Zalo để tạo gợi ý.'
+    trigger = next(
+        (
+            row for row in messages
+            if (
+                (trigger_message_key and _messenger_text(row.get('message_key'), 180) == trigger_message_key)
+                or (trigger_message_id and _messenger_text(row.get('message_id'), 180) == trigger_message_id)
+            )
+        ),
+        None,
+    )
+    if trigger is None:
+        trigger = next(
+            (
+                row for row in reversed(messages)
+                if row.get('direction') == 'incoming' or row.get('sender_type') == 'customer'
+            ),
+            None,
+        )
+    if not trigger or not (trigger.get('direction') == 'incoming' or trigger.get('sender_type') == 'customer'):
+        return {}, 'Chưa có tin nhắn đến của khách để AI gợi ý trả lời.'
+
+    trigger_key = _messenger_text(trigger.get('message_key'), 180)
+    suggestion_key = _zalo_suggestion_key(conversation_key, trigger_key)
+    existing_rows, suggestion_warning = _load_zalo_ai_suggestions(conversation_key=conversation_key, limit=100)
+    existing = next((row for row in existing_rows if row.get('suggestion_key') == suggestion_key), None)
+    if existing and not force:
+        return existing, ' | '.join([item for item in (load_warning, suggestion_warning) if item])
+
+    with _zalo_ai_inflight_lock:
+        if suggestion_key in _zalo_ai_inflight:
+            return existing or {}, 'AI đang tạo gợi ý cho tin nhắn này.'
+        _zalo_ai_inflight.add(suggestion_key)
+
+    staff = _current_staff()
+    now = _utc_iso()
+    templates = _select_zalo_reply_templates(messages, trigger)
+    classifier = _get_classifier()
+    base = {
+        **(existing or {}),
+        'suggestion_key': suggestion_key,
+        'conversation_key': conversation_key,
+        'conversation_id': _messenger_text(conversation.get('conversation_id'), 220),
+        'trigger_message_key': trigger_key,
+        'trigger_message_id': _messenger_text(trigger.get('message_id'), 180),
+        'trigger_text': _messenger_text(trigger.get('text'), 1200),
+        'customer_name': _messenger_text(trigger.get('sender_name') or conversation.get('customer_name') or 'Khách hàng', 180),
+        'matched_templates': templates,
+        'provider': classifier.provider,
+        'model': classifier.model,
+        'captured_by_staff_id': staff.get('id', ''),
+        'captured_by_staff_name': staff.get('name', ''),
+        'captured_by_staff_username': staff.get('username', ''),
+        'owner_key': _messenger_staff_scope_key(staff),
+        'created_at': (existing or {}).get('created_at') or now,
+        'updated_at': now,
+    }
+    try:
+        if not classifier.api_key:
+            result = {}
+            error = 'Chưa cấu hình API key AI cho nhân viên này.'
+        else:
+            result = classifier.suggest_zalo_reply(
+                conversation,
+                messages,
+                trigger,
+                templates,
+                _business_profile,
+            )
+            error = classifier.last_error if not result else ''
+            if not result and not error:
+                error = 'AI chưa tạo được gợi ý phù hợp.'
+        row = {
+            **base,
+            **result,
+            'status': 'ready' if result and result.get('suggested_replies') else 'failed',
+            'error': error,
+            'updated_at': _utc_iso(),
+        }
+        save_warning = _save_zalo_ai_suggestion(row)
+        warning = ' | '.join([item for item in (load_warning, suggestion_warning, save_warning) if item])
+        return _normalise_zalo_ai_suggestion(row), warning
+    finally:
+        with _zalo_ai_inflight_lock:
+            _zalo_ai_inflight.discard(suggestion_key)
+
+
 def _delete_zalo_conversation(conversation_key: str) -> tuple[dict, int]:
     conversation_key = _messenger_text(conversation_key, 180)
     if not conversation_key:
@@ -2316,6 +2671,7 @@ def _delete_zalo_conversation(conversation_key: str) -> tuple[dict, int]:
     target_owner = _messenger_row_owner_key(target)
     deleted_local_conversations = 0
     deleted_local_messages = 0
+    deleted_local_suggestions = 0
 
     def is_target_row(row: dict) -> bool:
         normalised = _normalise_messenger_storage_row(row)
@@ -2339,12 +2695,19 @@ def _delete_zalo_conversation(conversation_key: str) -> tuple[dict, int]:
             item for item in (_zalo_threads.get('messages') or [])
             if isinstance(item, dict)
         ]
+        current_suggestions = [
+            item for item in (_zalo_threads.get('suggestions') or [])
+            if isinstance(item, dict)
+        ]
         kept_conversations = [item for item in current_conversations if not is_target_row(item)]
         kept_messages = [item for item in current_messages if not is_target_row(item)]
+        kept_suggestions = [item for item in current_suggestions if not is_target_row(item)]
         deleted_local_conversations = len(current_conversations) - len(kept_conversations)
         deleted_local_messages = len(current_messages) - len(kept_messages)
+        deleted_local_suggestions = len(current_suggestions) - len(kept_suggestions)
         _zalo_threads['conversations'] = kept_conversations
         _zalo_threads['messages'] = kept_messages
+        _zalo_threads['suggestions'] = kept_suggestions
         _save_zalo_threads()
 
     warning = load_warning
@@ -2355,6 +2718,7 @@ def _delete_zalo_conversation(conversation_key: str) -> tuple[dict, int]:
             'Prefer': 'return=minimal',
         }
         delete_specs = [
+            (SUPABASE_ZALO_SUGGESTION_TABLE, {'conversation_key': f'eq.{target_key}'}),
             (SUPABASE_ZALO_MESSAGE_TABLE, {'conversation_key': f'eq.{target_key}'}),
             (SUPABASE_ZALO_CONVERSATION_TABLE, {'conversation_key': f'eq.{target_key}'}),
         ]
@@ -2376,6 +2740,7 @@ def _delete_zalo_conversation(conversation_key: str) -> tuple[dict, int]:
         'conversation_key': target_key,
         'deleted_local_conversations': deleted_local_conversations,
         'deleted_local_messages': deleted_local_messages,
+        'deleted_local_suggestions': deleted_local_suggestions,
         'storage': 'supabase' if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY and not warning else 'local',
     }
     if warning:
@@ -9887,22 +10252,45 @@ def messenger_conversations_delete(conversation_key):
 @app.route('/api/zalo/sync', methods=['POST'])
 def zalo_sync_from_extension():
     body = request.get_json(silent=True) or {}
-    target, target_warning = _register_zalo_sync_target(body)
-    if not target:
-        return jsonify({'ok': False, 'blocked': True, 'error': target_warning}), 422
-    if target.get('approval_status') != 'approved':
-        status_label = 'đã bị Admin ngừng đồng bộ' if target.get('approval_status') == 'blocked' else 'đang chờ Admin duyệt'
-        payload = {
-            'ok': False,
-            'approval_required': True,
-            'target': target,
-            'error': f"Nhóm Zalo \"{target.get('title') or target.get('conversation_id')}\" {status_label}. Không có tin nhắn nào được lưu.",
-        }
-        if target_warning:
-            payload['warning'] = target_warning
-        return jsonify(payload), 409
+    conversation_type = _messenger_text(body.get('conversation_type'), 40).lower()
+    is_private_chat = conversation_type == 'private' and body.get('is_group') is not True
+    target_warning = ''
+    target = {}
+    if is_private_chat:
+        private_target_key, _, _ = _zalo_sync_target_identity(body)
+        existing_targets, target_warning = _load_zalo_sync_targets()
+        target = next(
+            (item for item in existing_targets if item.get('target_key') == private_target_key),
+            {},
+        )
+        protected_group_target = target and (
+            target.get('is_group') is True or bool(target.get('approved_at'))
+        )
+        if protected_group_target:
+            is_private_chat = False
+        else:
+            delete_warning = _delete_zalo_sync_target(private_target_key)
+            target_warning = ' | '.join([item for item in (target_warning, delete_warning) if item])
+            target = {}
+    if not is_private_chat and not target:
+        target, target_warning = _register_zalo_sync_target(body)
+        if not target:
+            return jsonify({'ok': False, 'blocked': True, 'error': target_warning}), 422
+    if not is_private_chat:
+        if target.get('approval_status') != 'approved':
+            status_label = 'đã bị Admin ngừng đồng bộ' if target.get('approval_status') == 'blocked' else 'đang chờ Admin duyệt'
+            payload = {
+                'ok': False,
+                'approval_required': True,
+                'target': target,
+                'error': f"Nhóm Zalo \"{target.get('title') or target.get('conversation_id')}\" {status_label}. Không có tin nhắn nào được lưu.",
+            }
+            if target_warning:
+                payload['warning'] = target_warning
+            return jsonify(payload), 409
     conversation, messages, warning = _store_zalo_sync_payload(body)
     warning = ' | '.join([item for item in (target_warning, warning) if item])
+    storage_warning = warning
     try:
         skipped_reply_count = max(0, int(body.get('skipped_reply_count') or 0))
     except (TypeError, ValueError):
@@ -9910,14 +10298,29 @@ def zalo_sync_from_extension():
     ignored_count = len(body.get('ignored_message_ids')) if isinstance(body.get('ignored_message_ids'), list) else 0
     sync_succeeded = bool(messages or ignored_count)
     status_code = 200 if sync_succeeded else 422
+    ai_suggestion = {}
+    if sync_succeeded and body.get('auto_detected') is True:
+        try:
+            ai_suggestion, ai_warning = _generate_zalo_ai_suggestion(
+                conversation.get('conversation_key', ''),
+                trigger_message_key=body.get('trigger_message_key', ''),
+                trigger_message_id=body.get('trigger_message_id', ''),
+            )
+        except Exception as exc:
+            ai_warning = f'Đã lưu tin nhắn nhưng AI chưa tạo được gợi ý: {str(exc)[:300]}'
+        warning = ' | '.join([item for item in (warning, ai_warning) if item])
+        if ai_suggestion.get('status') == 'failed' and ai_suggestion.get('error'):
+            warning = ' | '.join([item for item in (warning, ai_suggestion.get('error')) if item])
     payload = {
         'ok': sync_succeeded,
         'conversation': conversation,
         'messages': messages,
         'count': len(messages),
         'skipped_reply_count': skipped_reply_count,
-        'storage': 'supabase' if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY and not warning else 'local',
+        'storage': 'supabase' if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY and not storage_warning else 'local',
     }
+    if ai_suggestion:
+        payload['ai_suggestion'] = ai_suggestion
     if warning:
         payload['warning' if sync_succeeded else 'error'] = warning
     return jsonify(payload), status_code
@@ -9926,6 +10329,38 @@ def zalo_sync_from_extension():
 @app.route('/api/zalo/sync/authorize', methods=['POST'])
 def zalo_sync_authorize():
     body = request.get_json(silent=True) or {}
+    conversation_type = _messenger_text(body.get('conversation_type'), 40).lower()
+    if conversation_type == 'private' and body.get('is_group') is not True:
+        private_target_key, _, _ = _zalo_sync_target_identity(body)
+        existing_targets, warning = _load_zalo_sync_targets()
+        target = next(
+            (item for item in existing_targets if item.get('target_key') == private_target_key),
+            {},
+        )
+        protected_group_target = target and (
+            target.get('is_group') is True or bool(target.get('approved_at'))
+        )
+        if protected_group_target and target.get('approval_status') != 'approved':
+            status_label = 'đã bị Admin ngừng đồng bộ' if target.get('approval_status') == 'blocked' else 'đang chờ Admin duyệt'
+            payload = {
+                'ok': False,
+                'approval_required': True,
+                'target': target,
+                'error': f"Nhóm Zalo \"{target.get('title') or target.get('conversation_id')}\" {status_label}. Admin cần cho phép rồi nhân viên bấm đồng bộ lại.",
+            }
+            if warning:
+                payload['warning'] = warning
+            return jsonify(payload), 409
+        payload = {
+            'ok': True,
+            'approved': True,
+            'private_chat': not protected_group_target,
+        }
+        if target:
+            payload['target'] = target
+        if warning:
+            payload['warning'] = warning
+        return jsonify(payload)
     target, warning = _register_zalo_sync_target(body)
     if not target:
         return jsonify({'ok': False, 'blocked': True, 'error': warning}), 422
@@ -9953,20 +10388,33 @@ def zalo_conversations_get():
     staff_id = str(request.args.get('staff_id') or '').strip()
     limit = request.args.get('limit', 100, type=int)
     sync_targets, target_warning = _load_zalo_sync_targets(staff_id=staff_id)
-    approved_keys = {
+    blocked_keys = {
         _messenger_text(item.get('target_key'), 180)
         for item in sync_targets
-        if item.get('approval_status') == 'approved' and item.get('is_group') is True
+        if item.get('approval_status') != 'approved' or item.get('is_group') is not True
     }
     conversations, messages, warning = _load_zalo_threads(
         conversation_key=conversation_key,
         conversation_id=conversation_id,
         staff_id=staff_id,
         limit=limit,
-        allowed_conversation_keys=approved_keys,
+        blocked_conversation_keys=blocked_keys,
     )
+    selected_conversation = next(
+        (
+            item for item in conversations
+            if _messenger_target_matches(item, conversation_key=conversation_key, conversation_id=conversation_id)
+        ),
+        conversations[0] if conversations else {},
+    )
+    selected_key = _messenger_row_conversation_key(selected_conversation)
+    suggestions, suggestion_warning = _load_zalo_ai_suggestions(
+        conversation_key=selected_key,
+        staff_id=staff_id,
+        limit=20,
+    ) if selected_key else ([], '')
     staff_options, staff_warning = _messenger_staff_options()
-    warning = ' | '.join([item for item in (target_warning, warning, staff_warning) if item])
+    warning = ' | '.join([item for item in (target_warning, warning, suggestion_warning, staff_warning) if item])
     payload = {
         'ok': True,
         'conversations': conversations,
@@ -9977,6 +10425,7 @@ def zalo_conversations_get():
         'active_staff_id': _current_staff_id(),
         'selected_staff_id': staff_id if _is_admin() else _current_staff_id(),
         'sync_targets': sync_targets,
+        'ai_suggestions': suggestions,
         'storage': 'supabase' if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY and not warning else 'local',
     }
     if _is_admin():
@@ -9984,6 +10433,31 @@ def zalo_conversations_get():
     if warning:
         payload['warning'] = warning
     return jsonify(payload)
+
+
+@app.route('/api/zalo/ai-suggestions', methods=['POST'])
+def zalo_ai_suggestions_create():
+    body = request.get_json(silent=True) or {}
+    conversation_key = _messenger_text(body.get('conversation_key'), 180)
+    if not conversation_key:
+        return jsonify({'ok': False, 'error': 'Thiếu mã hội thoại Zalo để tạo gợi ý.'}), 400
+    try:
+        suggestion, warning = _generate_zalo_ai_suggestion(
+            conversation_key,
+            trigger_message_key=body.get('trigger_message_key', ''),
+            trigger_message_id=body.get('trigger_message_id', ''),
+            force=body.get('force') is True,
+        )
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': f'AI chưa tạo được gợi ý: {str(exc)[:300]}'}), 502
+    if not suggestion:
+        return jsonify({'ok': False, 'error': warning or 'AI chưa tạo được gợi ý.'}), 422
+    payload = {'ok': suggestion.get('status') == 'ready', 'suggestion': suggestion}
+    if suggestion.get('status') != 'ready':
+        payload['error'] = suggestion.get('error') or 'AI chưa tạo được gợi ý.'
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload), 200 if payload['ok'] else 502
 
 
 @app.route('/api/zalo/sync-targets/<path:target_key>', methods=['PATCH'])
