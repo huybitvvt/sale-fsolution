@@ -1572,6 +1572,11 @@ def _store_zalo_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
     global _zalo_threads
     body = body.copy() if isinstance(body, dict) else {}
     body['source'] = body.get('source') or 'zalo_web_dom'
+    ignored_message_ids = {
+        _messenger_text(item, 240)
+        for item in (body.get('ignored_message_ids') if isinstance(body.get('ignored_message_ids'), list) else [])
+        if _messenger_text(item, 240)
+    }
     body['messages'] = [
         _clean_zalo_dom_message(item)
         for item in (body.get('messages') if isinstance(body.get('messages'), list) else [])
@@ -1580,14 +1585,22 @@ def _store_zalo_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
     conversation, messages = _normalise_messenger_sync_payload(body)
     messages = _dedupe_zalo_message_rows(messages)
     conversation['source'] = 'zalo_web_dom'
-    if not messages:
+    ignored_message_keys = {
+        hashlib.sha1(f"{conversation['conversation_key']}|{message_id}".encode('utf-8', errors='ignore')).hexdigest()
+        for message_id in ignored_message_ids
+    }
+    if not messages and not ignored_message_keys:
         return conversation, [], 'Extension chưa đọc được tin nhắn Zalo nào trong hội thoại đang mở.'
     with _zalo_threads_lock:
         current_conversations = _zalo_threads.get('conversations') if isinstance(_zalo_threads.get('conversations'), list) else []
         current_messages = _zalo_threads.get('messages') if isinstance(_zalo_threads.get('messages'), list) else []
         current_messages = [
             item for item in current_messages
-            if isinstance(item, dict) and not _is_zalo_legacy_polluted_message(item)
+            if (
+                isinstance(item, dict)
+                and not _is_zalo_legacy_polluted_message(item)
+                and str(item.get('message_key') or '') not in ignored_message_keys
+            )
         ]
         conversations_by_key = {
             _messenger_row_conversation_key(item): _normalise_messenger_storage_row(item)
@@ -1669,16 +1682,26 @@ def _store_zalo_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
             )
             if conv_response.status_code not in (200, 201, 204):
                 warning = conv_response.text[:300]
-            msg_response = _req.post(
-                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_ZALO_MESSAGE_TABLE}",
-                headers=headers,
-                params={'on_conflict': 'message_key'},
-                json=messages,
-                timeout=30,
-            )
-            if msg_response.status_code not in (200, 201, 204):
-                msg_warning = msg_response.text[:300]
-                warning = ' | '.join([item for item in (warning, msg_warning) if item])
+            for key_chunk in [list(ignored_message_keys)[index:index + 80] for index in range(0, len(ignored_message_keys), 80)]:
+                delete_response = _req.delete(
+                    f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_ZALO_MESSAGE_TABLE}",
+                    headers=headers,
+                    params={'message_key': f"in.({','.join(key_chunk)})"},
+                    timeout=20,
+                )
+                if delete_response.status_code not in (200, 202, 204):
+                    warning = ' | '.join([item for item in (warning, delete_response.text[:300]) if item])
+            if messages:
+                msg_response = _req.post(
+                    f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_ZALO_MESSAGE_TABLE}",
+                    headers=headers,
+                    params={'on_conflict': 'message_key'},
+                    json=messages,
+                    timeout=30,
+                )
+                if msg_response.status_code not in (200, 201, 204):
+                    msg_warning = msg_response.text[:300]
+                    warning = ' | '.join([item for item in (warning, msg_warning) if item])
         except Exception as exc:
             warning = str(exc)[:300]
     return conversation, messages, warning
@@ -9675,16 +9698,23 @@ def messenger_conversations_delete(conversation_key):
 def zalo_sync_from_extension():
     body = request.get_json(silent=True) or {}
     conversation, messages, warning = _store_zalo_sync_payload(body)
-    status_code = 200 if messages else 422
+    try:
+        skipped_reply_count = max(0, int(body.get('skipped_reply_count') or 0))
+    except (TypeError, ValueError):
+        skipped_reply_count = 0
+    ignored_count = len(body.get('ignored_message_ids')) if isinstance(body.get('ignored_message_ids'), list) else 0
+    sync_succeeded = bool(messages or ignored_count)
+    status_code = 200 if sync_succeeded else 422
     payload = {
-        'ok': bool(messages),
+        'ok': sync_succeeded,
         'conversation': conversation,
         'messages': messages,
         'count': len(messages),
+        'skipped_reply_count': skipped_reply_count,
         'storage': 'supabase' if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY and not warning else 'local',
     }
     if warning:
-        payload['warning' if messages else 'error'] = warning
+        payload['warning' if sync_succeeded else 'error'] = warning
     return jsonify(payload), status_code
 
 

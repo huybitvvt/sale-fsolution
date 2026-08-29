@@ -1130,6 +1130,42 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertEqual([row['text'] for row in loaded_messages], ['bác còn gpt k ạ', '60 a'])
         self.assertEqual(loaded_messages[0]['display_time'], '17:58 18/8/2026')
 
+    def test_zalo_sync_removes_messages_marked_as_reply_quotes(self):
+        staff = {'id': 'sale-1', 'name': 'Sale A', 'username': 'salea'}
+        base_payload = {
+            'conversation_url': 'https://chat.zalo.me/',
+            'conversation_id': 'zalo-thread-replies',
+            'conversation_title': 'Duyy',
+            'customer_name': 'Duyy',
+        }
+
+        with backend.app.test_request_context('/'):
+            with (
+                patch.object(backend, '_zalo_threads', {'conversations': [], 'messages': []}),
+                patch.object(backend, '_current_staff', return_value=staff),
+                patch.object(backend, 'USE_SUPABASE', False),
+                patch.object(backend, '_save_zalo_threads'),
+            ):
+                backend._store_zalo_sync_payload({
+                    **base_payload,
+                    'messages': [
+                        {'message_id': 'normal-1', 'sender_name': 'Duyy', 'text': '100 b'},
+                        {'message_id': 'reply-1', 'sender_is_self': True, 'text': 'Duyy 100 b Bhf giá sao thế bác'},
+                    ],
+                })
+                conversation, messages, warning = backend._store_zalo_sync_payload({
+                    **base_payload,
+                    'messages': [{'message_id': 'normal-1', 'sender_name': 'Duyy', 'text': '100 b'}],
+                    'ignored_message_ids': ['reply-1'],
+                    'skipped_reply_count': 1,
+                })
+                stored_messages = list(backend._zalo_threads['messages'])
+
+        self.assertEqual(warning, '')
+        self.assertEqual([row['text'] for row in stored_messages], ['100 b'])
+        self.assertEqual([row['text'] for row in messages], ['100 b'])
+        self.assertEqual(conversation['message_count'], 1)
+
     def test_zalo_delete_conversation_removes_selected_thread_only(self):
         base_payload = {
             'conversation_url': 'https://chat.zalo.me/',

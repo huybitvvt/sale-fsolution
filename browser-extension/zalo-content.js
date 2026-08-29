@@ -522,19 +522,63 @@
     return contentCandidate || rowCandidate || geometryCandidate || node.parentElement || node;
   }
 
+  function visibleTextLeaves(root) {
+    return [...root.querySelectorAll('div, span, p, strong, em, b')].filter((node) => {
+      if (!isVisible(node)) return false;
+      const directText = normalize([...node.childNodes]
+        .filter((child) => child.nodeType === Node.TEXT_NODE)
+        .map((child) => child.textContent || '')
+        .join(' '));
+      return Boolean(directText);
+    });
+  }
+
   function looksLikeQuotedBlock(node, root) {
     if (!node || !root || node === root || !root.contains(node)) return false;
-    if (node.matches?.(QUOTED_CONTENT_SELECTOR)) return true;
+    if (!isVisible(node)) return false;
     const rect = node.getBoundingClientRect();
     const rootRect = root.getBoundingClientRect();
     if (rect.width < 48 || rect.height < 22 || rect.height > Math.max(180, rootRect.height * 0.82)) return false;
+    if (node.matches?.(QUOTED_CONTENT_SELECTOR)) return true;
     const style = window.getComputedStyle(node);
     const leftBorder = Number.parseFloat(style.borderLeftWidth || '0') || 0;
     const rightBorder = Number.parseFloat(style.borderRightWidth || '0') || 0;
     const hasQuoteBorder = (leftBorder >= 2 && !/none|hidden/i.test(style.borderLeftStyle || ''))
       || (rightBorder >= 2 && !/none|hidden/i.test(style.borderRightStyle || ''));
+    const pseudoStrip = ['::before', '::after'].some((pseudo) => {
+      try {
+        const pseudoStyle = window.getComputedStyle(node, pseudo);
+        const width = Number.parseFloat(pseudoStyle.width || '0') || 0;
+        const height = Number.parseFloat(pseudoStyle.height || '0') || 0;
+        const color = normalize(pseudoStyle.backgroundColor || pseudoStyle.borderColor || '');
+        return width >= 2 && width <= 10 && height >= 18 && !/transparent|rgba\(0, 0, 0, 0\)/i.test(color);
+      } catch {
+        return false;
+      }
+    });
     const classes = normalize(`${node.className || ''} ${node.getAttribute?.('data-type') || ''} ${node.getAttribute?.('aria-label') || ''}`);
-    return hasQuoteBorder || /(?:^|[-_\s])(quote|quoted|reference|reply-preview|replied)(?:$|[-_\s])/i.test(classes);
+    const broadReplyClass = /quote|quoted|reference|reply|replied/i.test(classes)
+      && visibleTextLeaves(node).length >= 2;
+    return hasQuoteBorder || pseudoStrip || broadReplyClass;
+  }
+
+  function containsReplyQuote(root) {
+    const descendants = [...root.querySelectorAll('blockquote, div, span, section, article, [class], [data-quote-id], [data-quoted="true"]')].slice(0, 180);
+    if (descendants.some((node) => looksLikeQuotedBlock(node, root))) return true;
+    const rootRect = root.getBoundingClientRect();
+    return descendants.some((node) => {
+      if (!isVisible(node)) return false;
+      const rect = node.getBoundingClientRect();
+      if (rect.width < 2 || rect.width > 10 || rect.height < 22 || rect.height > Math.min(180, rootRect.height * 0.82)) return false;
+      const style = window.getComputedStyle(node);
+      const color = normalize(style.backgroundColor || style.borderColor || '');
+      if (!color || /transparent|rgba\(0, 0, 0, 0\)/i.test(color)) return false;
+      const card = node.parentElement;
+      if (!card || card === root) return false;
+      const quotedLeaves = visibleTextLeaves(card);
+      const replyLeaves = visibleTextLeaves(root).filter((leaf) => !card.contains(leaf));
+      return quotedLeaves.length >= 2 && replyLeaves.length >= 1;
+    });
   }
 
   function quotedAncestor(node, root) {
@@ -804,7 +848,7 @@
     return `${row.direction}|${normalize(row.text)}|${time}|${(row.media_urls || []).join('|')}`;
   }
 
-  function collectMessages(scroller, limit, title, seed = '', round = 0) {
+  function collectMessages(scroller, limit, title, seed = '', round = 0, ignoredReplyIds = null, skippedReplyIds = null) {
     const roots = collectMessageRoots(scroller);
     const dateMarkers = timelineDateMarkers(scroller);
     const rows = [];
@@ -837,6 +881,16 @@
         date_context: dateKey,
         ...sender,
       };
+      if (containsReplyQuote(root)) {
+        ignoredReplyIds?.add(row.message_id);
+        skippedReplyIds?.add(row.message_id);
+        const legacyText = cleanMessageText(root.innerText || root.textContent || '', directMarker);
+        if (!rawId && legacyText) {
+          const legacyKey = `${sender.direction}|${legacyText}|${displayTime}|${media.urls.join('|')}`;
+          ignoredReplyIds?.add(`zalo_dom_${hashString(`${seed}|${legacyKey}`)}`);
+        }
+        return;
+      }
       const contentKey = messageContentKey(row, { looseTime: true });
       const top = root.getBoundingClientRect().top;
       const previous = nearbyContent.get(contentKey);
@@ -920,6 +974,8 @@
 
   async function collectAcrossScroll(scroller, title, identity, limit, payload = {}) {
     const messages = new Map();
+    const ignoredReplyIds = new Set();
+    const skippedReplyIds = new Set();
     const mediaState = {
       cache: new Map(),
       count: 0,
@@ -936,7 +992,7 @@
     const seed = identity.id;
     let rounds = 1;
 
-    mergeMessages(messages, await hydrateMediaRows(collectMessages(scroller, limit, title, seed, 0), mediaState));
+    mergeMessages(messages, await hydrateMediaRows(collectMessages(scroller, limit, title, seed, 0, ignoredReplyIds, skippedReplyIds), mediaState));
     if (deep && messages.size < limit) {
       let stableRounds = 0;
       let stableTopRounds = 0;
@@ -950,7 +1006,7 @@
         const requestedTop = scroller.scrollTop <= 2;
         await settleScroll(scroller, pauseMs, requestedTop);
         rounds += 1;
-        mergeMessages(messages, await hydrateMediaRows(collectMessages(scroller, limit, title, seed, step + 1), mediaState));
+        mergeMessages(messages, await hydrateMediaRows(collectMessages(scroller, limit, title, seed, step + 1, ignoredReplyIds, skippedReplyIds), mediaState));
         const afterTop = Number(scroller.scrollTop || 0);
         const afterHeight = Number(scroller.scrollHeight || 0);
         const afterSignature = visibleScrollerSignature(scroller);
@@ -979,6 +1035,8 @@
       rounds,
       mediaCaptured: mediaState.count,
       mediaMissed: mediaState.missed,
+      ignoredReplyIds: [...ignoredReplyIds].slice(0, 500),
+      skippedReplyCount: skippedReplyIds.size,
     };
   }
 
@@ -1039,6 +1097,8 @@
       customer_id: identity.confidence === 'high' ? identity.id : '',
       participants: collectParticipants(title, identity),
       messages,
+      ignored_message_ids: collected.ignoredReplyIds,
+      skipped_reply_count: collected.skippedReplyCount,
       count: messages.length,
       captured_at: new Date().toISOString(),
       identity_source: identity.source,
@@ -1049,7 +1109,7 @@
         ? `${collected.mediaMissed} ảnh Zalo không thể sao chép từ DOM.`
         : '',
       warning: messages.length
-        ? `Đã quét ${messages.length} tin nhắn Zalo qua ${collected.rounds} lượt cuộn.`
+        ? `Đã quét ${messages.length} tin nhắn Zalo qua ${collected.rounds} lượt cuộn.${collected.skippedReplyCount ? ` Đã bỏ ${collected.skippedReplyCount} tin trả lời/trích dẫn.` : ''}`
         : 'Không thấy bong bóng tin nhắn trong hội thoại Zalo đang mở.',
     };
   }
@@ -1062,6 +1122,7 @@
     messageContentKey,
     parseTimelineMarker,
     cleanMessageText,
+    containsReplyQuote,
     stripZaloIconArtifacts,
     stableAttributeValue,
     stableIdValue,
