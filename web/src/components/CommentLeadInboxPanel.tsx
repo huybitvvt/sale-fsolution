@@ -2498,14 +2498,35 @@ export function CommentLeadInboxPanel() {
                           <b>{target.title || target.conversation_id || 'Nhóm Zalo'}</b>
                           <small>{target.captured_by_staff_name ? `NV ${target.captured_by_staff_name} · ` : ''}{statusLabel}</small>
                         </div>
-                        <button
-                          type="button"
-                          className={approved ? 'omni-btn-danger' : 'omni-btn-primary'}
-                          onClick={() => void updateZaloSyncTarget(target, !approved)}
-                          disabled={zaloBusy}
-                        >
-                          {approved ? 'Ngừng đồng bộ' : 'Cho phép'}
-                        </button>
+                        {approved ? (
+                          <div className="omni-zalo-target-actions">
+                            <button
+                              type="button"
+                              className="omni-btn-ghost"
+                              onClick={() => void syncCurrentZaloThread(String(target.conversation_id || ''))}
+                              disabled={zaloBusy}
+                            >
+                              Đồng bộ ngay
+                            </button>
+                            <button
+                              type="button"
+                              className="omni-btn-danger"
+                              onClick={() => void updateZaloSyncTarget(target, false)}
+                              disabled={zaloBusy}
+                            >
+                              Ngừng đồng bộ
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="omni-btn-primary"
+                            onClick={() => void updateZaloSyncTarget(target, true)}
+                            disabled={zaloBusy}
+                          >
+                            Cho phép
+                          </button>
+                        )}
                       </div>
                     );
                   })}

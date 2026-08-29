@@ -1383,6 +1383,12 @@
   flex: 0 0 auto;
 }
 
+.omni-zalo-target-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
 .omni-zalo-target-empty {
   padding: 14px;
   color: var(--omni-on-surface-variant);
