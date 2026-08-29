@@ -945,6 +945,42 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertFalse(payload['ok'])
         self.assertIn('Extension chưa đọc được tin nhắn', payload['error'])
 
+    def test_zalo_sync_payload_filters_placeholders_and_scopes_staff(self):
+        payload = {
+            'conversation_url': 'https://chat.zalo.me/',
+            'conversation_id': 'zalo-thread-1',
+            'conversation_title': 'Khách Zalo',
+            'participants': [{'name': 'Khách Zalo'}],
+            'messages': [
+                {'message_id': 'placeholder', 'sender_name': 'Khách hàng', 'text': 'Soạn'},
+                {'message_id': 'm1', 'sender_name': 'Khách Zalo', 'text': 'Tư vấn demo 0912345678', 'display_time': '09:00'},
+                {'message_id': 'm2', 'sender_is_self': True, 'sender_name': 'Sale A', 'text': 'Em gửi demo ngay ạ', 'display_time': '09:01'},
+            ],
+        }
+
+        with backend.app.test_request_context('/'):
+            with (
+                patch.object(backend, '_zalo_threads', {'conversations': [], 'messages': []}),
+                patch.object(backend, '_current_staff', return_value={'id': 'sale-1', 'name': 'Sale A', 'username': 'salea'}),
+                patch.object(backend, 'USE_SUPABASE', False),
+                patch.object(backend, '_save_zalo_threads'),
+            ):
+                conversation, messages, warning = backend._store_zalo_sync_payload(payload)
+                stored_threads = backend._zalo_threads
+
+        self.assertEqual(warning, '')
+        self.assertEqual(conversation['conversation_id'], 'zalo-thread-1')
+        self.assertEqual(conversation['source'], 'zalo_web_dom')
+        self.assertEqual(conversation['owner_key'], 'sale-1')
+        self.assertEqual(conversation['customer_name'], 'Khách Zalo')
+        self.assertEqual(conversation['customer_phone'], '0912345678')
+        self.assertEqual(len(messages), 2)
+        self.assertNotIn('Soạn', [item['text'] for item in messages])
+        self.assertEqual(messages[0]['sender_type'], 'customer')
+        self.assertEqual(messages[0]['phone'], '0912345678')
+        self.assertEqual(messages[1]['direction'], 'outgoing')
+        self.assertEqual(len(stored_threads['messages']), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

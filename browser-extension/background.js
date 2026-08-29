@@ -85,6 +85,43 @@ async function saveMessengerThread(payload) {
   return response.ok ? data : { ok: false, error: data.error || `Server ${response.status}` };
 }
 
+async function saveZaloThread(payload) {
+  const stored = await chrome.storage.local.get(STREAL_API_ORIGIN_KEY);
+  const origin = String(stored?.[STREAL_API_ORIGIN_KEY] || '');
+  if (!isAllowedApiOrigin(origin)) {
+    return { ok: false, error: 'Hay mo va dang nhap F-Solution mot lan truoc khi dong bo Zalo.' };
+  }
+  try {
+    const appTabs = await chrome.tabs.query({ url: `${origin}/*` });
+    const appTab = appTabs.find((tab) => Number.isInteger(tab.id));
+    if (appTab?.id) {
+      const injected = await chrome.scripting.executeScript({
+        target: { tabId: appTab.id },
+        world: 'MAIN',
+        args: [payload || {}],
+        func: async (thread) => {
+          const response = await fetch('/api/zalo/sync', {
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(thread),
+          });
+          const data = await response.json().catch(() => ({ ok: false, error: `Server ${response.status}` }));
+          return response.ok ? data : { ok: false, error: data.error || `Server ${response.status}` };
+        },
+      });
+      if (injected?.[0]?.result) return injected[0].result;
+    }
+  } catch {
+    // Fall through to a direct extension request when the app tab cannot be injected.
+  }
+  const response = await fetch(`${origin}/api/zalo/sync`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+  });
+  const data = await response.json().catch(() => ({ ok: false, error: `Server ${response.status}` }));
+  return response.ok ? data : { ok: false, error: data.error || `Server ${response.status}` };
+}
+
 async function findOpenMessengerTab() {
   const patterns = [
     'https://www.messenger.com/*',
@@ -99,6 +136,37 @@ async function findOpenMessengerTab() {
   });
   const tabs = [...byId.values()];
   return tabs.find((tab) => tab.active) || tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0] || null;
+}
+
+async function findOpenZaloTab() {
+  const patterns = [
+    'https://chat.zalo.me/*',
+    'https://*.zalo.me/*',
+  ];
+  const groups = await Promise.all(patterns.map((url) => chrome.tabs.query({ url }).catch(() => [])));
+  const byId = new Map();
+  groups.flat().forEach((tab) => {
+    if (Number.isInteger(tab?.id)) byId.set(tab.id, tab);
+  });
+  const tabs = [...byId.values()].filter((tab) => {
+    try {
+      return new URL(tab.url || '').hostname.endsWith('zalo.me');
+    } catch {
+      return false;
+    }
+  });
+  const chatTabs = tabs.filter((tab) => {
+    try {
+      return new URL(tab.url || '').hostname === 'chat.zalo.me';
+    } catch {
+      return false;
+    }
+  });
+  return chatTabs.find((tab) => tab.active)
+    || chatTabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0]
+    || tabs.find((tab) => tab.active)
+    || tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0]
+    || null;
 }
 
 async function collectMessengerThread(request, sender) {
@@ -130,6 +198,43 @@ async function collectMessengerThread(request, sender) {
     return {
       ...saved,
       messenger_tab_id: tab.id,
+      extension_warning: result.warning || '',
+      error: saved?.error || saved?.warning || '',
+    };
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
+async function collectZaloThread(request, sender) {
+  const tab = await findOpenZaloTab();
+  if (!tab?.id) {
+    return { ok: false, error: 'Hay mo san mot hoi thoai tren https://chat.zalo.me roi bam dong bo lai.' };
+  }
+  try {
+    await waitForTabLoaded(tab.id, 20000);
+    let result = await sendTabMessage(tab.id, {
+      type: 'STREAL_ZALO_COLLECT_THREAD',
+      requestId: request.requestId,
+      payload: request.payload || {},
+    });
+    if (!result?.ok && /receiving end|could not establish connection|khong ton tai|does not exist/i.test(String(result?.error || ''))) {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['zalo-content.js'] });
+      await sleep(500);
+      result = await sendTabMessage(tab.id, {
+        type: 'STREAL_ZALO_COLLECT_THREAD',
+        requestId: request.requestId,
+        payload: request.payload || {},
+      });
+    }
+    if (!result?.ok) return { ok: false, error: result?.error || result?.warning || 'Extension chua doc duoc hoi thoai Zalo.' };
+    const saved = await saveZaloThread(result);
+    if (sender?.tab?.id) {
+      try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
+    }
+    return {
+      ...saved,
+      zalo_tab_id: tab.id,
       extension_warning: result.warning || '',
       error: saved?.error || saved?.warning || '',
     };
@@ -1534,6 +1639,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'STREAL_EXTENSION_COLLECT_MESSENGER_THREAD') {
     collectMessengerThread(message, sender)
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+  if (message?.type === 'STREAL_EXTENSION_COLLECT_ZALO_THREAD') {
+    collectZaloThread(message, sender)
       .then((response) => sendResponse(response))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;

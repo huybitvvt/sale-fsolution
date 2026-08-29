@@ -66,6 +66,7 @@ TIKTOK_CONFIG_FILE = os.path.join(DATA_DIR, 'tiktok_config.json')
 CONTENT_PIPELINE_FILE = os.path.join(DATA_DIR, 'content_pipeline.json')
 FACEBOOK_POSTS_FILE = os.path.join(DATA_DIR, 'facebook_posts.json')
 MESSENGER_THREADS_FILE = os.path.join(DATA_DIR, 'messenger_threads.json')
+ZALO_THREADS_FILE = os.path.join(DATA_DIR, 'zalo_threads.json')
 COMMENT_TEMPLATES_FILE = os.path.join(DATA_DIR, 'comment_templates.json')
 COMMENT_TAGS_FILE = os.path.join(DATA_DIR, 'comment_tags.json')
 COMMENT_TAG_ASSIGNMENTS_FILE = os.path.join(DATA_DIR, 'comment_tag_assignments.json')
@@ -130,6 +131,8 @@ SUPABASE_POST_COMMENT_TABLE = os.environ.get('SUPABASE_POST_COMMENT_TABLE', 'pos
 SUPABASE_FACEBOOK_POST_TABLE = os.environ.get('SUPABASE_FACEBOOK_POST_TABLE', 'facebook_posts')
 SUPABASE_MESSENGER_CONVERSATION_TABLE = os.environ.get('SUPABASE_MESSENGER_CONVERSATION_TABLE', 'messenger_conversations')
 SUPABASE_MESSENGER_MESSAGE_TABLE = os.environ.get('SUPABASE_MESSENGER_MESSAGE_TABLE', 'messenger_messages')
+SUPABASE_ZALO_CONVERSATION_TABLE = os.environ.get('SUPABASE_ZALO_CONVERSATION_TABLE', 'zalo_conversations')
+SUPABASE_ZALO_MESSAGE_TABLE = os.environ.get('SUPABASE_ZALO_MESSAGE_TABLE', 'zalo_messages')
 SUPABASE_LEAD_TABLE = os.environ.get('SUPABASE_LEAD_TABLE', 'leads')
 SUPABASE_STAFF_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 SUPABASE_CHANNEL_TABLE = os.environ.get('SUPABASE_CHANNEL_TABLE', 'managed_channels')
@@ -268,6 +271,7 @@ _tiktok_config: dict = {}
 _content_pipeline: dict = {}
 _facebook_posts: list = []
 _messenger_threads: dict = {'conversations': [], 'messages': []}
+_zalo_threads: dict = {'conversations': [], 'messages': []}
 _comment_templates: list = []
 _comment_tags: list = []
 _comment_tag_assignments: dict = {}
@@ -277,6 +281,7 @@ _runtime_staff_context = threading.local()
 _scheduled_posts_lock = threading.Lock()
 _facebook_posts_lock = threading.Lock()
 _messenger_threads_lock = threading.Lock()
+_zalo_threads_lock = threading.Lock()
 
 
 def _default_business_profile() -> dict:
@@ -499,6 +504,7 @@ _SUPABASE_STARTUP_KV_KEYS = [
     'comment_tag_assignments',
     'comment_inbox_workflow',
     'comment_manual_phones',
+    'zalo_threads',
 ]
 
 
@@ -527,7 +533,7 @@ def _load_supabase_startup_snapshot() -> tuple[dict, dict[str, str]]:
 
 
 def _load_state():
-    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _deleted_lead_keys, _reply_suggestions, _business_profile, _staff_cookies, _comment_logs, _comment_summaries, _post_comments, _managed_channels, _managed_channels_remote_at, _tiktok_config, _content_pipeline, _facebook_posts, _messenger_threads, _comment_templates, _comment_tags, _comment_tag_assignments, _comment_inbox_workflow, _comment_manual_phones
+    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _deleted_lead_keys, _reply_suggestions, _business_profile, _staff_cookies, _comment_logs, _comment_summaries, _post_comments, _managed_channels, _managed_channels_remote_at, _tiktok_config, _content_pipeline, _facebook_posts, _messenger_threads, _zalo_threads, _comment_templates, _comment_tags, _comment_tag_assignments, _comment_inbox_workflow, _comment_manual_phones
     started_at = time_module.monotonic()
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -706,6 +712,19 @@ def _load_state():
         _messenger_threads['conversations'] = []
     if not isinstance(_messenger_threads.get('messages'), list):
         _messenger_threads['messages'] = []
+    loaded_zalo_threads = _read_json(ZALO_THREADS_FILE, {})
+    if startup_kv_loaded:
+        loaded_zalo_threads = startup_kv.get('zalo_threads') or loaded_zalo_threads
+    elif USE_SUPABASE:
+        try:
+            loaded_zalo_threads = sb.kv_get('zalo_threads', loaded_zalo_threads) or loaded_zalo_threads
+        except Exception as e:
+            print(f'[supabase] load zalo_threads fallback failed: {e}')
+    _zalo_threads = loaded_zalo_threads if isinstance(loaded_zalo_threads, dict) else {'conversations': [], 'messages': []}
+    if not isinstance(_zalo_threads.get('conversations'), list):
+        _zalo_threads['conversations'] = []
+    if not isinstance(_zalo_threads.get('messages'), list):
+        _zalo_threads['messages'] = []
     loaded_templates = _read_json(COMMENT_TEMPLATES_FILE, [])
     loaded_tags = _read_json(COMMENT_TAGS_FILE, [])
     loaded_tag_assignments = _read_json(COMMENT_TAG_ASSIGNMENTS_FILE, {})
@@ -1023,6 +1042,15 @@ def _save_messenger_threads():
             print(f'[supabase] save messenger_threads fallback failed: {e}')
 
 
+def _save_zalo_threads():
+    _write_json(ZALO_THREADS_FILE, _zalo_threads)
+    if USE_SUPABASE:
+        try:
+            sb.kv_set('zalo_threads', _zalo_threads)
+        except Exception as e:
+            print(f'[supabase] save zalo_threads fallback failed: {e}')
+
+
 def _messenger_text(value, limit: int = 4000) -> str:
     return re.sub(r'\s+', ' ', str(value or '')).strip()[:limit]
 
@@ -1066,6 +1094,7 @@ def _is_messenger_system_text(value: str) -> bool:
         'privacy and support',
         'profile',
         'quyền riêng tư và hỗ trợ',
+        'tìm hiểu thêm',
         'search',
         'soạn',
         'soạn tin nhắn',
@@ -1073,6 +1102,7 @@ def _is_messenger_system_text(value: str) -> bool:
         'tắt thông báo',
         'thông báo',
         'thông tin về đoạn chat',
+        'tin nhắn và cuộc gọi được bảo mật bằng tính năng mã hóa đầu cuối',
         'type a message',
         'trang cá nhân',
         'tùy chỉnh đoạn chat',
@@ -1407,6 +1437,80 @@ def _store_messenger_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
     return conversation, messages, warning
 
 
+def _store_zalo_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
+    global _zalo_threads
+    body = body.copy() if isinstance(body, dict) else {}
+    body['source'] = body.get('source') or 'zalo_web_dom'
+    conversation, messages = _normalise_messenger_sync_payload(body)
+    conversation['source'] = 'zalo_web_dom'
+    if not messages:
+        return conversation, [], 'Extension chưa đọc được tin nhắn Zalo nào trong hội thoại đang mở.'
+    with _zalo_threads_lock:
+        current_conversations = _zalo_threads.get('conversations') if isinstance(_zalo_threads.get('conversations'), list) else []
+        current_messages = _zalo_threads.get('messages') if isinstance(_zalo_threads.get('messages'), list) else []
+        conversations_by_key = {
+            _messenger_row_conversation_key(item): _normalise_messenger_storage_row(item)
+            for item in current_conversations
+            if isinstance(item, dict) and _messenger_row_conversation_key(item)
+        }
+        previous = conversations_by_key.get(conversation['conversation_key']) or {}
+        conversations_by_key[conversation['conversation_key']] = {**previous, **conversation}
+        messages_by_key = {
+            str(item.get('message_key') or ''): item
+            for item in current_messages
+            if isinstance(item, dict) and str(item.get('message_key') or '')
+        }
+        for row in messages:
+            row['raw_message'] = {**(row.get('raw_message') or {}), 'source': 'zalo_web_dom'}
+            messages_by_key[row['message_key']] = {**messages_by_key.get(row['message_key'], {}), **row}
+        stored_messages = sorted(
+            messages_by_key.values(),
+            key=lambda row: str(row.get('sent_at') or row.get('captured_at') or ''),
+            reverse=True,
+        )[:10000]
+        _zalo_threads = {
+            'conversations': sorted(
+                conversations_by_key.values(),
+                key=lambda row: str(row.get('updated_at') or row.get('captured_at') or ''),
+                reverse=True,
+            )[:1000],
+            'messages': stored_messages,
+        }
+        _save_zalo_threads()
+
+    warning = ''
+    if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
+        headers = {
+            'apikey': SUPABASE_KEY,
+            'Authorization': f'Bearer {SUPABASE_KEY}',
+            'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-duplicates,return=minimal',
+        }
+        try:
+            conv_response = _req.post(
+                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_ZALO_CONVERSATION_TABLE}",
+                headers=headers,
+                params={'on_conflict': 'conversation_key'},
+                json=conversation,
+                timeout=20,
+            )
+            if conv_response.status_code not in (200, 201, 204):
+                warning = conv_response.text[:300]
+            msg_response = _req.post(
+                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_ZALO_MESSAGE_TABLE}",
+                headers=headers,
+                params={'on_conflict': 'message_key'},
+                json=messages,
+                timeout=30,
+            )
+            if msg_response.status_code not in (200, 201, 204):
+                msg_warning = msg_response.text[:300]
+                warning = ' | '.join([item for item in (warning, msg_warning) if item])
+        except Exception as exc:
+            warning = str(exc)[:300]
+    return conversation, messages, warning
+
+
 def _messenger_resolve_staff_filter(staff_filter: str) -> tuple[dict | str, str]:
     staff_filter = _messenger_text(staff_filter, 180)
     if not staff_filter or staff_filter == 'all':
@@ -1551,6 +1655,136 @@ def _load_messenger_threads(
             try:
                 msg_response = _req.get(
                     f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_MESSENGER_MESSAGE_TABLE}",
+                    headers=headers,
+                    params={'select': '*', field: f'eq.{value}', 'order': 'captured_at.desc', 'limit': str(limit * 3)},
+                    timeout=20,
+                )
+                if msg_response.status_code in (200, 206):
+                    msg_data = msg_response.json()
+                    messages = [
+                        _normalise_messenger_storage_row(item)
+                        for item in (msg_data if isinstance(msg_data, list) else [])
+                        if isinstance(item, dict)
+                    ]
+                    break
+                msg_warning = msg_response.text[:300]
+                warning = ' | '.join([item for item in (warning, msg_warning) if item])
+            except Exception as exc:
+                warning = ' | '.join([item for item in (warning, str(exc)[:300]) if item])
+
+    def message_matches_target(row: dict) -> bool:
+        normalised = _normalise_messenger_storage_row(row)
+        if target_key and _messenger_row_conversation_key(normalised) == target_key:
+            return True
+        if not target_key and target_id and _messenger_text(normalised.get('conversation_id'), 220) == target_id:
+            return True
+        return False
+
+    messages_by_key: dict[str, dict] = {}
+    for item in messages + local_messages:
+        if not isinstance(item, dict) or not message_matches_target(item):
+            continue
+        normalised = _normalise_messenger_storage_row(item)
+        if filter_identity and not _messenger_staff_matches(normalised, filter_identity):
+            continue
+        message_key = _messenger_text(normalised.get('message_key'), 180) or hashlib.sha1(
+            f"{_messenger_row_conversation_key(normalised)}|{normalised.get('text') or ''}|{normalised.get('captured_at') or ''}".encode('utf-8', errors='ignore')
+        ).hexdigest()
+        messages_by_key[message_key] = {**messages_by_key.get(message_key, {}), **normalised}
+    messages = list(messages_by_key.values())
+    messages.sort(key=lambda row: str(row.get('sent_at') or row.get('captured_at') or ''))
+    return conversations[:1000], messages[-limit:] if len(messages) > limit else messages, warning
+
+
+def _load_zalo_threads(
+    conversation_key: str = '',
+    conversation_id: str = '',
+    staff_id: str = '',
+    limit: int = 100,
+) -> tuple[list[dict], list[dict], str]:
+    limit = max(1, min(int(limit or 100), 500))
+    conversation_key = _messenger_text(conversation_key, 180)
+    conversation_id = str(conversation_id or '').strip()
+    staff_id = _messenger_text(staff_id, 180)
+    warning = ''
+    conversations: list[dict] = []
+    messages: list[dict] = []
+    if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
+        headers = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
+        try:
+            conv_response = _req.get(
+                f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_ZALO_CONVERSATION_TABLE}",
+                headers=headers,
+                params={'select': '*', 'order': 'updated_at.desc', 'limit': '1000'},
+                timeout=20,
+            )
+            if conv_response.status_code in (200, 206):
+                conv_data = conv_response.json()
+                conversations = [
+                    _normalise_messenger_storage_row(item)
+                    for item in (conv_data if isinstance(conv_data, list) else [])
+                    if isinstance(item, dict)
+                ]
+            else:
+                warning = conv_response.text[:300]
+        except Exception as exc:
+            warning = str(exc)[:300]
+
+    with _zalo_threads_lock:
+        local_conversations = list(_zalo_threads.get('conversations') or [])
+        local_messages = list(_zalo_threads.get('messages') or [])
+
+    by_key: dict[str, dict] = {}
+    for item in conversations + local_conversations:
+        if not isinstance(item, dict):
+            continue
+        normalised = _normalise_messenger_storage_row(item)
+        key = _messenger_row_conversation_key(normalised)
+        if key:
+            by_key[key] = {**by_key.get(key, {}), **normalised}
+    conversations = list(by_key.values())
+
+    current_staff = _current_staff()
+    filter_identity: dict | str = ''
+    if _is_admin():
+        if staff_id and staff_id != 'all':
+            filter_identity, staff_warning = _messenger_resolve_staff_filter(staff_id)
+            warning = ' | '.join([item for item in (warning, staff_warning) if item])
+    elif current_staff:
+        filter_identity = current_staff
+    else:
+        filter_identity = '__no_staff__'
+
+    if filter_identity:
+        conversations = [row for row in conversations if _messenger_staff_matches(row, filter_identity)]
+    conversations.sort(key=lambda row: str(row.get('updated_at') or row.get('captured_at') or ''), reverse=True)
+
+    target_conversation = None
+    if conversation_key or conversation_id:
+        target_conversation = next(
+            (
+                row for row in conversations
+                if _messenger_target_matches(row, conversation_key=conversation_key, conversation_id=conversation_id)
+            ),
+            None,
+        )
+    if target_conversation is None and conversations:
+        target_conversation = conversations[0]
+
+    target_key = _messenger_row_conversation_key(target_conversation or {})
+    target_id = _messenger_text((target_conversation or {}).get('conversation_id') or conversation_id, 220)
+
+    if target_conversation and USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
+        headers = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
+        query_candidates = []
+        if target_key:
+            query_candidates.append(('conversation_key', target_key))
+        if target_id:
+            query_candidates.append(('conversation_id', target_id))
+        for field, value in query_candidates:
+            try:
+                msg_response = _req.get(
+                    f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_ZALO_MESSAGE_TABLE}",
                     headers=headers,
                     params={'select': '*', field: f'eq.{value}', 'order': 'captured_at.desc', 'limit': str(limit * 3)},
                     timeout=20,
@@ -7328,6 +7562,7 @@ def api_health():
             'facebook_auto_reference_metrics_v1': True,
             'comment_templates_live_refresh_v1': True,
             'messenger_dom_sync_poc_v1': True,
+            'zalo_web_dom_sync_poc_v1': True,
         },
     }
     render_commit = str(os.environ.get('RENDER_GIT_COMMIT') or '').strip()
@@ -8997,6 +9232,55 @@ def messenger_conversations_get():
     staff_id = str(request.args.get('staff_id') or '').strip()
     limit = request.args.get('limit', 100, type=int)
     conversations, messages, warning = _load_messenger_threads(
+        conversation_key=conversation_key,
+        conversation_id=conversation_id,
+        staff_id=staff_id,
+        limit=limit,
+    )
+    staff_options, staff_warning = _messenger_staff_options()
+    warning = ' | '.join([item for item in (warning, staff_warning) if item])
+    payload = {
+        'ok': True,
+        'conversations': conversations,
+        'messages': messages,
+        'count': len(conversations),
+        'message_count': len(messages),
+        'can_manage': _is_admin(),
+        'active_staff_id': _current_staff_id(),
+        'selected_staff_id': staff_id if _is_admin() else _current_staff_id(),
+        'storage': 'supabase' if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY and not warning else 'local',
+    }
+    if _is_admin():
+        payload['staff'] = staff_options
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
+
+
+@app.route('/api/zalo/sync', methods=['POST'])
+def zalo_sync_from_extension():
+    body = request.get_json(silent=True) or {}
+    conversation, messages, warning = _store_zalo_sync_payload(body)
+    status_code = 200 if messages else 422
+    payload = {
+        'ok': bool(messages),
+        'conversation': conversation,
+        'messages': messages,
+        'count': len(messages),
+        'storage': 'supabase' if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY and not warning else 'local',
+    }
+    if warning:
+        payload['warning' if messages else 'error'] = warning
+    return jsonify(payload), status_code
+
+
+@app.route('/api/zalo/conversations', methods=['GET'])
+def zalo_conversations_get():
+    conversation_key = str(request.args.get('conversation_key') or '').strip()
+    conversation_id = str(request.args.get('conversation_id') or '').strip()
+    staff_id = str(request.args.get('staff_id') or '').strip()
+    limit = request.args.get('limit', 100, type=int)
+    conversations, messages, warning = _load_zalo_threads(
         conversation_key=conversation_key,
         conversation_id=conversation_id,
         staff_id=staff_id,

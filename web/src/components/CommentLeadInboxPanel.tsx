@@ -8,7 +8,7 @@ import { extractPhones, phonesForComment } from '@/lib/phone-utils';
 import type { ManagedChannel, StoredPostComment } from '@/lib/types';
 import './omni-inbox.css';
 
-type TabKey = 'inbox' | 'customers' | 'stats' | 'templates' | 'messenger';
+type TabKey = 'inbox' | 'customers' | 'stats' | 'templates' | 'messenger' | 'zalo';
 type ChannelFilter = 'all' | 'facebook' | 'tiktok' | 'instagram';
 type SourceKey = 'fb-page' | 'fb-group' | 'tiktok' | 'instagram';
 type TagKey = string;
@@ -511,6 +511,13 @@ export function CommentLeadInboxPanel() {
   const [messengerStaffFilter, setMessengerStaffFilter] = useState('');
   const [messengerCanManage, setMessengerCanManage] = useState(false);
   const [messengerBusy, setMessengerBusy] = useState(false);
+  const [zaloConversations, setZaloConversations] = useState<MessengerConversation[]>([]);
+  const [zaloMessages, setZaloMessages] = useState<MessengerMessage[]>([]);
+  const [selectedZaloId, setSelectedZaloId] = useState('');
+  const [zaloStaffOptions, setZaloStaffOptions] = useState<MessengerStaffOption[]>([]);
+  const [zaloStaffFilter, setZaloStaffFilter] = useState('');
+  const [zaloCanManage, setZaloCanManage] = useState(false);
+  const [zaloBusy, setZaloBusy] = useState(false);
 
   const processedSet = useMemo(() => new Set(processedIds), [processedIds]);
   const starredSet = useMemo(() => new Set(starredIds), [starredIds]);
@@ -655,6 +662,39 @@ export function CommentLeadInboxPanel() {
     }
   }, [messengerStaffFilter, selectedMessengerId]);
 
+  const loadZalo = useCallback(async (conversationKey = selectedZaloId, staffFilter = zaloStaffFilter) => {
+    setZaloBusy(true);
+    setStatus('Đang tải lịch sử Zalo...');
+    try {
+      const params = new URLSearchParams({ limit: '200' });
+      if (conversationKey) params.set('conversation_key', conversationKey);
+      if (staffFilter) params.set('staff_id', staffFilter);
+      const r = await api(`/api/zalo/conversations?${params.toString()}`);
+      const data = await r.json().catch(() => ({ ok: false, error: `Server lỗi ${r.status}` }));
+      if (!r.ok || !data.ok) {
+        setStatus(`❌ ${data.error || 'Không tải được Zalo'}`);
+        return;
+      }
+      const conversations = Array.isArray(data.conversations) ? data.conversations as MessengerConversation[] : [];
+      const messages = Array.isArray(data.messages) ? data.messages as MessengerMessage[] : [];
+      const staff = Array.isArray(data.staff) ? data.staff as MessengerStaffOption[] : [];
+      setZaloConversations(conversations);
+      setZaloMessages(messages);
+      setZaloCanManage(Boolean(data.can_manage));
+      setZaloStaffOptions(staff);
+      setSelectedZaloId((current) => {
+        if (conversationKey && conversations.some((item) => messengerConversationKey(item) === conversationKey)) return conversationKey;
+        if (current && conversations.some((item) => messengerConversationKey(item) === current)) return current;
+        return conversations[0] ? messengerConversationKey(conversations[0]) : '';
+      });
+      setStatus(data.warning ? `⚠️ ${data.warning}` : conversations.length ? `✅ Đã tải ${conversations.length} hội thoại Zalo` : 'Chưa có lịch sử Zalo. Mở một hội thoại Zalo Web rồi bấm đồng bộ.');
+    } catch {
+      setStatus('❌ Lỗi kết nối khi tải Zalo');
+    } finally {
+      setZaloBusy(false);
+    }
+  }, [selectedZaloId, zaloStaffFilter]);
+
   useEffect(() => {
     void loadWorkflow();
     void loadTemplateConfig();
@@ -683,6 +723,10 @@ export function CommentLeadInboxPanel() {
   useEffect(() => {
     if (tab === 'messenger') void loadMessenger();
   }, [tab, loadMessenger]);
+
+  useEffect(() => {
+    if (tab === 'zalo') void loadZalo();
+  }, [tab, loadZalo]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1224,6 +1268,69 @@ export function CommentLeadInboxPanel() {
     }
   }
 
+  function requestZaloSync(payload: Record<string, unknown>): Promise<MessengerSyncResult> {
+    return new Promise((resolve) => {
+      if (typeof window === 'undefined') {
+        resolve({ ok: false, error: 'Chỉ đồng bộ được Zalo Web trên Chrome có cài extension' });
+        return;
+      }
+
+      const requestId = `zalo_sync_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const timer = window.setTimeout(() => {
+        cleanup();
+        resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật Lead Hunter Bridge rồi tải lại web.' });
+      }, 90000);
+
+      const handleMessage = (event: MessageEvent) => {
+        if (event.source !== window) return;
+        const data = event.data || {};
+        if (data.source !== 'streal-tiktok-extension') return;
+        if (data.type !== 'STREAL_ZALO_SYNC_RESPONSE') return;
+        if (data.requestId !== requestId) return;
+        cleanup();
+        resolve(data as MessengerSyncResult);
+      };
+
+      function cleanup() {
+        window.removeEventListener('message', handleMessage);
+        window.clearTimeout(timer);
+      }
+
+      window.addEventListener('message', handleMessage);
+      window.postMessage(
+        {
+          source: 'streal-web-page',
+          type: 'STREAL_ZALO_SYNC_REQUEST',
+          requestId,
+          payload,
+        },
+        window.location.origin,
+      );
+    });
+  }
+
+  async function syncCurrentZaloThread() {
+    setZaloBusy(true);
+    setStatus('Đang đọc hội thoại Zalo Web đang mở bằng extension...');
+    try {
+      const result = await requestZaloSync({ limit: 200 });
+      if (!result.ok) {
+        setStatus(`❌ ${result.error || result.warning || 'Không đồng bộ được Zalo'}`);
+        return;
+      }
+      const conversationId = result.conversation ? messengerConversationKey(result.conversation) : '';
+      if (conversationId) setSelectedZaloId(conversationId);
+      setZaloMessages(Array.isArray(result.messages) ? result.messages : []);
+      await loadZalo(conversationId);
+      const note = result.extension_warning ? ` (${result.extension_warning})` : '';
+      setStatus(`✅ Đã đồng bộ ${result.count || 0} tin nhắn Zalo${note}`);
+    } catch {
+      setStatus('❌ Lỗi khi gọi extension đồng bộ Zalo');
+    } finally {
+      setZaloBusy(false);
+    }
+  }
+
   function requestTiktokOpenComment(payload: Record<string, unknown>): Promise<TikTokOpenCommentResult> {
     return new Promise((resolve) => {
       if (typeof window === 'undefined') {
@@ -1581,6 +1688,8 @@ export function CommentLeadInboxPanel() {
   const selectedSrc = selected ? sourceKey(selected) : null;
   const selectedMessenger = messengerConversations.find((item) => messengerConversationKey(item) === selectedMessengerId) || null;
   const visibleMessengerMessages = messengerMessages.filter((message) => !isMessengerSystemText(message.text, selectedMessenger));
+  const selectedZalo = zaloConversations.find((item) => messengerConversationKey(item) === selectedZaloId) || null;
+  const visibleZaloMessages = zaloMessages.filter((message) => !isMessengerSystemText(message.text, selectedZalo));
 
   return (
     <section className="omni-inbox module-panel">
@@ -1593,6 +1702,7 @@ export function CommentLeadInboxPanel() {
             <button type="button" className={tab === 'stats' ? 'active' : ''} onClick={() => setTab('stats')}>Thống kê</button>
             <button type="button" className={tab === 'templates' ? 'active' : ''} onClick={() => setTab('templates')}>Mẫu câu</button>
             <button type="button" className={tab === 'messenger' ? 'active' : ''} onClick={() => setTab('messenger')}>Messenger</button>
+            <button type="button" className={tab === 'zalo' ? 'active' : ''} onClick={() => setTab('zalo')}>Zalo</button>
           </nav>
         </div>
         <div className="omni-topbar-right">
@@ -1626,6 +1736,38 @@ export function CommentLeadInboxPanel() {
               </button>
               <button type="button" className="omni-btn-primary" onClick={() => void syncCurrentMessengerThread()} disabled={messengerBusy}>
                 Đồng bộ hội thoại đang mở
+              </button>
+            </>
+          ) : tab === 'zalo' ? (
+            <>
+              {zaloCanManage ? (
+                <select
+                  className="omni-channel-select"
+                  value={zaloStaffFilter}
+                  onChange={(e) => {
+                    const nextStaff = e.target.value;
+                    setZaloStaffFilter(nextStaff);
+                    setSelectedZaloId('');
+                    void loadZalo('', nextStaff);
+                  }}
+                  aria-label="Lọc hội thoại Zalo theo nhân viên"
+                >
+                  <option value="">Tất cả nhân viên</option>
+                  {zaloStaffOptions.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name || item.username || item.id}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              <button type="button" className="omni-btn-ghost" onClick={() => window.open('https://chat.zalo.me/', '_blank', 'noopener,noreferrer')}>
+                Mở Zalo Web
+              </button>
+              <button type="button" className="omni-btn-ghost" onClick={() => void loadZalo()} disabled={zaloBusy}>
+                {zaloBusy ? 'Đang tải...' : 'Tải lại'}
+              </button>
+              <button type="button" className="omni-btn-primary" onClick={() => void syncCurrentZaloThread()} disabled={zaloBusy}>
+                Đồng bộ hội thoại Zalo đang mở
               </button>
             </>
           ) : (
@@ -2114,6 +2256,87 @@ export function CommentLeadInboxPanel() {
                 }) : (
                   <div className="omni-empty">
                     {messengerBusy ? 'Đang tải Messenger...' : 'Chưa có tin nhắn cho hội thoại này.'}
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
+        </div>
+      ) : null}
+
+      {tab === 'zalo' ? (
+        <div className="omni-tab-panel omni-messenger-page">
+          <div className="omni-messenger-note">
+            <MaterialIcon name="info" style={{ fontSize: 18 }} />
+            <span>
+              PoC này chỉ đọc tin nhắn đang hiển thị trong hội thoại Zalo Web bạn đã mở bằng Chrome. Muốn lấy sâu hơn thì cuộn hội thoại trước rồi bấm đồng bộ.
+            </span>
+          </div>
+          <div className="omni-messenger-grid">
+            <aside className="omni-messenger-list">
+              <div className="omni-messenger-list-head">
+                <b>Hội thoại Zalo đã lưu</b>
+                <small>{zaloConversations.length} hội thoại</small>
+              </div>
+              {zaloConversations.length ? zaloConversations.map((item, index) => {
+                const cid = messengerConversationKey(item);
+                const phones = item.phones?.length ? item.phones.join(', ') : (item.customer_phone || '');
+                const staffLabel = zaloCanManage && item.captured_by_staff_name
+                  ? `NV ${item.captured_by_staff_name} · `
+                  : '';
+                return (
+                  <button
+                    key={cid || item.conversation_url || item.title || `zalo-${index}`}
+                    type="button"
+                    className={`omni-messenger-card ${selectedZaloId === cid ? 'active' : ''}`}
+                    onClick={() => {
+                      setSelectedZaloId(cid);
+                      void loadZalo(cid);
+                    }}
+                  >
+                    <div className="omni-avatar sm">{authorInitials(item.customer_name || item.title)}</div>
+                    <span>
+                      <b>{item.customer_name || item.title || cid || 'Hội thoại Zalo'}</b>
+                      <small>
+                        {staffLabel}{item.message_count || 0} tin · {phones ? `SĐT ${phones} · ` : ''}{messengerTime(item.latest_message_at || item.updated_at || item.captured_at)}
+                      </small>
+                    </span>
+                  </button>
+                );
+              }) : (
+                <div className="omni-empty">Chưa có hội thoại. Mở Zalo Web rồi bấm “Đồng bộ hội thoại Zalo đang mở”.</div>
+              )}
+            </aside>
+
+            <section className="omni-messenger-thread">
+              <div className="omni-messenger-thread-head">
+                <div>
+                  <h3>{selectedZalo?.customer_name || selectedZalo?.title || 'Chọn hội thoại Zalo'}</h3>
+                  <p>Chỉ hiển thị nội dung tin nhắn và ngày giờ đã đọc.</p>
+                </div>
+                {selectedZalo?.conversation_url ? (
+                  <button type="button" className="omni-btn-ghost" onClick={() => window.open(selectedZalo.conversation_url, '_blank', 'noopener,noreferrer')}>
+                    Mở gốc
+                  </button>
+                ) : null}
+              </div>
+              <div className="omni-messenger-messages">
+                {visibleZaloMessages.length ? visibleZaloMessages.map((message, index) => {
+                  const outgoing = message.direction === 'outgoing' || message.sender_type === 'staff';
+                  return (
+                    <div key={message.message_key || `${message.conversation_id}-${index}`} className={`omni-message-row ${outgoing ? 'outgoing' : 'incoming'}`}>
+                      {!outgoing ? (
+                        <div className="omni-message-avatar">{authorInitials(message.sender_name || selectedZalo?.customer_name || selectedZalo?.title || 'K')}</div>
+                      ) : null}
+                      <div className="omni-message-bubble">
+                        <p>{message.text}</p>
+                        <small>{messengerDisplayTime(message)}</small>
+                      </div>
+                    </div>
+                  );
+                }) : (
+                  <div className="omni-empty">
+                    {zaloBusy ? 'Đang tải Zalo...' : 'Chưa có tin nhắn cho hội thoại này.'}
                   </div>
                 )}
               </div>

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Seeding Fsolution Bridge",
-  "version": "0.1.57",
-  "description": "Ket noi Seeding Fsolution voi phien dang nhap Chrome that cho Facebook/TikTok.",
+  "version": "0.1.58",
+  "description": "Ket noi Seeding Fsolution voi phien dang nhap Chrome that cho Facebook/TikTok/Zalo.",
   "permissions": ["tabs", "scripting", "cookies", "storage", "clipboardRead"],
   "host_permissions": [
     "https://www.tiktok.com/*",
@@ -10,6 +10,8 @@
     "https://*.facebook.com/*",
     "https://www.messenger.com/*",
     "https://*.messenger.com/*",
+    "https://chat.zalo.me/*",
+    "https://*.zalo.me/*",
     "https://*.vercel.app/*",
     "https://sale-fsolution.onrender.com/*",
     "https://*.supabase.co/*",
@@ -29,6 +31,11 @@
     {
       "matches": ["https://www.messenger.com/*", "https://*.messenger.com/*", "https://www.facebook.com/messages*", "https://*.facebook.com/messages*"],
       "js": ["messenger-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://chat.zalo.me/*", "https://*.zalo.me/*"],
+      "js": ["zalo-content.js"],
       "run_at": "document_idle"
     },
     {
