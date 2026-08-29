@@ -86,6 +86,10 @@ type MessengerSyncResult = {
   warning?: string;
   error?: string;
   extension_warning?: string;
+  extension_count?: number;
+  scan_rounds?: number;
+  identity_source?: string;
+  identity_confidence?: string;
 };
 
 type TikTokBridgeResult = {
@@ -704,7 +708,7 @@ export function CommentLeadInboxPanel() {
       const data = await r.json().catch(() => ({ ok: false, error: `Server lỗi ${r.status}` }));
       if (!r.ok || !data.ok) {
         setStatus(`❌ ${data.error || 'Không tải được Zalo'}`);
-        return;
+        return -1;
       }
       const conversations = Array.isArray(data.conversations) ? data.conversations as MessengerConversation[] : [];
       const messages = Array.isArray(data.messages) ? data.messages as MessengerMessage[] : [];
@@ -719,8 +723,10 @@ export function CommentLeadInboxPanel() {
         return conversations[0] ? messengerConversationKey(conversations[0]) : '';
       });
       setStatus(data.warning ? `⚠️ ${data.warning}` : conversations.length ? `✅ Đã tải ${conversations.length} hội thoại Zalo` : 'Chưa có lịch sử Zalo. Mở một hội thoại Zalo Web rồi bấm đồng bộ.');
+      return conversations.length;
     } catch {
       setStatus('❌ Lỗi kết nối khi tải Zalo');
+      return -1;
     } finally {
       setZaloBusy(false);
     }
@@ -1346,7 +1352,10 @@ export function CommentLeadInboxPanel() {
     try {
       const result = await requestZaloSync({ limit: 500, maxScrolls: 40, pauseMs: 700 });
       if (!result.ok) {
-        setStatus(`❌ ${result.error || result.warning || 'Không đồng bộ được Zalo'}`);
+        const diagnostics = result.scan_rounds
+          ? ` (đã quét ${result.extension_count ?? 0} tin qua ${result.scan_rounds} lượt)`
+          : '';
+        setStatus(`❌ ${result.error || result.warning || 'Không đồng bộ được Zalo'}${diagnostics}`);
         return;
       }
       const conversationId = result.conversation ? messengerConversationKey(result.conversation) : '';
@@ -1361,7 +1370,13 @@ export function CommentLeadInboxPanel() {
           return [...byKey.values()];
         });
       }
-      await loadZalo(conversationId);
+      const loadedCount = await loadZalo(conversationId);
+      const scannedCount = result.extension_count ?? result.count ?? 0;
+      if (loadedCount < 1) {
+        const detail = result.error || result.warning || 'API chưa trả lại hội thoại vừa lưu';
+        setStatus(`❌ Extension đã đọc ${scannedCount} tin nhưng chưa tải lại được hội thoại: ${detail}`);
+        return;
+      }
       const note = result.extension_warning ? ` (${result.extension_warning})` : '';
       setStatus(`✅ Đã đồng bộ ${result.count || 0} tin nhắn Zalo${note}`);
     } catch {

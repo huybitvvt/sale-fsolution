@@ -1,7 +1,7 @@
 import type { NextConfig } from 'next';
 import path from 'path';
 
-const DEFAULT_API_PROXY_BASE_URL = 'https://sale-fsolution.onrender.com';
+const DEFAULT_API_PROXY_BASE_URL = 'https://sale-fsolution-nqif.onrender.com';
 const webRoot = path.join(__dirname);
 
 function normalizeUrl(value?: string): string {

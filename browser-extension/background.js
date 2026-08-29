@@ -4,7 +4,11 @@ const STREAL_API_ORIGIN_KEY = 'strealApiOrigin';
 function isAllowedApiOrigin(value) {
   try {
     const url = new URL(String(value || ''));
-    return (url.protocol === 'https:' && (url.hostname.endsWith('.vercel.app') || url.hostname === 'sale-fsolution.onrender.com'))
+    return (url.protocol === 'https:' && (
+      url.hostname.endsWith('.vercel.app')
+      || url.hostname === 'sale-fsolution-nqif.onrender.com'
+      || url.hostname === 'sale-fsolution.onrender.com'
+    ))
       || (url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname));
   } catch {
     return false;
@@ -85,7 +89,7 @@ async function saveMessengerThread(payload) {
   return response.ok ? data : { ok: false, error: data.error || `Server ${response.status}` };
 }
 
-async function saveZaloThread(payload) {
+async function saveZaloThread(payload, preferredAppTabId) {
   const stored = await chrome.storage.local.get(STREAL_API_ORIGIN_KEY);
   const origin = String(stored?.[STREAL_API_ORIGIN_KEY] || '');
   if (!isAllowedApiOrigin(origin)) {
@@ -93,7 +97,9 @@ async function saveZaloThread(payload) {
   }
   try {
     const appTabs = await chrome.tabs.query({ url: `${origin}/*` });
-    const appTab = appTabs.find((tab) => Number.isInteger(tab.id));
+    const appTab = appTabs.find((tab) => tab.id === preferredAppTabId)
+      || appTabs.find((tab) => tab.active && Number.isInteger(tab.id))
+      || appTabs.find((tab) => Number.isInteger(tab.id));
     if (appTab?.id) {
       const injected = await chrome.scripting.executeScript({
         target: { tabId: appTab.id },
@@ -227,8 +233,17 @@ async function collectZaloThread(request, sender) {
         payload: request.payload || {},
       });
     }
-    if (!result?.ok) return { ok: false, error: result?.error || result?.warning || 'Extension chua doc duoc hoi thoai Zalo.' };
-    const saved = await saveZaloThread(result);
+    if (!result?.ok) {
+      return {
+        ok: false,
+        error: result?.error || result?.warning || 'Extension chua doc duoc hoi thoai Zalo.',
+        extension_count: Number(result?.count || 0),
+        scan_rounds: Number(result?.scan_rounds || 0),
+        identity_source: result?.identity_source || '',
+        identity_confidence: result?.identity_confidence || '',
+      };
+    }
+    const saved = await saveZaloThread(result, sender?.tab?.id);
     if (sender?.tab?.id) {
       try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
     }
@@ -236,6 +251,10 @@ async function collectZaloThread(request, sender) {
       ...saved,
       zalo_tab_id: tab.id,
       extension_warning: result.warning || '',
+      extension_count: Number(result.count || 0),
+      scan_rounds: Number(result.scan_rounds || 0),
+      identity_source: result.identity_source || '',
+      identity_confidence: result.identity_confidence || '',
       error: saved?.error || saved?.warning || '',
     };
   } catch (error) {

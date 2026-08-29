@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Seeding Fsolution Bridge",
-  "version": "0.1.60",
+  "version": "0.1.61",
   "description": "Ket noi Seeding Fsolution voi phien dang nhap Chrome that cho Facebook/TikTok/Zalo.",
   "permissions": ["tabs", "scripting", "cookies", "storage", "clipboardRead"],
   "host_permissions": [
@@ -13,6 +13,7 @@
     "https://chat.zalo.me/*",
     "https://*.zalo.me/*",
     "https://*.vercel.app/*",
+    "https://sale-fsolution-nqif.onrender.com/*",
     "https://sale-fsolution.onrender.com/*",
     "https://*.supabase.co/*",
     "http://localhost/*",

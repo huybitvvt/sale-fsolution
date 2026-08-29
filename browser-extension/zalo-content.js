@@ -8,7 +8,7 @@
   const MESSAGE_ROW_CLASS_RE = /(message-item|msg-item|chat-item|zmessage|message-row|msg-row)/i;
   const BLOCKED_REGION_SELECTOR = '[role="navigation"], nav, aside, [class*="sidebar"], [class*="contact-list"], [class*="right-info"], [class*="toolbar"], [class*="compose"], [class*="emoji-picker"]';
   const QUOTED_CONTENT_SELECTOR = '[class*="quoted"], [class*="quote-content"], [class*="quote-message"], [class*="reference"], [class*="reply-preview"], [data-quoted="true"]';
-  const MESSAGE_CONTROL_SELECTOR = 'button, [role="button"], [class*="reaction"], [class*="action"], [class*="menu"], [class*="tooltip"], [class*="status"]';
+  const MESSAGE_CONTROL_SELECTOR = 'button, [role="button"], [class*="reaction"], [class*="menu-button"], [class*="tooltip"]';
 
   function normalize(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
@@ -172,7 +172,7 @@
     if (value.includes('/-') && /\/(?:-)(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)/i.test(value) && !/[à-ỹ]/i.test(value)) return true;
     if (!structuralMessage && value.length <= 6 && /^[:;\-><()dpho*]+$/i.test(value)) return true;
     if (!structuralMessage && !/[0-9a-zà-ỹ]/i.test(value)) return true;
-    if (CONTROL_TEXT.test(value) || SYSTEM_TEXT.test(value) || MENU_TEXT.test(value)) return true;
+    if (CONTROL_TEXT.test(value) || SYSTEM_TEXT.test(value) || MENU_TEXT.test(value) || HEADER_NOISE_TEXT.test(value)) return true;
     if (isTimestampText(value)) return true;
     if (!structuralMessage && title && value.toLocaleLowerCase('vi-VN') === normalize(title).toLocaleLowerCase('vi-VN')) return true;
     return false;
@@ -223,7 +223,7 @@
 
   function messageEvidence(node) {
     try {
-      return Math.min(40, node.querySelectorAll('[data-msg-id], [data-message-id], [class*="message"], [class*="msg-"], [class*="bubble"], [class*="chat-item"]').length);
+      return Math.min(40, node.querySelectorAll('[data-id], [data-key], [data-msg-id], [data-message-id], [class*="message"], [class*="msg-"], [class*="bubble"], [class*="chat-item"]').length);
     } catch {
       return 0;
     }
@@ -553,7 +553,7 @@
   }
 
   function leafTextCandidates(root) {
-    const selectors = '[dir="auto"], p, span, [class*="text"], [class*="content"]';
+    const selectors = '[dir="auto"], p, span, small, div, li, [class*="text"], [class*="content"]';
     return [...root.querySelectorAll(selectors)].filter((node) => {
       if (!isVisible(node) || isQuotedOrControlNode(node, root)) return false;
       const text = normalize(node.innerText || node.textContent || '');
@@ -625,16 +625,32 @@
   }
 
   function collectMessageRoots(scroller) {
-    const selector = '[data-msg-id], [data-message-id], [class*="message"], [class*="msg-"], [class*="bubble"], [class*="chat-item"], [dir="auto"], p, span';
+    const selector = '[data-id], [data-key], [data-msg-id], [data-message-id], [class*="message"], [class*="msg-"], [class*="bubble"], [class*="chat-item"], [dir="auto"], div[class*="text"], div[class*="content"], p, span';
     const roots = new Set();
-    scroller.querySelectorAll(selector).forEach((node) => {
+    const considerNode = (node) => {
       if (!isInsideScrollerViewport(node, scroller) || isQuotedOrControlNode(node, scroller)) return;
       const text = normalize(node.innerText || node.textContent || '');
       const hasMedia = node.matches('img, video') || node.querySelector?.('img, video, source, [style*="background"]');
       if ((!text || isTimestampText(text)) && !hasMedia) return;
       const root = messageRootForLeaf(node, scroller);
       if (validMessageContainer(root, scroller)) roots.add(root);
-    });
+      else if (validMessageContainer(node, scroller)) roots.add(node);
+    };
+    scroller.querySelectorAll(selector).forEach(considerNode);
+
+    // Zalo frequently ships minified class names. Keep a geometry-based fallback so
+    // a UI rename cannot make a populated conversation look completely empty.
+    if (roots.size < 3) {
+      scroller.querySelectorAll('div, li').forEach((node) => {
+        const directText = normalize([...node.childNodes]
+          .filter((child) => child.nodeType === Node.TEXT_NODE)
+          .map((child) => child.textContent || '')
+          .join(' '));
+        const directMedia = [...node.children].some((child) => child.matches?.('img, video, source'));
+        if (!directText && !directMedia) return;
+        considerNode(node);
+      });
+    }
     return [...roots].sort((a, b) => {
       const ra = a.getBoundingClientRect();
       const rb = b.getBoundingClientRect();
@@ -756,6 +772,7 @@
     mergeMessages(messages, collectMessages(scroller, limit, title, seed, 0));
     if (deep && messages.size < limit) {
       let stableRounds = 0;
+      let stableTopRounds = 0;
       for (let step = 0; step < maxScrolls && messages.size < limit; step += 1) {
         const beforeTop = Number(scroller.scrollTop || 0);
         const beforeHeight = Number(scroller.scrollHeight || 0);
@@ -775,7 +792,12 @@
           && Math.abs(afterHeight - beforeHeight) < 8
           && afterSignature === beforeSignature;
         stableRounds = unchanged ? stableRounds + 1 : 0;
-        if (stableRounds >= 3) break;
+        const stableAtTop = requestedTop
+          && afterTop <= 2
+          && messages.size === beforeCount
+          && Math.abs(afterHeight - beforeHeight) < 8;
+        stableTopRounds = stableAtTop ? stableTopRounds + 1 : 0;
+        if (stableTopRounds >= 2 || stableRounds >= 3) break;
       }
     }
 
