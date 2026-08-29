@@ -577,6 +577,7 @@ export function CommentLeadInboxPanel() {
   const [zaloCanManage, setZaloCanManage] = useState(false);
   const [zaloBusy, setZaloBusy] = useState(false);
   const [zaloSyncTargets, setZaloSyncTargets] = useState<ZaloSyncTarget[]>([]);
+  const [zaloActiveStaffId, setZaloActiveStaffId] = useState('');
 
   const processedSet = useMemo(() => new Set(processedIds), [processedIds]);
   const starredSet = useMemo(() => new Set(starredIds), [starredIds]);
@@ -743,6 +744,7 @@ export function CommentLeadInboxPanel() {
       setZaloSyncTargets(syncTargets);
       setZaloCanManage(Boolean(data.can_manage));
       setZaloStaffOptions(staff);
+      setZaloActiveStaffId(String(data.active_staff_id || ''));
       setSelectedZaloId((current) => {
         if (conversationKey && conversations.some((item) => messengerConversationKey(item) === conversationKey)) return conversationKey;
         if (current && conversations.some((item) => messengerConversationKey(item) === current)) return current;
@@ -1375,11 +1377,16 @@ export function CommentLeadInboxPanel() {
     });
   }
 
-  async function syncCurrentZaloThread() {
+  async function syncCurrentZaloThread(expectedConversationId = '') {
     setZaloBusy(true);
     setStatus('Đang đọc hội thoại Zalo Web đang mở bằng extension...');
     try {
-      const result = await requestZaloSync({ limit: 500, maxScrolls: 34, pauseMs: 600 });
+      const result = await requestZaloSync({
+        limit: 500,
+        maxScrolls: 34,
+        pauseMs: 600,
+        expectedConversationId,
+      });
       if (!result.ok) {
         if (result.approval_required && zaloCanManage) await loadZalo('', zaloStaffFilter);
         const diagnostics = result.scan_rounds
@@ -1503,10 +1510,19 @@ export function CommentLeadInboxPanel() {
         setStatus(`❌ ${data.error || 'Không cập nhật được nhóm Zalo'}`);
         return;
       }
+      if (approved) {
+        const targetStaffId = String(target.captured_by_staff_id || '');
+        if (targetStaffId && zaloActiveStaffId && targetStaffId !== zaloActiveStaffId) {
+          await loadZalo('', zaloStaffFilter);
+          setStatus(`✅ Đã cho phép nhóm "${target.title || target.conversation_id}". Nhân viên ${target.captured_by_staff_name || targetStaffId} cần mở nhóm trên máy của họ để extension cuộn và đồng bộ.`);
+          return;
+        }
+        setStatus(`Đã cho phép nhóm "${target.title || target.conversation_id}". Đang mở Zalo và bắt đầu cuộn...`);
+        await syncCurrentZaloThread(String(target.conversation_id || ''));
+        return;
+      }
       await loadZalo('', zaloStaffFilter);
-      setStatus(approved
-        ? `✅ Đã cho phép nhóm "${target.title || target.conversation_id}". Nhân viên bấm đồng bộ lại để lấy tin nhắn.`
-        : `✅ Đã ngừng đồng bộ nhóm "${target.title || target.conversation_id}" và xoá lịch sử đã lưu.`);
+      setStatus(`✅ Đã ngừng đồng bộ nhóm "${target.title || target.conversation_id}" và xoá lịch sử đã lưu.`);
     } catch {
       setStatus('❌ Lỗi kết nối khi cập nhật nhóm Zalo');
     } finally {
@@ -2475,7 +2491,7 @@ export function CommentLeadInboxPanel() {
                 <div className="omni-zalo-target-list">
                   {zaloSyncTargets.map((target) => {
                     const approved = target.approval_status === 'approved';
-                    const statusLabel = approved ? 'Đang đồng bộ' : target.approval_status === 'blocked' ? 'Đã ngừng' : 'Chờ duyệt';
+                    const statusLabel = approved ? 'Đã cho phép' : target.approval_status === 'blocked' ? 'Đã ngừng' : 'Chờ duyệt';
                     return (
                       <div key={target.target_key} className="omni-zalo-target-row">
                         <div>

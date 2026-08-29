@@ -359,6 +359,15 @@ async function collectZaloThread(request, sender) {
         identity_confidence: metadata?.identity_confidence || '',
       };
     }
+    const expectedConversationId = String(request?.payload?.expectedConversationId || '');
+    if (expectedConversationId && metadata.conversation_id !== expectedConversationId) {
+      return {
+        ok: false,
+        error: 'Nhóm Zalo đang mở không phải nhóm vừa được cho phép. Hãy mở đúng nhóm rồi bấm đồng bộ lại.',
+        expected_conversation_id: expectedConversationId,
+        actual_conversation_id: metadata.conversation_id || '',
+      };
+    }
     const authorization = await authorizeZaloThread(metadata, sender?.tab?.id);
     if (!authorization?.ok) {
       if (sender?.tab?.id) {
@@ -375,15 +384,22 @@ async function collectZaloThread(request, sender) {
         error: authorization?.error || authorization?.warning || 'Nhóm Zalo chưa được phép đồng bộ.',
       };
     }
+    try { await chrome.tabs.update(tab.id, { active: true }); } catch {}
     const result = await sendTabMessage(tab.id, {
       type: 'STREAL_ZALO_COLLECT_THREAD',
       requestId: request.requestId,
       payload: { ...(request.payload || {}), authorizedGroup: true },
     });
     if (!result?.ok) {
+      if (sender?.tab?.id) {
+        try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
+      }
       return { ok: false, error: result?.error || result?.warning || 'Extension chua doc duoc tin nhan nhom Zalo.' };
     }
     if (metadata.conversation_id && result.conversation_id !== metadata.conversation_id) {
+      if (sender?.tab?.id) {
+        try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
+      }
       return { ok: false, error: 'Nhóm Zalo đã thay đổi sau khi kiểm tra quyền. Hãy giữ nguyên nhóm rồi đồng bộ lại.' };
     }
     const saved = await saveZaloThread(result, sender?.tab?.id);
