@@ -90,6 +90,9 @@ type MessengerSyncResult = {
   scan_rounds?: number;
   identity_source?: string;
   identity_confidence?: string;
+  media_capture_count?: number;
+  media_capture_warning?: string;
+  media_upload_count?: number;
 };
 
 type TikTokBridgeResult = {
@@ -390,6 +393,10 @@ function messengerTime(value?: string) {
 
 function messengerDisplayTime(row: MessengerMessage) {
   return row.display_time || messengerTime(row.sent_at || row.captured_at);
+}
+
+function zaloDisplayTime(row: MessengerMessage) {
+  return row.display_time || (row.sent_at ? messengerTime(row.sent_at) : 'Không rõ giờ');
 }
 
 function messengerConversationKey(row: MessengerConversation | MessengerMessage) {
@@ -1377,8 +1384,12 @@ export function CommentLeadInboxPanel() {
         setStatus(`❌ Extension đã đọc ${scannedCount} tin nhưng chưa tải lại được hội thoại: ${detail}`);
         return;
       }
-      const note = result.extension_warning ? ` (${result.extension_warning})` : '';
-      setStatus(`✅ Đã đồng bộ ${result.count || 0} tin nhắn Zalo${note}`);
+      const details = [
+        result.media_upload_count ? `đã lưu ${result.media_upload_count} ảnh` : '',
+        result.warning || '',
+        result.extension_warning || '',
+      ].filter(Boolean).join(' | ');
+      setStatus(`✅ Đã đồng bộ ${result.count || 0} tin nhắn Zalo${details ? ` (${details})` : ''}`);
     } catch {
       setStatus('❌ Lỗi khi gọi extension đồng bộ Zalo');
     } finally {
@@ -2439,7 +2450,7 @@ export function CommentLeadInboxPanel() {
                         ) : message.text === '[Ảnh]' ? (
                           <p>[Ảnh]</p>
                         ) : null}
-                        <small>{messengerDisplayTime(message)}</small>
+                        <small>{zaloDisplayTime(message)}</small>
                       </div>
                     </div>
                   );

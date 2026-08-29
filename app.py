@@ -1535,10 +1535,48 @@ def _zalo_message_sort_key(row: dict) -> tuple:
     return (captured_at.timestamp() if captured_at else 0, -capture_round, dom_index)
 
 
+def _clean_zalo_dom_message(raw: dict) -> dict:
+    row = raw.copy() if isinstance(raw, dict) else {}
+    text = re.sub(r'\s+', ' ', str(row.get('text') or row.get('message') or '')).strip()
+    text = re.sub(
+        r'(?:^|\s)(?:/-(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)|:>|:o|:-o|:-h|:-\(\(|:\(\(|:\)|:-\)|;\)|;-\)|:d|:-d|:\*|:-\*|>|<)(?=\s|$)',
+        ' ',
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r'\s+', ' ', text).strip()
+    display_time = _messenger_text(row.get('display_time') or row.get('time_text'), 120)
+    trailing_time = re.search(r'(?:^|\s)(\d{1,2}:\d{2})(?:\s+(\d{1,2}[/.]\d{1,2}[/.]\d{2,4}))?\s*$', text)
+    display_clock = re.search(r'\b\d{1,2}:\d{2}\b', display_time)
+    if trailing_time and (not display_clock or display_clock.group(0) == trailing_time.group(1)):
+        if not display_time:
+            display_time = ' '.join(item for item in trailing_time.groups() if item)
+        text = text[:trailing_time.start()].strip()
+    row['text'] = text
+    if display_time:
+        row['display_time'] = display_time
+    return row
+
+
+def _is_zalo_legacy_polluted_message(raw: dict) -> bool:
+    text = str((raw or {}).get('text') or (raw or {}).get('message') or '')
+    artifacts = re.findall(
+        r'(?:^|\s)(?:/-(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)|:>|:o|:-o|:-h|:-\(\(|:\(\()',
+        text,
+        flags=re.IGNORECASE,
+    )
+    return len(artifacts) >= 2
+
+
 def _store_zalo_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
     global _zalo_threads
     body = body.copy() if isinstance(body, dict) else {}
     body['source'] = body.get('source') or 'zalo_web_dom'
+    body['messages'] = [
+        _clean_zalo_dom_message(item)
+        for item in (body.get('messages') if isinstance(body.get('messages'), list) else [])
+        if isinstance(item, dict)
+    ]
     conversation, messages = _normalise_messenger_sync_payload(body)
     messages = _dedupe_zalo_message_rows(messages)
     conversation['source'] = 'zalo_web_dom'
@@ -1547,6 +1585,10 @@ def _store_zalo_sync_payload(body: dict) -> tuple[dict, list[dict], str]:
     with _zalo_threads_lock:
         current_conversations = _zalo_threads.get('conversations') if isinstance(_zalo_threads.get('conversations'), list) else []
         current_messages = _zalo_threads.get('messages') if isinstance(_zalo_threads.get('messages'), list) else []
+        current_messages = [
+            item for item in current_messages
+            if isinstance(item, dict) and not _is_zalo_legacy_polluted_message(item)
+        ]
         conversations_by_key = {
             _messenger_row_conversation_key(item): _normalise_messenger_storage_row(item)
             for item in current_conversations
@@ -1943,7 +1985,11 @@ def _load_zalo_threads(
 
     messages_by_key: dict[str, dict] = {}
     for item in messages + local_messages:
-        if not isinstance(item, dict) or not message_matches_target(item):
+        if (
+            not isinstance(item, dict)
+            or _is_zalo_legacy_polluted_message(item)
+            or not message_matches_target(item)
+        ):
             continue
         normalised = _normalise_messenger_storage_row(item)
         if filter_identity and not _messenger_staff_matches(normalised, filter_identity):
@@ -7003,6 +7049,56 @@ def _upload_comment_image_to_supabase(file_storage) -> tuple[str, str]:
         return '', str(e)[:300]
 
 
+def _upload_zalo_media_to_supabase(file_storage) -> tuple[str, str]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return '', 'Chưa cấu hình Supabase'
+    if not file_storage or not file_storage.filename:
+        return '', 'Không có dữ liệu ảnh Zalo'
+
+    content_type = (file_storage.mimetype or '').lower()
+    if content_type not in ALLOWED_COMMENT_IMAGE_TYPES:
+        return '', 'Ảnh Zalo phải là JPG, PNG, WEBP hoặc GIF'
+    content = file_storage.read()
+    if not content:
+        return '', 'Ảnh Zalo rỗng'
+    max_bytes = min(MAX_COMMENT_IMAGE_BYTES, 4 * 1024 * 1024)
+    if len(content) > max_bytes:
+        return '', f'Ảnh Zalo quá lớn, tối đa {max_bytes // (1024 * 1024)}MB'
+
+    ext = ALLOWED_COMMENT_IMAGE_TYPES[content_type]
+    if ext == '.jpeg':
+        ext = '.jpg'
+    digest = hashlib.sha256(content).hexdigest()
+    staff_id = _current_staff_id() or 'anonymous'
+    object_path = f'zalo/{staff_id}/{digest}{ext}'
+    upload_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{SUPABASE_COMMENT_IMAGE_BUCKET}/{object_path}"
+    try:
+        response = _req.post(
+            upload_url,
+            headers={
+                'apikey': SUPABASE_KEY,
+                'Authorization': f'Bearer {SUPABASE_KEY}',
+                'Content-Type': content_type,
+                'x-upsert': 'true',
+            },
+            data=content,
+            timeout=60,
+        )
+        if response.status_code not in (200, 201):
+            message = response.text[:300]
+            if response.headers.get('content-type', '').startswith('application/json'):
+                try:
+                    message = response.json().get('message') or message
+                except Exception:
+                    pass
+            return '', message
+        public_path = quote(object_path, safe='/')
+        public_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{SUPABASE_COMMENT_IMAGE_BUCKET}/{public_path}"
+        return public_url, ''
+    except Exception as exc:
+        return '', str(exc)[:300]
+
+
 def _upload_post_media_to_supabase(file_storage) -> tuple[str, str, str]:
     if not SUPABASE_URL or not SUPABASE_KEY:
         return '', '', 'Chưa cấu hình Supabase'
@@ -8278,6 +8374,15 @@ def upload_comment_image():
     if not image_url:
         return jsonify({'ok': False, 'error': error or 'Upload ảnh thất bại'}), 400
     return jsonify({'ok': True, 'image_url': image_url})
+
+
+@app.route('/api/uploads/zalo-media', methods=['POST'])
+def upload_zalo_media():
+    file_storage = request.files.get('image')
+    image_url, error = _upload_zalo_media_to_supabase(file_storage)
+    if not image_url:
+        return jsonify({'ok': False, 'error': error or 'Upload ảnh Zalo thất bại'}), 400
+    return jsonify({'ok': True, 'image_url': image_url, 'storage': 'supabase'})
 
 
 @app.route('/api/uploads/post-media', methods=['POST'])

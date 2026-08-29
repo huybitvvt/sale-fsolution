@@ -106,11 +106,52 @@ async function saveZaloThread(payload, preferredAppTabId) {
         world: 'MAIN',
         args: [payload || {}],
         func: async (thread) => {
+          let uploadedCount = 0;
+          const mediaWarnings = new Set();
+          const messages = [];
+          for (const rawMessage of Array.isArray(thread?.messages) ? thread.messages : []) {
+            const message = { ...(rawMessage || {}) };
+            const mediaUrls = new Set(Array.isArray(message.media_urls) ? message.media_urls.filter((url) => /^https:\/\//i.test(String(url || ''))) : []);
+            for (const item of Array.isArray(message.media_uploads) ? message.media_uploads.slice(0, 8) : []) {
+              try {
+                const sourceUrl = String(item?.source_url || '');
+                const blobResponse = await fetch(String(item?.data_url || ''));
+                const blob = await blobResponse.blob();
+                if (!blob.size || !/^image\//i.test(blob.type || '')) throw new Error('Dữ liệu ảnh không hợp lệ');
+                const extension = /png/i.test(blob.type) ? 'png' : /webp/i.test(blob.type) ? 'webp' : /gif/i.test(blob.type) ? 'gif' : 'jpg';
+                const form = new FormData();
+                form.append('image', blob, `zalo-image.${extension}`);
+                const uploadResponse = await fetch('/api/uploads/zalo-media', {
+                  method: 'POST', credentials: 'include', body: form,
+                });
+                const uploadData = await uploadResponse.json().catch(() => ({ ok: false, error: `Server ${uploadResponse.status}` }));
+                if (!uploadResponse.ok || !uploadData.ok || !uploadData.image_url) {
+                  throw new Error(uploadData.error || `Server ${uploadResponse.status}`);
+                }
+                if (sourceUrl) mediaUrls.delete(sourceUrl);
+                mediaUrls.add(uploadData.image_url);
+                uploadedCount += 1;
+              } catch (error) {
+                mediaWarnings.add(error?.message || String(error));
+              }
+            }
+            delete message.media_uploads;
+            delete message.media_candidates;
+            message.media_urls = [...mediaUrls].slice(0, 10);
+            messages.push(message);
+          }
+          const cleanThread = { ...(thread || {}), messages };
           const response = await fetch('/api/zalo/sync', {
-            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(thread),
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cleanThread),
           });
           const data = await response.json().catch(() => ({ ok: false, error: `Server ${response.status}` }));
-          return response.ok ? data : { ok: false, error: data.error || `Server ${response.status}` };
+          if (!response.ok) return { ok: false, error: data.error || `Server ${response.status}`, media_upload_count: uploadedCount };
+          const mediaWarning = [...mediaWarnings].filter(Boolean).join(' | ');
+          return {
+            ...data,
+            media_upload_count: uploadedCount,
+            warning: [data.warning, mediaWarning ? `Chưa lưu được một số ảnh Zalo: ${mediaWarning}` : ''].filter(Boolean).join(' | '),
+          };
         },
       });
       if (injected?.[0]?.result) return injected[0].result;
@@ -118,11 +159,20 @@ async function saveZaloThread(payload, preferredAppTabId) {
   } catch {
     // Fall through to a direct extension request when the app tab cannot be injected.
   }
+  const cleanPayload = {
+    ...(payload || {}),
+    messages: (Array.isArray(payload?.messages) ? payload.messages : []).map((rawMessage) => {
+      const message = { ...(rawMessage || {}) };
+      delete message.media_uploads;
+      delete message.media_candidates;
+      return message;
+    }),
+  };
   const response = await fetch(`${origin}/api/zalo/sync`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload || {}),
+    body: JSON.stringify(cleanPayload),
   });
   const data = await response.json().catch(() => ({ ok: false, error: `Server ${response.status}` }));
   return response.ok ? data : { ok: false, error: data.error || `Server ${response.status}` };
@@ -241,6 +291,8 @@ async function collectZaloThread(request, sender) {
         scan_rounds: Number(result?.scan_rounds || 0),
         identity_source: result?.identity_source || '',
         identity_confidence: result?.identity_confidence || '',
+        media_capture_count: Number(result?.media_capture_count || 0),
+        media_capture_warning: result?.media_capture_warning || '',
       };
     }
     const saved = await saveZaloThread(result, sender?.tab?.id);
@@ -250,11 +302,13 @@ async function collectZaloThread(request, sender) {
     return {
       ...saved,
       zalo_tab_id: tab.id,
-      extension_warning: result.warning || '',
+      extension_warning: [result.warning, result.media_capture_warning].filter(Boolean).join(' | '),
       extension_count: Number(result.count || 0),
       scan_rounds: Number(result.scan_rounds || 0),
       identity_source: result.identity_source || '',
       identity_confidence: result.identity_confidence || '',
+      media_capture_count: Number(result.media_capture_count || 0),
+      media_capture_warning: result.media_capture_warning || '',
       error: saved?.error || saved?.warning || '',
     };
   } catch (error) {

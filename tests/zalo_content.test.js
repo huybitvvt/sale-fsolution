@@ -54,3 +54,12 @@ test('uses a loose minute key to merge the same bubble across scans', () => {
     api.messageContentKey({ ...base, display_time: '17:58 18/8/2026' }, { looseTime: true }),
   );
 });
+
+test('removes Zalo reaction artifacts and the rendered bubble timestamp', () => {
+  const marker = api.parseTimelineMarker('15:08');
+  assert.equal(
+    api.cleanMessageText('400 b 15:08 /-strong /-heart :> :o :-(( :-h', marker),
+    '400 b',
+  );
+  assert.equal(api.stripZaloIconArtifacts('Nội dung thật /-heart :o'), 'Nội dung thật');
+});

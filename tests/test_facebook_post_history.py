@@ -985,6 +985,38 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertEqual(messages[2]['raw_message']['media_urls'], ['https://example.com/a.jpg'])
         self.assertEqual(len(stored_threads['messages']), 3)
 
+    def test_zalo_dom_cleanup_removes_reply_controls_and_recovers_time(self):
+        cleaned = backend._clean_zalo_dom_message({
+            'text': '400 b 15:08 /-strong /-heart :> :o :-(( :-h',
+        })
+
+        self.assertEqual(cleaned['text'], '400 b')
+        self.assertEqual(cleaned['display_time'], '15:08')
+        scheduled = backend._clean_zalo_dom_message({'text': 'Hẹn lúc 15:08', 'display_time': '16:20'})
+        self.assertEqual(scheduled['text'], 'Hẹn lúc 15:08')
+        self.assertTrue(backend._is_zalo_legacy_polluted_message({
+            'text': 'Nguyễn Doãn Huy Bhf giá sao thế bác 400 b 15:08 /-strong /-heart :o',
+        }))
+        self.assertFalse(backend._is_zalo_legacy_polluted_message({'text': '400 b'}))
+
+    def test_zalo_media_upload_uses_deterministic_supabase_path(self):
+        image = Mock(filename='zalo.png', mimetype='image/png')
+        image.read.return_value = b'zalo-image-bytes'
+        response = Mock(status_code=200, headers={}, text='')
+
+        with (
+            patch.object(backend, 'SUPABASE_URL', 'https://demo.supabase.co'),
+            patch.object(backend, 'SUPABASE_KEY', 'service-key'),
+            patch.object(backend, '_current_staff_id', return_value='sale-1'),
+            patch.object(backend._req, 'post', return_value=response) as post,
+        ):
+            image_url, error = backend._upload_zalo_media_to_supabase(image)
+
+        self.assertEqual(error, '')
+        self.assertIn('/storage/v1/object/public/comment-images/zalo/sale-1/', image_url)
+        self.assertTrue(image_url.endswith('.png'))
+        self.assertEqual(post.call_args.kwargs['headers']['x-upsert'], 'true')
+
     def test_zalo_sync_keeps_stable_conversation_and_merges_duplicate_dom_bubbles(self):
         staff = {'id': 'sale-1', 'name': 'Sale A', 'username': 'salea'}
         first_payload = {

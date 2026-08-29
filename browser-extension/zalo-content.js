@@ -2,13 +2,13 @@
   const CONTROL_TEXT = /^(aa|soạn|soạn tin nhắn|nhập tin nhắn|nhập @, tin nhắn|message|write a message|type a message|gửi|send|đã gửi|sent|đã xem|seen|đang nhập|typing|zalo|tất cả|all|chưa đọc|unread|tìm kiếm|search|thông báo|notifications|tắt thông báo|mute notifications|trang cá nhân|profile|thông tin|info|file|ảnh|photo|video|sticker|gif|emoji|like)$/i;
   const SYSTEM_TEXT = /^(tin nhắn và cuộc gọi|bạn đã tạo nhóm này|bạn chưa kết nối|các bạn không phải|giờ đây, các bạn|now you can|cuộc gọi|missed call|đã thu hồi|recalled|đã ghim|pinned|đã đổi|changed|đã thêm|added|đã rời|left)\b/i;
   const MENU_TEXT = /^(đoạn chat|tin nhắn|danh bạ|khám phá|nhật ký|cloud của tôi|zalo ai|todo|media|file phương tiện|quyền riêng tư|privacy|cài đặt|settings|tùy chỉnh|customize)$/i;
-  const ICON_CODE_TEXT = /^(?:\/-)?(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)$|^(?:>|<|:o|:-o|:-h|:-\(\(|:\(\(|:\)|:-\)|;\)|;-\)|:d|:-d|:\*|:-\*)$/i;
+  const ICON_CODE_TEXT = /^(?:\/-)?(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)$|^(?:>|<|:>|:o|:-o|:-h|:-\(\(|:\(\(|:\)|:-\)|;\)|;-\)|:d|:-d|:\*|:-\*)$/i;
   const HEADER_NOISE_TEXT = /^(người lạ|stranger|nhóm chung(?:\s*\(\d+\))?|mutual groups?|gửi kết bạn|gửi yêu cầu kết bạn.*|thêm bạn|kết bạn|more|xem thêm)$/i;
   const MESSAGE_CONTENT_CLASS_RE = /(bubble|message-content|msg-content|chat-content|text-content|content-message)/i;
   const MESSAGE_ROW_CLASS_RE = /(message-item|msg-item|chat-item|zmessage|message-row|msg-row)/i;
   const BLOCKED_REGION_SELECTOR = '[role="navigation"], nav, aside, [class*="sidebar"], [class*="contact-list"], [class*="right-info"], [class*="toolbar"], [class*="compose"], [class*="emoji-picker"]';
-  const QUOTED_CONTENT_SELECTOR = '[class*="quoted"], [class*="quote-content"], [class*="quote-message"], [class*="reference"], [class*="reply-preview"], [data-quoted="true"]';
-  const MESSAGE_CONTROL_SELECTOR = 'button, [role="button"], [class*="reaction"], [class*="menu-button"], [class*="tooltip"]';
+  const QUOTED_CONTENT_SELECTOR = 'blockquote, [class*="quoted"], [class*="quote-content"], [class*="quote-message"], [class*="reference"], [class*="reply-preview"], [class*="reply-quote"], [class*="replied-message"], [data-quoted="true"], [data-quote-id]';
+  const MESSAGE_CONTROL_SELECTOR = 'button, [role="button"], [class*="reaction"], [class*="react-icon"], [class*="menu-button"], [class*="action-menu"], [class*="tooltip"]';
 
   function normalize(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
@@ -164,8 +164,31 @@
     return match ? `${timeText} ${Number(match[3])}/${Number(match[2])}/${match[1]}` : timeText;
   }
 
+  function stripZaloIconArtifacts(value) {
+    return normalize(String(value || '').replace(
+      /(?:^|\s)(?:\/(?:-)(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)|:>|:o|:-o|:-h|:-\(\(|:\(\(|:\)|:-\)|;\)|;-\)|:d|:-d|:\*|:-\*|>|<)(?=\s|$)/gi,
+      ' ',
+    ));
+  }
+
+  function cleanMessageText(value, marker = null) {
+    let text = stripZaloIconArtifacts(value)
+      .replace(/(?:^|\s)(?:đã gửi|sent|đã xem|seen)\s*$/i, '')
+      .trim();
+    if (marker && ['time', 'datetime'].includes(marker.kind)) {
+      const timeText = `${Number(marker.hour)}:${pad2(marker.minute)}`;
+      const paddedTimeText = `${pad2(marker.hour)}:${pad2(marker.minute)}`;
+      const escapedTimes = [timeText, paddedTimeText]
+        .filter((item, index, all) => all.indexOf(item) === index)
+        .map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('|');
+      text = text.replace(new RegExp(`(?:^|\\s)(?:${escapedTimes})(?:\\s+\\d{1,2}[\\/.]\\d{1,2}[\\/.]\\d{2,4})?\\s*$`, 'i'), '').trim();
+    }
+    return normalize(text);
+  }
+
   function isNoiseText(text, title = '', { structuralMessage = false } = {}) {
-    const value = normalize(text);
+    const value = stripZaloIconArtifacts(text);
     if (!value || value.length > 5000) return true;
     if (ICON_CODE_TEXT.test(value)) return true;
     if (/^\/[-a-z0-9_]+$/i.test(value)) return true;
@@ -493,9 +516,31 @@
     return contentCandidate || rowCandidate || geometryCandidate || node.parentElement || node;
   }
 
+  function looksLikeQuotedBlock(node, root) {
+    if (!node || !root || node === root || !root.contains(node)) return false;
+    if (node.matches?.(QUOTED_CONTENT_SELECTOR)) return true;
+    const rect = node.getBoundingClientRect();
+    const rootRect = root.getBoundingClientRect();
+    if (rect.width < 48 || rect.height < 22 || rect.height > Math.max(180, rootRect.height * 0.82)) return false;
+    const style = window.getComputedStyle(node);
+    const leftBorder = Number.parseFloat(style.borderLeftWidth || '0') || 0;
+    const rightBorder = Number.parseFloat(style.borderRightWidth || '0') || 0;
+    const hasQuoteBorder = (leftBorder >= 2 && !/none|hidden/i.test(style.borderLeftStyle || ''))
+      || (rightBorder >= 2 && !/none|hidden/i.test(style.borderRightStyle || ''));
+    const classes = normalize(`${node.className || ''} ${node.getAttribute?.('data-type') || ''} ${node.getAttribute?.('aria-label') || ''}`);
+    return hasQuoteBorder || /(?:^|[-_\s])(quote|quoted|reference|reply-preview|replied)(?:$|[-_\s])/i.test(classes);
+  }
+
+  function quotedAncestor(node, root) {
+    let current = node;
+    for (let depth = 0; current && current !== root && depth < 9; depth += 1, current = current.parentElement) {
+      if (looksLikeQuotedBlock(current, root)) return current;
+    }
+    return null;
+  }
+
   function isQuotedOrControlNode(node, root) {
-    const quoted = node.closest?.(QUOTED_CONTENT_SELECTOR);
-    if (quoted && quoted !== root) return true;
+    if (quotedAncestor(node, root)) return true;
     const control = node.closest?.(MESSAGE_CONTROL_SELECTOR);
     return Boolean(control && control !== root);
   }
@@ -516,7 +561,24 @@
 
   function collectMedia(root) {
     const urls = new Set();
+    const candidates = new Set();
     let hasVisualMedia = false;
+    const remember = (rawValue) => {
+      const raw = String(rawValue || '').trim();
+      if (!raw) return;
+      if (/^(blob:|data:)/i.test(raw)) {
+        candidates.add(raw);
+        return;
+      }
+      try {
+        const url = new URL(raw, window.location.href);
+        if (url.protocol !== 'https:') return;
+        urls.add(url.href);
+        candidates.add(url.href);
+      } catch {
+        // ignored
+      }
+    };
     root.querySelectorAll?.('img, video, source').forEach((node) => {
       if (!isVisible(node) || isQuotedOrControlNode(node, root)) return;
       const rect = node.getBoundingClientRect();
@@ -524,13 +586,7 @@
       if (rect.width < 38 || rect.height < 38 || /avatar|reaction|toolbar|button-icon/i.test(classes)) return;
       hasVisualMedia = true;
       const raw = node.getAttribute('src') || node.getAttribute('data-src') || node.getAttribute('poster') || '';
-      if (!raw || /^(blob:|data:)/i.test(raw)) return;
-      try {
-        const url = new URL(raw, window.location.href);
-        if (url.protocol === 'https:') urls.add(url.href);
-      } catch {
-        // ignored
-      }
+      remember(raw);
     });
     root.querySelectorAll?.('[style*="background"]').forEach((node) => {
       if (!isVisible(node) || isQuotedOrControlNode(node, root)) return;
@@ -541,15 +597,83 @@
       const match = style.match(/url\(["']?(.+?)["']?\)/);
       if (!match?.[1]) return;
       hasVisualMedia = true;
-      if (/^(blob:|data:)/i.test(match[1])) return;
-      try {
-        const url = new URL(match[1], window.location.href);
-        if (url.protocol === 'https:') urls.add(url.href);
-      } catch {
-        // ignored
-      }
+      remember(match[1]);
     });
-    return { urls: [...urls].slice(0, 10), hasVisualMedia };
+    return { urls: [...urls].slice(0, 10), candidates: [...candidates].slice(0, 10), hasVisualMedia };
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('Không đọc được ảnh Zalo'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function compressTransferImage(blob, maxBytes) {
+    if (blob.size <= maxBytes) return blob;
+    if (!/^image\//i.test(blob.type || '') || /gif|svg/i.test(blob.type || '') || typeof createImageBitmap !== 'function') return null;
+    let bitmap = null;
+    try {
+      bitmap = await createImageBitmap(blob);
+      const maxDimension = 1800;
+      const scale = Math.min(1, maxDimension / Math.max(bitmap.width || 1, bitmap.height || 1));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      const context = canvas.getContext('2d');
+      if (!context) return null;
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      for (const quality of [0.86, 0.72, 0.58]) {
+        const compressed = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+        if (compressed && compressed.size <= maxBytes) return compressed;
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      try { bitmap?.close?.(); } catch {}
+    }
+  }
+
+  async function hydrateMediaRows(rows, state) {
+    for (const row of rows) {
+      const uploads = [];
+      for (const sourceUrl of row.media_candidates || []) {
+        if (state.count >= state.maxCount || state.totalBytes >= state.maxTotalBytes) break;
+        let cached = state.cache.get(sourceUrl);
+        if (cached === undefined) {
+          cached = null;
+          try {
+            const response = await fetch(sourceUrl, { credentials: 'include' });
+            if (response.ok) {
+              const original = await response.blob();
+              if (/^image\//i.test(original.type || '')) {
+                const transferable = await compressTransferImage(original, state.maxItemBytes);
+                if (transferable && state.totalBytes + transferable.size <= state.maxTotalBytes) {
+                  const dataUrl = await blobToDataUrl(transferable);
+                  if (dataUrl) cached = { data_url: dataUrl, byte_size: transferable.size, content_type: transferable.type || 'image/jpeg' };
+                }
+              }
+            }
+          } catch {
+            // Keep the original HTTPS URL when Zalo blocks a local copy.
+          }
+          state.cache.set(sourceUrl, cached);
+          if (cached) {
+            state.count += 1;
+            state.totalBytes += cached.byte_size;
+          } else {
+            state.missed += 1;
+          }
+        }
+        if (cached) uploads.push({ source_url: sourceUrl, data_url: cached.data_url, content_type: cached.content_type });
+      }
+      row.media_uploads = uploads;
+      delete row.media_candidates;
+    }
+    return rows;
   }
 
   function leafTextCandidates(root) {
@@ -567,42 +691,52 @@
     });
   }
 
-  function extractMessageText(root, title) {
+  function extractMessageText(root, title, marker = null) {
     const parts = [];
     leafTextCandidates(root).forEach((node) => {
       const directText = normalize([...node.childNodes]
         .filter((child) => child.nodeType === Node.TEXT_NODE)
         .map((child) => child.textContent || '')
         .join(' '));
-      const text = directText || normalize(node.innerText || node.textContent || '');
+      const text = cleanMessageText(directText || normalize(node.innerText || node.textContent || ''), marker);
       if (isNoiseText(text, title, { structuralMessage: true })) return;
       if (parts[parts.length - 1] === text || parts.includes(text)) return;
       parts.push(text);
     });
-    if (parts.length) return normalize(parts.join('\n'));
-    let fallback = normalize(root.innerText || root.textContent || '');
-    const marker = parseTimelineMarker(fallback);
-    if (marker || isNoiseText(fallback, title, { structuralMessage: true })) return '';
-    fallback = fallback.replace(/(?:^|\s)\d{1,2}:\d{2}(?:\s+\d{1,2}[\/.]\d{1,2}[\/.]\d{2,4})?\s*$/i, '').trim();
+    if (parts.length) return cleanMessageText(parts.join('\n'), marker);
+    const fallback = cleanMessageText(root.innerText || root.textContent || '', marker);
+    if (parseTimelineMarker(fallback) || isNoiseText(fallback, title, { structuralMessage: true })) return '';
     return fallback;
   }
 
   function directDisplayMarker(root) {
-    const candidates = [root, ...root.querySelectorAll('time, abbr, [class*="time"], [class*="date"], span, small')];
+    const candidates = [root, ...root.querySelectorAll('time, abbr, [class*="time"], [class*="date"], span, small, div')];
+    const rootRect = root.getBoundingClientRect();
     let best = null;
     candidates.forEach((node) => {
       if (!isVisible(node) || isQuotedOrControlNode(node, root)) return;
       const explicit = normalize(node.getAttribute?.('datetime') || node.getAttribute?.('data-utime') || '');
-      const marker = parseTimelineMarker(explicit || node.innerText || node.textContent || '');
+      const directText = normalize([...node.childNodes]
+        .filter((child) => child.nodeType === Node.TEXT_NODE)
+        .map((child) => child.textContent || '')
+        .join(' '));
+      const marker = [explicit, directText, normalize(node.innerText || node.textContent || '')]
+        .map(stripZaloIconArtifacts)
+        .map((value) => parseTimelineMarker(value))
+        .find((value) => value && ['time', 'datetime'].includes(value.kind));
       if (!marker || !['time', 'datetime'].includes(marker.kind)) return;
-      if (!best || marker.kind === 'datetime') best = marker;
+      const rect = node.getBoundingClientRect();
+      const score = (marker.kind === 'datetime' ? 200 : 0)
+        - Math.abs(rootRect.bottom - rect.bottom)
+        - Math.max(0, rect.height - 40) * 2;
+      if (!best || score > best.score) best = { marker, score };
     });
-    return best;
+    return best?.marker || null;
   }
 
   function timelineDateMarkers(scroller) {
     const byKey = new Map();
-    const nodes = scroller.querySelectorAll('time, abbr, [class*="time"], [class*="date"], span, p');
+    const nodes = scroller.querySelectorAll('time, abbr, [class*="time"], [class*="date"], span, p, div');
     nodes.forEach((node) => {
       if (!isInsideScrollerViewport(node, scroller)) return;
       const marker = parseTimelineMarker(node.getAttribute?.('datetime') || node.innerText || node.textContent || '');
@@ -672,11 +806,11 @@
     roots.forEach((root, index) => {
       if (root.closest?.('[contenteditable="true"], textarea, input, [role="textbox"]')) return;
       const media = collectMedia(root);
-      const text = extractMessageText(root, title);
+      const directMarker = directDisplayMarker(root);
+      const text = extractMessageText(root, title, directMarker);
       if (!text && !media.hasVisualMedia) return;
       const finalText = text || '[Ảnh]';
       const sender = senderFromNode(root, scroller);
-      const directMarker = directDisplayMarker(root);
       const dateKey = directMarker?.dateKey || nearestDateKey(root, dateMarkers);
       const sentAt = markerIso(directMarker, dateKey);
       const displayTime = markerDisplayTime(directMarker, dateKey);
@@ -691,6 +825,7 @@
         capture_round: round,
         source: 'zalo_web_dom',
         media_urls: media.urls,
+        media_candidates: media.candidates,
         media_type: media.hasVisualMedia ? 'image' : 'text',
         dom_message_id: rawId,
         date_context: dateKey,
@@ -713,7 +848,14 @@
     rows.forEach((row) => {
       const direct = target.get(row.message_id);
       if (direct) {
-        target.set(row.message_id, { ...direct, ...row, sent_at: row.sent_at || direct.sent_at, display_time: row.display_time || direct.display_time });
+        target.set(row.message_id, {
+          ...direct,
+          ...row,
+          sent_at: row.sent_at || direct.sent_at,
+          display_time: row.display_time || direct.display_time,
+          media_urls: [...new Set([...(direct.media_urls || []), ...(row.media_urls || [])])],
+          media_uploads: row.media_uploads?.length ? row.media_uploads : (direct.media_uploads || []),
+        });
         return;
       }
       const contentKey = messageContentKey(row, { looseTime: true });
@@ -725,6 +867,8 @@
           message_id: existing[1].message_id,
           sent_at: row.sent_at || existing[1].sent_at,
           display_time: row.display_time || existing[1].display_time,
+          media_urls: [...new Set([...(existing[1].media_urls || []), ...(row.media_urls || [])])],
+          media_uploads: row.media_uploads?.length ? row.media_uploads : (existing[1].media_uploads || []),
         });
         return;
       }
@@ -762,6 +906,15 @@
 
   async function collectAcrossScroll(scroller, title, identity, limit, payload = {}) {
     const messages = new Map();
+    const mediaState = {
+      cache: new Map(),
+      count: 0,
+      missed: 0,
+      totalBytes: 0,
+      maxCount: 8,
+      maxItemBytes: 3_200_000,
+      maxTotalBytes: 12_000_000,
+    };
     const originalBottomGap = Math.max(0, scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop);
     const maxScrolls = Math.max(1, Math.min(Number(payload.maxScrolls || 36), 80));
     const pauseMs = Math.max(300, Math.min(Number(payload.pauseMs || 700), 1800));
@@ -769,7 +922,7 @@
     const seed = identity.id;
     let rounds = 1;
 
-    mergeMessages(messages, collectMessages(scroller, limit, title, seed, 0));
+    mergeMessages(messages, await hydrateMediaRows(collectMessages(scroller, limit, title, seed, 0), mediaState));
     if (deep && messages.size < limit) {
       let stableRounds = 0;
       let stableTopRounds = 0;
@@ -783,7 +936,7 @@
         const requestedTop = scroller.scrollTop <= 2;
         await settleScroll(scroller, pauseMs, requestedTop);
         rounds += 1;
-        mergeMessages(messages, collectMessages(scroller, limit, title, seed, step + 1));
+        mergeMessages(messages, await hydrateMediaRows(collectMessages(scroller, limit, title, seed, step + 1), mediaState));
         const afterTop = Number(scroller.scrollTop || 0);
         const afterHeight = Number(scroller.scrollHeight || 0);
         const afterSignature = visibleScrollerSignature(scroller);
@@ -810,6 +963,8 @@
     return {
       messages: sortCollectedMessages([...messages.values()]).slice(-limit),
       rounds,
+      mediaCaptured: mediaState.count,
+      mediaMissed: mediaState.missed,
     };
   }
 
@@ -875,6 +1030,10 @@
       identity_source: identity.source,
       identity_confidence: identity.confidence,
       scan_rounds: collected.rounds,
+      media_capture_count: collected.mediaCaptured,
+      media_capture_warning: collected.mediaMissed
+        ? `${collected.mediaMissed} ảnh Zalo không thể sao chép từ DOM.`
+        : '',
       warning: messages.length
         ? `Đã quét ${messages.length} tin nhắn Zalo qua ${collected.rounds} lượt cuộn.`
         : 'Không thấy bong bóng tin nhắn trong hội thoại Zalo đang mở.',
@@ -888,6 +1047,8 @@
     markerIso,
     messageContentKey,
     parseTimelineMarker,
+    cleanMessageText,
+    stripZaloIconArtifacts,
     stableAttributeValue,
     stableIdValue,
   };
