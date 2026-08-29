@@ -3,8 +3,8 @@
 
 create extension if not exists pgcrypto;
 
--- Public read is required for durable copies of Zalo blob/data images.
--- Uploads still go through the authenticated backend with the service-role key.
+-- This existing public bucket remains available for comment/post images.
+-- Durable Zalo images are uploaded by the backend to Cloudinary.
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
   'comment-images',

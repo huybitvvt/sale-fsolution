@@ -1,6 +1,6 @@
 (() => {
   const CONTROL_TEXT = /^(aa|soạn|soạn tin nhắn|nhập tin nhắn|nhập @, tin nhắn|message|write a message|type a message|gửi|send|đã gửi|sent|đã xem|seen|đang nhập|typing|zalo|tất cả|all|chưa đọc|unread|tìm kiếm|search|thông báo|notifications|tắt thông báo|mute notifications|trang cá nhân|profile|thông tin|info|file|ảnh|photo|video|sticker|gif|emoji|like)$/i;
-  const SYSTEM_TEXT = /^(tin nhắn và cuộc gọi|bạn đã tạo nhóm này|bạn chưa kết nối|các bạn không phải|giờ đây, các bạn|now you can|cuộc gọi|missed call|đã thu hồi|recalled|đã ghim|pinned|đã đổi|changed|đã thêm|added|đã rời|left)\b/i;
+  const SYSTEM_TEXT = /^(tin nhắn và cuộc gọi|bạn đã tạo nhóm này|bạn chưa kết nối|các bạn không phải|giờ đây, các bạn|now you can|cuộc gọi|missed call|đã thu hồi|recalled|đã ghim|pinned|đã đổi|changed|đã thêm|added|đã rời|left|sử dụng zalo pc để tìm tin nhắn trước ngày|tải zalo pc)\b/i;
   const MENU_TEXT = /^(đoạn chat|tin nhắn|danh bạ|khám phá|nhật ký|cloud của tôi|zalo ai|todo|media|file phương tiện|quyền riêng tư|privacy|cài đặt|settings|tùy chỉnh|customize)$/i;
   const ICON_CODE_TEXT = /^(?:\/-)?(?:strong|heart|like|sad|angry|wow|haha|cry|love|thumb|sticker|emoji)$|^(?:>|<|:>|:o|:-o|:-h|:-\(\(|:\(\(|:\)|:-\)|;\)|;-\)|:d|:-d|:\*|:-\*)$/i;
   const HEADER_NOISE_TEXT = /^(người lạ|stranger|nhóm chung(?:\s*\(\d+\))?|mutual groups?|gửi kết bạn|gửi yêu cầu kết bạn.*|thêm bạn|kết bạn|more|xem thêm)$/i;
@@ -645,6 +645,28 @@
     return '';
   }
 
+  function srcsetCandidates(value) {
+    const text = String(value || '').trim();
+    if (!text) return [];
+    if (/^data:/i.test(text)) {
+      return [text.replace(/\s+\d+(?:\.\d+)?[wx]\s*$/i, '').trim()];
+    }
+    return text.split(',')
+      .map((item) => item.trim().replace(/\s+\d+(?:\.\d+)?[wx]\s*$/i, '').trim())
+      .filter(Boolean);
+  }
+
+  function cssImageUrls(value) {
+    const urls = [];
+    const text = String(value || '');
+    const pattern = /url\(\s*(["']?)(.*?)\1\s*\)/gi;
+    let match = null;
+    while ((match = pattern.exec(text))) {
+      if (match[2]) urls.push(match[2]);
+    }
+    return urls;
+  }
+
   function collectMedia(root) {
     const urls = new Set();
     const candidates = new Set();
@@ -665,25 +687,47 @@
         // ignored
       }
     };
-    root.querySelectorAll?.('img, video, source').forEach((node) => {
+    const mediaNodes = new Set([
+      root,
+      ...[...root.querySelectorAll?.('img, picture, video, source, canvas, [role="img"], [style], [class]') || []].slice(0, 240),
+    ]);
+    mediaNodes.forEach((node) => {
       if (!isVisible(node) || isQuotedOrControlNode(node, root)) return;
       const rect = node.getBoundingClientRect();
-      const classes = classTrail(node, root);
+      const classes = normalize(`${node.className || ''} ${classTrail(node, root)}`);
       if (rect.width < 38 || rect.height < 38 || /avatar|reaction|toolbar|button-icon/i.test(classes)) return;
-      hasVisualMedia = true;
-      const raw = node.getAttribute('src') || node.getAttribute('data-src') || node.getAttribute('poster') || '';
-      remember(raw);
-    });
-    root.querySelectorAll?.('[style*="background"]').forEach((node) => {
-      if (!isVisible(node) || isQuotedOrControlNode(node, root)) return;
-      const rect = node.getBoundingClientRect();
-      const classes = classTrail(node, root);
-      if (rect.width < 38 || rect.height < 38 || /avatar|reaction|toolbar|button-icon/i.test(classes)) return;
-      const style = window.getComputedStyle(node).backgroundImage || '';
-      const match = style.match(/url\(["']?(.+?)["']?\)/);
-      if (!match?.[1]) return;
-      hasVisualMedia = true;
-      remember(match[1]);
+
+      const beforeCount = candidates.size;
+      if (node.matches?.('img, video, source')) {
+        [
+          node.currentSrc,
+          node.src,
+          node.poster,
+          ...['src', 'data-src', 'data-original', 'data-lazy-src', 'data-image', 'data-url', 'poster']
+            .map((name) => node.getAttribute?.(name)),
+        ].forEach(remember);
+        srcsetCandidates(node.srcset || node.getAttribute?.('srcset') || node.getAttribute?.('data-srcset')).forEach(remember);
+      }
+      if (node.matches?.('canvas') && Number(node.width || 0) >= 38 && Number(node.height || 0) >= 38) {
+        try {
+          remember(node.toDataURL('image/jpeg', 0.88));
+        } catch {
+          // A cross-origin canvas cannot be copied; other candidate URLs may still work.
+        }
+      }
+      for (const pseudo of [null, '::before', '::after']) {
+        try {
+          const style = window.getComputedStyle(node, pseudo);
+          [style.backgroundImage, style.maskImage, style.webkitMaskImage, style.content]
+            .flatMap(cssImageUrls)
+            .forEach(remember);
+        } catch {
+          // Pseudo-element styles are not available in every Zalo/Chrome build.
+        }
+      }
+      if (candidates.size > beforeCount || (node.matches?.('img, video, canvas') && rect.width >= 38 && rect.height >= 38)) {
+        hasVisualMedia = true;
+      }
     });
     return { urls: [...urls].slice(0, 10), candidates: [...candidates].slice(0, 10), hasVisualMedia };
   }
@@ -845,12 +889,13 @@
   }
 
   function collectMessageRoots(scroller) {
-    const selector = '[data-id], [data-key], [data-msg-id], [data-message-id], [class*="message"], [class*="msg-"], [class*="bubble"], [class*="chat-item"], [dir="auto"], div[class*="text"], div[class*="content"], p, span';
+    const selector = '[data-id], [data-key], [data-msg-id], [data-message-id], [class*="message"], [class*="msg-"], [class*="bubble"], [class*="chat-item"], [dir="auto"], [role="img"], img, picture, video, source, canvas, div[class*="text"], div[class*="content"], p, span';
     const roots = new Set();
     const considerNode = (node) => {
       if (!isInsideScrollerViewport(node, scroller) || isQuotedOrControlNode(node, scroller)) return;
       const text = normalize(node.innerText || node.textContent || '');
-      const hasMedia = node.matches('img, video') || node.querySelector?.('img, video, source, [style*="background"]');
+      const hasMedia = node.matches('img, picture, video, source, canvas, [role="img"]')
+        || node.querySelector?.('img, picture, video, source, canvas, [role="img"], [style*="background"], [style*="image"]');
       if ((!text || isTimestampText(text)) && !hasMedia) return;
       const root = messageRootForLeaf(node, scroller);
       if (validMessageContainer(root, scroller)) roots.add(root);
@@ -866,7 +911,7 @@
           .filter((child) => child.nodeType === Node.TEXT_NODE)
           .map((child) => child.textContent || '')
           .join(' '));
-        const directMedia = [...node.children].some((child) => child.matches?.('img, video, source'));
+        const directMedia = [...node.children].some((child) => child.matches?.('img, picture, video, source, canvas, [role="img"]'));
         if (!directText && !directMedia) return;
         considerNode(node);
       });
@@ -1202,6 +1247,8 @@
     classifyConversationKind,
     stableAttributeValue,
     stableIdValue,
+    srcsetCandidates,
+    cssImageUrls,
   };
   if (typeof globalThis !== 'undefined' && globalThis.__STREAL_ZALO_TEST_MODE__) {
     globalThis.__STREAL_ZALO_TEST_API__ = testApi;

@@ -1043,23 +1043,32 @@ class FacebookPostHistoryTests(unittest.TestCase):
         }))
         self.assertFalse(backend._is_zalo_legacy_polluted_message({'text': '400 b'}))
 
-    def test_zalo_media_upload_uses_deterministic_supabase_path(self):
+    def test_zalo_media_upload_uses_deterministic_cloudinary_path(self):
         image = Mock(filename='zalo.png', mimetype='image/png')
         image.read.return_value = b'zalo-image-bytes'
-        response = Mock(status_code=200, headers={}, text='')
+        response = Mock(status_code=200, headers={'content-type': 'application/json'})
+        response.json.return_value = {
+            'secure_url': 'https://res.cloudinary.com/demo/image/upload/v1/eco-transport/zalo/sale-1/image.png',
+        }
 
         with (
-            patch.object(backend, 'SUPABASE_URL', 'https://demo.supabase.co'),
-            patch.object(backend, 'SUPABASE_KEY', 'service-key'),
+            patch.object(backend, 'CLOUDINARY_CLOUD_NAME', 'demo'),
+            patch.object(backend, 'CLOUDINARY_API_KEY', 'api-key'),
+            patch.object(backend, 'CLOUDINARY_API_SECRET', 'api-secret'),
+            patch.object(backend, 'CLOUDINARY_FOLDER', 'eco-transport'),
             patch.object(backend, '_current_staff_id', return_value='sale-1'),
+            patch.object(backend.time_module, 'time', return_value=1234567890),
             patch.object(backend._req, 'post', return_value=response) as post,
         ):
-            image_url, error = backend._upload_zalo_media_to_supabase(image)
+            image_url, error = backend._upload_zalo_media_to_cloudinary(image)
 
         self.assertEqual(error, '')
-        self.assertIn('/storage/v1/object/public/comment-images/zalo/sale-1/', image_url)
-        self.assertTrue(image_url.endswith('.png'))
-        self.assertEqual(post.call_args.kwargs['headers']['x-upsert'], 'true')
+        self.assertTrue(image_url.startswith('https://res.cloudinary.com/'))
+        self.assertEqual(post.call_args.args[0], 'https://api.cloudinary.com/v1_1/demo/image/upload')
+        self.assertEqual(post.call_args.kwargs['data']['folder'], 'eco-transport/zalo/sale-1')
+        self.assertEqual(post.call_args.kwargs['data']['timestamp'], '1234567890')
+        self.assertEqual(post.call_args.kwargs['files']['file'][1], b'zalo-image-bytes')
+        self.assertNotIn('api-secret', str(post.call_args))
 
     def test_zalo_sync_keeps_stable_conversation_and_merges_duplicate_dom_bubbles(self):
         staff = {'id': 'sale-1', 'name': 'Sale A', 'username': 'salea'}

@@ -162,7 +162,9 @@ async function saveZaloThread(payload, preferredAppTabId) {
           const messages = [];
           for (const rawMessage of Array.isArray(thread?.messages) ? thread.messages : []) {
             const message = { ...(rawMessage || {}) };
-            const mediaUrls = new Set(Array.isArray(message.media_urls) ? message.media_urls.filter((url) => /^https:\/\//i.test(String(url || ''))) : []);
+            const mediaUrls = new Set(Array.isArray(message.media_urls)
+              ? message.media_urls.filter((url) => /^https:\/\/res\.cloudinary\.com\//i.test(String(url || '')))
+              : []);
             for (const item of Array.isArray(message.media_uploads) ? message.media_uploads.slice(0, 8) : []) {
               try {
                 const sourceUrl = String(item?.source_url || '');

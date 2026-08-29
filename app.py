@@ -143,6 +143,10 @@ SUPABASE_CONTENT_TASK_TABLE = os.environ.get('SUPABASE_CONTENT_TASK_TABLE', 'con
 SUPABASE_CONTENT_SCRIPT_BLOCK_TABLE = os.environ.get('SUPABASE_CONTENT_SCRIPT_BLOCK_TABLE', 'content_script_blocks')
 SUPABASE_COMMENT_IMAGE_BUCKET = os.environ.get('SUPABASE_COMMENT_IMAGE_BUCKET', 'comment-images')
 SUPABASE_POST_MEDIA_BUCKET = os.environ.get('SUPABASE_POST_MEDIA_BUCKET', SUPABASE_COMMENT_IMAGE_BUCKET)
+CLOUDINARY_CLOUD_NAME = os.environ.get('CLOUDINARY_CLOUD_NAME', '').strip()
+CLOUDINARY_API_KEY = os.environ.get('CLOUDINARY_API_KEY', '').strip()
+CLOUDINARY_API_SECRET = os.environ.get('CLOUDINARY_API_SECRET', '').strip()
+CLOUDINARY_FOLDER = os.environ.get('CLOUDINARY_FOLDER', 'eco-transport').strip().strip('/')
 APP_TIMEZONE = os.environ.get('APP_TIMEZONE', 'Asia/Ho_Chi_Minh')
 
 _SOURCE_SUPABASE_PROJECT_REF = urlsplit((SUPABASE_URL or '').rstrip('/')).netloc.split('.')[0]
@@ -7336,9 +7340,9 @@ def _upload_comment_image_to_supabase(file_storage) -> tuple[str, str]:
         return '', str(e)[:300]
 
 
-def _upload_zalo_media_to_supabase(file_storage) -> tuple[str, str]:
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return '', 'Chưa cấu hình Supabase'
+def _upload_zalo_media_to_cloudinary(file_storage) -> tuple[str, str]:
+    if not CLOUDINARY_CLOUD_NAME or not CLOUDINARY_API_KEY or not CLOUDINARY_API_SECRET:
+        return '', 'Chưa cấu hình Cloudinary cho ảnh Zalo'
     if not file_storage or not file_storage.filename:
         return '', 'Không có dữ liệu ảnh Zalo'
 
@@ -7352,36 +7356,41 @@ def _upload_zalo_media_to_supabase(file_storage) -> tuple[str, str]:
     if len(content) > max_bytes:
         return '', f'Ảnh Zalo quá lớn, tối đa {max_bytes // (1024 * 1024)}MB'
 
-    ext = ALLOWED_COMMENT_IMAGE_TYPES[content_type]
-    if ext == '.jpeg':
-        ext = '.jpg'
     digest = hashlib.sha256(content).hexdigest()
-    staff_id = _current_staff_id() or 'anonymous'
-    object_path = f'zalo/{staff_id}/{digest}{ext}'
-    upload_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{SUPABASE_COMMENT_IMAGE_BUCKET}/{object_path}"
+    staff_id = re.sub(r'[^0-9A-Za-z_-]+', '-', _current_staff_id() or 'anonymous').strip('-') or 'anonymous'
+    folder_parts = [part for part in (CLOUDINARY_FOLDER, 'zalo', staff_id) if part]
+    folder = '/'.join(folder_parts)
+    timestamp = str(int(time_module.time()))
+    signed_params = {
+        'folder': folder,
+        'overwrite': 'true',
+        'public_id': digest,
+        'timestamp': timestamp,
+        'unique_filename': 'false',
+    }
+    serialized = '&'.join(f'{key}={signed_params[key]}' for key in sorted(signed_params))
+    signature = hashlib.sha1(f'{serialized}{CLOUDINARY_API_SECRET}'.encode('utf-8')).hexdigest()
+    upload_url = f"https://api.cloudinary.com/v1_1/{quote(CLOUDINARY_CLOUD_NAME, safe='')}/image/upload"
     try:
         response = _req.post(
             upload_url,
-            headers={
-                'apikey': SUPABASE_KEY,
-                'Authorization': f'Bearer {SUPABASE_KEY}',
-                'Content-Type': content_type,
-                'x-upsert': 'true',
+            data={
+                **signed_params,
+                'api_key': CLOUDINARY_API_KEY,
+                'signature': signature,
             },
-            data=content,
+            files={'file': (secure_filename(file_storage.filename or 'zalo-image'), content, content_type)},
             timeout=60,
         )
+        payload = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
         if response.status_code not in (200, 201):
-            message = response.text[:300]
-            if response.headers.get('content-type', '').startswith('application/json'):
-                try:
-                    message = response.json().get('message') or message
-                except Exception:
-                    pass
-            return '', message
-        public_path = quote(object_path, safe='/')
-        public_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{SUPABASE_COMMENT_IMAGE_BUCKET}/{public_path}"
-        return public_url, ''
+            error = payload.get('error') if isinstance(payload, dict) else None
+            message = error.get('message') if isinstance(error, dict) else ''
+            return '', str(message or 'Cloudinary từ chối ảnh Zalo')[:300]
+        secure_url = str(payload.get('secure_url') or '').strip()
+        if not secure_url.startswith('https://res.cloudinary.com/'):
+            return '', 'Cloudinary không trả về URL ảnh hợp lệ'
+        return secure_url, ''
     except Exception as exc:
         return '', str(exc)[:300]
 
@@ -8666,10 +8675,10 @@ def upload_comment_image():
 @app.route('/api/uploads/zalo-media', methods=['POST'])
 def upload_zalo_media():
     file_storage = request.files.get('image')
-    image_url, error = _upload_zalo_media_to_supabase(file_storage)
+    image_url, error = _upload_zalo_media_to_cloudinary(file_storage)
     if not image_url:
         return jsonify({'ok': False, 'error': error or 'Upload ảnh Zalo thất bại'}), 400
-    return jsonify({'ok': True, 'image_url': image_url, 'storage': 'supabase'})
+    return jsonify({'ok': True, 'image_url': image_url, 'storage': 'cloudinary'})
 
 
 @app.route('/api/uploads/post-media', methods=['POST'])

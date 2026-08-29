@@ -73,3 +73,14 @@ test('removes Zalo reaction artifacts and the rendered bubble timestamp', () => 
   );
   assert.equal(api.stripZaloIconArtifacts('Nội dung thật /-heart :o'), 'Nội dung thật');
 });
+
+test('extracts lazy image sources from srcset and computed CSS values', () => {
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.srcsetCandidates('https://cdn.example/small.jpg 1x, https://cdn.example/large.jpg 2x'))),
+    ['https://cdn.example/small.jpg', 'https://cdn.example/large.jpg'],
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.cssImageUrls('image-set(url("blob:https://chat.zalo.me/a") 1x, url(https://cdn.example/a.jpg) 2x)'))),
+    ['blob:https://chat.zalo.me/a', 'https://cdn.example/a.jpg'],
+  );
+});
