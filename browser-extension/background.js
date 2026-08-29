@@ -91,6 +91,45 @@ async function saveMessengerThread(payload, preferredAppTabId) {
   return response.ok ? data : { ok: false, error: data.error || `Server ${response.status}` };
 }
 
+async function authorizeZaloThread(payload, preferredAppTabId) {
+  const stored = await chrome.storage.local.get(STREAL_API_ORIGIN_KEY);
+  const origin = String(stored?.[STREAL_API_ORIGIN_KEY] || '');
+  if (!isAllowedApiOrigin(origin)) {
+    return { ok: false, error: 'Hay mo va dang nhap F-Solution mot lan truoc khi dong bo Zalo.' };
+  }
+  const cleanPayload = { ...(payload || {}) };
+  delete cleanPayload.messages;
+  delete cleanPayload.ignored_message_ids;
+  try {
+    const appTabs = await chrome.tabs.query({ url: `${origin}/*` });
+    const appTab = appTabs.find((tab) => tab.id === preferredAppTabId)
+      || appTabs.find((tab) => tab.active && Number.isInteger(tab.id))
+      || appTabs.find((tab) => Number.isInteger(tab.id));
+    if (appTab?.id) {
+      const injected = await chrome.scripting.executeScript({
+        target: { tabId: appTab.id },
+        world: 'MAIN',
+        args: [cleanPayload],
+        func: async (thread) => {
+          const response = await fetch('/api/zalo/sync/authorize', {
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(thread),
+          });
+          const data = await response.json().catch(() => ({ ok: false, error: `Server ${response.status}` }));
+          return response.ok ? data : { ...data, ok: false, error: data.error || `Server ${response.status}` };
+        },
+      });
+      if (injected?.[0]?.result) return injected[0].result;
+    }
+  } catch {
+    // Fall through to a direct extension request.
+  }
+  const response = await fetch(`${origin}/api/zalo/sync/authorize`, {
+    method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cleanPayload),
+  });
+  const data = await response.json().catch(() => ({ ok: false, error: `Server ${response.status}` }));
+  return response.ok ? data : { ...data, ok: false, error: data.error || `Server ${response.status}` };
+}
+
 async function saveZaloThread(payload, preferredAppTabId) {
   const stored = await chrome.storage.local.get(STREAL_API_ORIGIN_KEY);
   const origin = String(stored?.[STREAL_API_ORIGIN_KEY] || '');
@@ -108,6 +147,16 @@ async function saveZaloThread(payload, preferredAppTabId) {
         world: 'MAIN',
         args: [payload || {}],
         func: async (thread) => {
+          const authorizationPayload = { ...(thread || {}) };
+          delete authorizationPayload.messages;
+          delete authorizationPayload.ignored_message_ids;
+          const authorizationResponse = await fetch('/api/zalo/sync/authorize', {
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(authorizationPayload),
+          });
+          const authorizationData = await authorizationResponse.json().catch(() => ({ ok: false, error: `Server ${authorizationResponse.status}` }));
+          if (!authorizationResponse.ok || !authorizationData.ok) {
+            return { ...authorizationData, ok: false, error: authorizationData.error || `Server ${authorizationResponse.status}` };
+          }
           let uploadedCount = 0;
           const mediaWarnings = new Set();
           const messages = [];
@@ -170,6 +219,19 @@ async function saveZaloThread(payload, preferredAppTabId) {
       return message;
     }),
   };
+  const authorizationPayload = { ...(payload || {}) };
+  delete authorizationPayload.messages;
+  delete authorizationPayload.ignored_message_ids;
+  const authorizationResponse = await fetch(`${origin}/api/zalo/sync/authorize`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(authorizationPayload),
+  });
+  const authorizationData = await authorizationResponse.json().catch(() => ({ ok: false, error: `Server ${authorizationResponse.status}` }));
+  if (!authorizationResponse.ok || !authorizationData.ok) {
+    return { ...authorizationData, ok: false, error: authorizationData.error || `Server ${authorizationResponse.status}` };
+  }
   const response = await fetch(`${origin}/api/zalo/sync`, {
     method: 'POST',
     credentials: 'include',
@@ -273,31 +335,56 @@ async function collectZaloThread(request, sender) {
   }
   try {
     await waitForTabLoaded(tab.id, 20000);
-    let result = await sendTabMessage(tab.id, {
+    let metadata = await sendTabMessage(tab.id, {
       type: 'STREAL_ZALO_COLLECT_THREAD',
       requestId: request.requestId,
-      payload: request.payload || {},
+      payload: { ...(request.payload || {}), metadataOnly: true },
     });
-    if (!result?.ok && /receiving end|could not establish connection|khong ton tai|does not exist/i.test(String(result?.error || ''))) {
+    if (!metadata?.ok && /receiving end|could not establish connection|khong ton tai|does not exist/i.test(String(metadata?.error || ''))) {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['zalo-content.js'] });
       await sleep(500);
-      result = await sendTabMessage(tab.id, {
+      metadata = await sendTabMessage(tab.id, {
         type: 'STREAL_ZALO_COLLECT_THREAD',
         requestId: request.requestId,
-        payload: request.payload || {},
+        payload: { ...(request.payload || {}), metadataOnly: true },
       });
     }
-    if (!result?.ok) {
+    if (!metadata?.ok) {
       return {
         ok: false,
-        error: result?.error || result?.warning || 'Extension chua doc duoc hoi thoai Zalo.',
-        extension_count: Number(result?.count || 0),
-        scan_rounds: Number(result?.scan_rounds || 0),
-        identity_source: result?.identity_source || '',
-        identity_confidence: result?.identity_confidence || '',
-        media_capture_count: Number(result?.media_capture_count || 0),
-        media_capture_warning: result?.media_capture_warning || '',
+        error: metadata?.error || metadata?.warning || 'Extension chua doc duoc nhom Zalo.',
+        extension_count: 0,
+        scan_rounds: 0,
+        identity_source: metadata?.identity_source || '',
+        identity_confidence: metadata?.identity_confidence || '',
       };
+    }
+    const authorization = await authorizeZaloThread(metadata, sender?.tab?.id);
+    if (!authorization?.ok) {
+      if (sender?.tab?.id) {
+        try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
+      }
+      return {
+        ...authorization,
+        ok: false,
+        zalo_tab_id: tab.id,
+        extension_count: 0,
+        scan_rounds: 0,
+        identity_source: metadata.identity_source || '',
+        identity_confidence: metadata.identity_confidence || '',
+        error: authorization?.error || authorization?.warning || 'Nhóm Zalo chưa được phép đồng bộ.',
+      };
+    }
+    const result = await sendTabMessage(tab.id, {
+      type: 'STREAL_ZALO_COLLECT_THREAD',
+      requestId: request.requestId,
+      payload: { ...(request.payload || {}), authorizedGroup: true },
+    });
+    if (!result?.ok) {
+      return { ok: false, error: result?.error || result?.warning || 'Extension chua doc duoc tin nhan nhom Zalo.' };
+    }
+    if (metadata.conversation_id && result.conversation_id !== metadata.conversation_id) {
+      return { ok: false, error: 'Nhóm Zalo đã thay đổi sau khi kiểm tra quyền. Hãy giữ nguyên nhóm rồi đồng bộ lại.' };
     }
     const saved = await saveZaloThread(result, sender?.tab?.id);
     if (sender?.tab?.id) {

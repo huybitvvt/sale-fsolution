@@ -47,6 +47,16 @@ test('rejects header controls and generic DOM ids', () => {
   assert.equal(api.stableAttributeValue('data-uid', 'user-stable-key'), 'user-stable-key');
 });
 
+test('only classifies explicit Zalo group headers as groups', () => {
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.classifyConversationKind({ text: 'Duyy NGƯỜI LẠ Nhóm chung (1) Gửi yêu cầu kết bạn' }))),
+    { type: 'private', isGroup: false, evidence: 'private_header' },
+  );
+  assert.equal(api.classifyConversationKind({ text: 'Duyy NGƯỜI LẠ' }).type, 'private');
+  assert.equal(api.classifyConversationKind({ text: 'Nhóm khách hàng 25 thành viên' }).isGroup, true);
+  assert.equal(api.classifyConversationKind({ text: 'Nhóm khách hàng' }).type, 'unknown');
+});
+
 test('uses a loose minute key to merge the same bubble across scans', () => {
   const base = { direction: 'outgoing', text: 'bác còn gpt k ạ', media_urls: [] };
   assert.equal(

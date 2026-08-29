@@ -470,6 +470,42 @@
     return [{ id: identity?.confidence === 'high' ? identity.id : '', name: title, profile_url: '' }];
   }
 
+  function classifyConversationKind(value = {}) {
+    const text = normalize(value.text || '').toLocaleLowerCase('vi-VN');
+    const attributes = normalize(value.attributes || '').toLocaleLowerCase('vi-VN');
+    const combined = `${text} ${attributes}`.trim();
+    const privatePattern = /người lạ|gửi yêu cầu kết bạn|nhóm chung(?:\s*\(|\b)|mutual groups?|stranger/iu;
+    const groupPattern = /\b\d{1,4}\s*(?:thành viên|members?)\b|\b(?:thêm thành viên|quản lý nhóm|rời nhóm|group chat)\b/iu;
+    if (privatePattern.test(combined)) {
+      return { type: 'private', isGroup: false, evidence: 'private_header' };
+    }
+    if (groupPattern.test(combined) || /(?:^|\s)(?:group|group-chat|conversation-group)(?:\s|$)/i.test(attributes)) {
+      return { type: 'group', isGroup: true, evidence: 'group_header' };
+    }
+    return { type: 'unknown', isGroup: false, evidence: 'no_group_evidence' };
+  }
+
+  function conversationKind(headerNode, scroller) {
+    const scrollerRect = scroller.getBoundingClientRect();
+    const textParts = [];
+    const attributeParts = [];
+    let current = headerNode;
+    for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
+      const rect = current.getBoundingClientRect?.();
+      if (!rect) continue;
+      const insideHeaderBand = rect.bottom <= scrollerRect.top + 48
+        && rect.top >= Math.max(0, scrollerRect.top - 260)
+        && rect.left >= scrollerRect.left - 120
+        && rect.right <= scrollerRect.right + 120;
+      if (!insideHeaderBand) continue;
+      textParts.push(current.innerText || current.textContent || '');
+      for (const name of ['class', 'role', 'aria-label', 'data-type', 'data-conversation-type']) {
+        attributeParts.push(current.getAttribute?.(name) || '');
+      }
+    }
+    return classifyConversationKind({ text: textParts.join(' '), attributes: attributeParts.join(' ') });
+  }
+
   function classTrail(node, stopNode) {
     const values = [];
     let current = node;
@@ -1074,6 +1110,54 @@
       return { ok: false, final: true, error: 'Chưa đọc được tên hội thoại từ phần đầu khung chat Zalo.' };
     }
     const identity = conversationIdentity(title, header.node, scroller);
+    const kind = conversationKind(header.node, scroller);
+    if (kind.type === 'private') {
+      return {
+        ok: false,
+        final: true,
+        conversation_type: kind.type,
+        group_evidence: kind.evidence,
+        error: 'Hội thoại đang mở là chat riêng. Hệ thống chỉ đồng bộ các nhóm Zalo được Admin chỉ định.',
+      };
+    }
+    if (!kind.isGroup && !payload.metadataOnly && !payload.authorizedGroup) {
+      return {
+        ok: false,
+        final: true,
+        conversation_type: kind.type,
+        group_evidence: kind.evidence,
+        error: 'Nhóm Zalo này chưa được Admin xác nhận. Hãy gửi yêu cầu duyệt rồi đồng bộ lại.',
+      };
+    }
+    const approvedAsGroup = kind.isGroup || payload.authorizedGroup === true;
+    const threadMetadata = {
+      source: 'zalo_web_dom',
+      conversation_id: identity.id,
+      conversation_url: window.location.href,
+      conversation_title: title,
+      conversation_type: approvedAsGroup ? 'group' : 'unknown',
+      is_group: approvedAsGroup,
+      is_group_candidate: true,
+      group_evidence: kind.evidence,
+      customer_name: title,
+      customer_id: identity.confidence === 'high' ? identity.id : '',
+      participants: collectParticipants(title, identity),
+      captured_at: new Date().toISOString(),
+      identity_source: identity.source,
+      identity_confidence: identity.confidence,
+    };
+    if (payload.metadataOnly) {
+      return {
+        ok: true,
+        final: true,
+        ...threadMetadata,
+        messages: [],
+        count: 0,
+        warning: kind.isGroup
+          ? 'Đã nhận diện nhóm Zalo để kiểm tra quyền đồng bộ.'
+          : 'Đã gửi tên hội thoại để Admin xác nhận đây là nhóm Zalo.',
+      };
+    }
     const limit = Math.max(20, Math.min(Number(payload.limit || 500), 1000));
     const collected = await collectAcrossScroll(scroller, title, identity, limit, payload);
     const headerAfter = findConversationHeader(scroller);
@@ -1089,20 +1173,11 @@
     return {
       ok: messages.length > 0,
       final: true,
-      source: 'zalo_web_dom',
-      conversation_id: identity.id,
-      conversation_url: window.location.href,
-      conversation_title: title,
-      customer_name: title,
-      customer_id: identity.confidence === 'high' ? identity.id : '',
-      participants: collectParticipants(title, identity),
+      ...threadMetadata,
       messages,
       ignored_message_ids: collected.ignoredReplyIds,
       skipped_reply_count: collected.skippedReplyCount,
       count: messages.length,
-      captured_at: new Date().toISOString(),
-      identity_source: identity.source,
-      identity_confidence: identity.confidence,
       scan_rounds: collected.rounds,
       media_capture_count: collected.mediaCaptured,
       media_capture_warning: collected.mediaMissed
@@ -1124,6 +1199,7 @@
     cleanMessageText,
     containsReplyQuote,
     stripZaloIconArtifacts,
+    classifyConversationKind,
     stableAttributeValue,
     stableIdValue,
   };

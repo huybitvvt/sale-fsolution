@@ -1330,6 +1330,65 @@
   font-size: 13px;
 }
 
+.omni-zalo-target-panel {
+  margin-bottom: 16px;
+  overflow: hidden;
+  border: 1px solid var(--omni-outline-variant);
+  border-radius: 14px;
+  background: #fff;
+}
+
+.omni-zalo-target-head,
+.omni-zalo-target-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+}
+
+.omni-zalo-target-head {
+  background: #f8fafc;
+  border-bottom: 1px solid var(--omni-outline-variant);
+}
+
+.omni-zalo-target-head div,
+.omni-zalo-target-row div {
+  min-width: 0;
+}
+
+.omni-zalo-target-head small,
+.omni-zalo-target-row small {
+  display: block;
+  margin-top: 3px;
+  color: var(--omni-on-surface-variant);
+  font-size: 12px;
+}
+
+.omni-zalo-target-head > span {
+  border-radius: 999px;
+  background: #fef3c7;
+  padding: 5px 9px;
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.omni-zalo-target-row + .omni-zalo-target-row {
+  border-top: 1px solid var(--omni-outline-variant);
+}
+
+.omni-zalo-target-row > button {
+  flex: 0 0 auto;
+}
+
+.omni-zalo-target-empty {
+  padding: 14px;
+  color: var(--omni-on-surface-variant);
+  font-size: 13px;
+}
+
 .omni-messenger-grid {
   display: grid;
   grid-template-columns: minmax(260px, 340px) minmax(420px, 1fr);

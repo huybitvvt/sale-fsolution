@@ -78,6 +78,20 @@ type MessengerStaffOption = {
   role?: string;
 };
 
+type ZaloSyncTarget = {
+  target_key: string;
+  conversation_id?: string;
+  conversation_url?: string;
+  title?: string;
+  is_group?: boolean;
+  approval_status?: 'pending' | 'approved' | 'blocked';
+  captured_by_staff_id?: string;
+  captured_by_staff_name?: string;
+  captured_by_staff_username?: string;
+  detected_at?: string;
+  updated_at?: string;
+};
+
 type MessengerSyncResult = {
   ok?: boolean;
   conversation?: MessengerConversation;
@@ -93,6 +107,8 @@ type MessengerSyncResult = {
   media_capture_count?: number;
   media_capture_warning?: string;
   media_upload_count?: number;
+  approval_required?: boolean;
+  target?: ZaloSyncTarget;
 };
 
 type TikTokBridgeResult = {
@@ -560,6 +576,7 @@ export function CommentLeadInboxPanel() {
   const [zaloStaffFilter, setZaloStaffFilter] = useState('');
   const [zaloCanManage, setZaloCanManage] = useState(false);
   const [zaloBusy, setZaloBusy] = useState(false);
+  const [zaloSyncTargets, setZaloSyncTargets] = useState<ZaloSyncTarget[]>([]);
 
   const processedSet = useMemo(() => new Set(processedIds), [processedIds]);
   const starredSet = useMemo(() => new Set(starredIds), [starredIds]);
@@ -720,8 +737,10 @@ export function CommentLeadInboxPanel() {
       const conversations = Array.isArray(data.conversations) ? data.conversations as MessengerConversation[] : [];
       const messages = Array.isArray(data.messages) ? data.messages as MessengerMessage[] : [];
       const staff = Array.isArray(data.staff) ? data.staff as MessengerStaffOption[] : [];
+      const syncTargets = Array.isArray(data.sync_targets) ? data.sync_targets as ZaloSyncTarget[] : [];
       setZaloConversations(conversations);
       setZaloMessages(messages);
+      setZaloSyncTargets(syncTargets);
       setZaloCanManage(Boolean(data.can_manage));
       setZaloStaffOptions(staff);
       setSelectedZaloId((current) => {
@@ -1362,6 +1381,7 @@ export function CommentLeadInboxPanel() {
     try {
       const result = await requestZaloSync({ limit: 500, maxScrolls: 34, pauseMs: 600 });
       if (!result.ok) {
+        if (result.approval_required && zaloCanManage) await loadZalo('', zaloStaffFilter);
         const diagnostics = result.scan_rounds
           ? ` (đã quét ${result.extension_count ?? 0} tin qua ${result.scan_rounds} lượt)`
           : '';
@@ -1463,6 +1483,32 @@ export function CommentLeadInboxPanel() {
       setStatus(data.warning ? `⚠️ Đã xoá hội thoại Zalo, nhưng có cảnh báo: ${data.warning}` : '✅ Đã xoá hội thoại Zalo khỏi hệ thống.');
     } catch {
       setStatus('❌ Lỗi kết nối khi xoá hội thoại Zalo');
+    } finally {
+      setZaloBusy(false);
+    }
+  }
+
+  async function updateZaloSyncTarget(target: ZaloSyncTarget, approved: boolean) {
+    if (!target.target_key) return;
+    setZaloBusy(true);
+    setStatus(approved ? 'Đang cho phép nhóm Zalo...' : 'Đang ngừng đồng bộ nhóm Zalo...');
+    try {
+      const r = await api(`/api/zalo/sync-targets/${encodeURIComponent(target.target_key)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approved }),
+      });
+      const data = await r.json().catch(() => ({ ok: false, error: `Server lỗi ${r.status}` }));
+      if (!r.ok || !data.ok) {
+        setStatus(`❌ ${data.error || 'Không cập nhật được nhóm Zalo'}`);
+        return;
+      }
+      await loadZalo('', zaloStaffFilter);
+      setStatus(approved
+        ? `✅ Đã cho phép nhóm "${target.title || target.conversation_id}". Nhân viên bấm đồng bộ lại để lấy tin nhắn.`
+        : `✅ Đã ngừng đồng bộ nhóm "${target.title || target.conversation_id}" và xoá lịch sử đã lưu.`);
+    } catch {
+      setStatus('❌ Lỗi kết nối khi cập nhật nhóm Zalo');
     } finally {
       setZaloBusy(false);
     }
@@ -2413,14 +2459,51 @@ export function CommentLeadInboxPanel() {
           <div className="omni-messenger-note">
             <MaterialIcon name="info" style={{ fontSize: 18 }} />
             <span>
-              PoC này đọc hội thoại Zalo Web đang mở bằng Chrome, tự cuộn lên nhiều lượt để gom thêm tin cũ. Nếu cuộc trò chuyện quá dài, cuộn sâu hơn rồi đồng bộ lại.
+              Chỉ nhóm Zalo được Admin cho phép mới được lưu. Chat riêng và nhóm chưa duyệt không gửi nội dung tin nhắn lên hệ thống.
             </span>
           </div>
+          {zaloCanManage ? (
+            <div className="omni-zalo-target-panel">
+              <div className="omni-zalo-target-head">
+                <div>
+                  <b>Nhóm Zalo được chỉ định</b>
+                  <small>Nhóm mới phải được Admin cho phép trước khi lưu nội dung tin nhắn.</small>
+                </div>
+                <span>{zaloSyncTargets.filter((item) => item.approval_status === 'pending').length} chờ duyệt</span>
+              </div>
+              {zaloSyncTargets.length ? (
+                <div className="omni-zalo-target-list">
+                  {zaloSyncTargets.map((target) => {
+                    const approved = target.approval_status === 'approved';
+                    const statusLabel = approved ? 'Đang đồng bộ' : target.approval_status === 'blocked' ? 'Đã ngừng' : 'Chờ duyệt';
+                    return (
+                      <div key={target.target_key} className="omni-zalo-target-row">
+                        <div>
+                          <b>{target.title || target.conversation_id || 'Nhóm Zalo'}</b>
+                          <small>{target.captured_by_staff_name ? `NV ${target.captured_by_staff_name} · ` : ''}{statusLabel}</small>
+                        </div>
+                        <button
+                          type="button"
+                          className={approved ? 'omni-btn-danger' : 'omni-btn-primary'}
+                          onClick={() => void updateZaloSyncTarget(target, !approved)}
+                          disabled={zaloBusy}
+                        >
+                          {approved ? 'Ngừng đồng bộ' : 'Cho phép'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="omni-zalo-target-empty">Chưa có nhóm chờ duyệt. Nhân viên mở một nhóm Zalo rồi bấm đồng bộ để gửi yêu cầu.</div>
+              )}
+            </div>
+          ) : null}
           <div className="omni-messenger-grid">
             <aside className="omni-messenger-list">
               <div className="omni-messenger-list-head">
-                <b>Hội thoại Zalo đã lưu</b>
-                <small>{zaloConversations.length} hội thoại</small>
+                <b>Nhóm Zalo đã lưu</b>
+                <small>{zaloConversations.length} nhóm</small>
               </div>
               {zaloConversations.length ? zaloConversations.map((item, index) => {
                 const cid = messengerConversationKey(item);
@@ -2448,7 +2531,7 @@ export function CommentLeadInboxPanel() {
                   </button>
                 );
               }) : (
-                <div className="omni-empty">Chưa có hội thoại. Mở Zalo Web rồi bấm “Đồng bộ hội thoại Zalo đang mở”.</div>
+                <div className="omni-empty">Chưa có nhóm đã được duyệt. Mở nhóm Zalo Web rồi bấm đồng bộ.</div>
               )}
             </aside>
 

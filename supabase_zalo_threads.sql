@@ -65,6 +65,29 @@ create table if not exists public.zalo_messages (
   captured_at timestamptz not null default now()
 );
 
+-- A group is discovered by the extension first, then an Admin explicitly
+-- approves it before any message content can be stored.
+create table if not exists public.zalo_sync_targets (
+  id uuid primary key default gen_random_uuid(),
+  target_key text not null unique,
+  conversation_id text not null,
+  conversation_url text,
+  title text,
+  is_group boolean not null default true,
+  approval_status text not null default 'pending'
+    check (approval_status in ('pending', 'approved', 'blocked')),
+  group_evidence text,
+  captured_by_staff_id text,
+  captured_by_staff_name text,
+  captured_by_staff_username text,
+  owner_key text not null,
+  detected_at timestamptz not null default now(),
+  approved_at timestamptz,
+  approved_by_staff_id text,
+  approved_by_staff_name text,
+  updated_at timestamptz not null default now()
+);
+
 alter table public.zalo_conversations
   add column if not exists conversation_key text,
   add column if not exists customer_id text,
@@ -134,6 +157,12 @@ create index if not exists zalo_messages_conversation_key_idx
 create index if not exists zalo_messages_sender_idx
   on public.zalo_messages (sender_id);
 
+create index if not exists zalo_sync_targets_staff_status_idx
+  on public.zalo_sync_targets (captured_by_staff_id, approval_status, updated_at desc);
+
+create index if not exists zalo_sync_targets_owner_idx
+  on public.zalo_sync_targets (owner_key, updated_at desc);
+
 create or replace function public.set_zalo_conversations_updated_at()
 returns trigger language plpgsql as $$
 begin
@@ -149,11 +178,13 @@ for each row execute function public.set_zalo_conversations_updated_at();
 
 alter table public.zalo_conversations enable row level security;
 alter table public.zalo_messages enable row level security;
+alter table public.zalo_sync_targets enable row level security;
 
 drop policy if exists "zalo_conversations_app_all" on public.zalo_conversations;
 drop policy if exists "zalo_messages_app_all" on public.zalo_messages;
 drop policy if exists "zalo_conversations_service_all" on public.zalo_conversations;
 drop policy if exists "zalo_messages_service_all" on public.zalo_messages;
+drop policy if exists "zalo_sync_targets_service_all" on public.zalo_sync_targets;
 
 create policy "zalo_conversations_service_all" on public.zalo_conversations
   for all to service_role
@@ -165,9 +196,16 @@ create policy "zalo_messages_service_all" on public.zalo_messages
   using (true)
   with check (true);
 
+create policy "zalo_sync_targets_service_all" on public.zalo_sync_targets
+  for all to service_role
+  using (true)
+  with check (true);
+
 revoke all on public.zalo_conversations from anon, authenticated;
 revoke all on public.zalo_messages from anon, authenticated;
+revoke all on public.zalo_sync_targets from anon, authenticated;
 grant select, insert, update, delete on public.zalo_conversations to service_role;
 grant select, insert, update, delete on public.zalo_messages to service_role;
+grant select, insert, update, delete on public.zalo_sync_targets to service_role;
 
 notify pgrst, 'reload schema';

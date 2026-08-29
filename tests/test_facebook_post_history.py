@@ -1210,6 +1210,112 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertEqual(remaining_keys, [conversation_b['conversation_key']])
         self.assertEqual(remaining_texts, ['Tin B'])
 
+    def test_zalo_group_requires_admin_approval_before_sync(self):
+        staff = {'id': 'sale-1', 'name': 'Sale A', 'username': 'salea'}
+        group_payload = {
+            'conversation_url': 'https://chat.zalo.me/',
+            'conversation_id': 'zalo-group-1',
+            'conversation_title': 'Nhóm khách hàng VIP',
+            'conversation_type': 'group',
+            'is_group': True,
+            'group_evidence': 'group_header',
+        }
+
+        with backend.app.test_request_context('/'):
+            with (
+                patch.object(backend, '_zalo_threads', {'conversations': [], 'messages': [], 'sync_targets': []}),
+                patch.object(backend, '_current_staff', return_value=staff),
+                patch.object(backend, '_is_admin', return_value=False),
+                patch.object(backend, 'USE_SUPABASE', False),
+                patch.object(backend, '_save_zalo_threads'),
+            ):
+                private_target, private_error = backend._register_zalo_sync_target({
+                    **group_payload,
+                    'conversation_type': 'private',
+                    'is_group': False,
+                })
+                pending, warning = backend._register_zalo_sync_target(group_payload)
+                unknown_candidate, unknown_warning = backend._register_zalo_sync_target({
+                    **group_payload,
+                    'conversation_id': 'zalo-group-unknown',
+                    'conversation_type': 'unknown',
+                    'is_group': False,
+                    'is_group_candidate': True,
+                })
+                with patch.object(backend, '_is_admin', return_value=True):
+                    approved, approve_warning = backend._set_zalo_sync_target_status(
+                        pending['target_key'],
+                        'approved',
+                    )
+                registered_again, repeat_warning = backend._register_zalo_sync_target(group_payload)
+                approved_conversation, _, _ = backend._store_zalo_sync_payload({
+                    **group_payload,
+                    'messages': [{'message_id': 'g1', 'sender_name': 'Khách nhóm', 'text': 'Tin trong nhóm'}],
+                })
+                backend._store_zalo_sync_payload({
+                    'conversation_url': 'https://chat.zalo.me/',
+                    'conversation_id': 'zalo-private-legacy',
+                    'conversation_title': 'Chat riêng cũ',
+                    'messages': [{'message_id': 'p1', 'sender_name': 'Khách riêng', 'text': 'Tin riêng'}],
+                })
+                visible_conversations, visible_messages, _ = backend._load_zalo_threads(
+                    allowed_conversation_keys={approved_conversation['conversation_key']},
+                )
+                stored_targets = list(backend._zalo_threads['sync_targets'])
+
+        self.assertEqual(private_target, {})
+        self.assertIn('không đồng bộ tin nhắn riêng', private_error)
+        self.assertEqual(warning, '')
+        self.assertEqual(pending['approval_status'], 'pending')
+        self.assertEqual(unknown_warning, '')
+        self.assertEqual(unknown_candidate['approval_status'], 'pending')
+        self.assertFalse(unknown_candidate['is_group'])
+        self.assertEqual(approve_warning, '')
+        self.assertEqual(approved['approval_status'], 'approved')
+        self.assertEqual(repeat_warning, '')
+        self.assertEqual(registered_again['approval_status'], 'approved')
+        self.assertEqual(len(stored_targets), 2)
+        self.assertEqual([row['title'] for row in visible_conversations], ['Nhóm khách hàng VIP'])
+        self.assertEqual([row['text'] for row in visible_messages], ['Tin trong nhóm'])
+
+    def test_zalo_sync_api_does_not_store_messages_while_group_is_pending(self):
+        staff = {'id': 'sale-1', 'name': 'Sale A', 'username': 'salea', 'role': 'staff'}
+        payload = {
+            'conversation_url': 'https://chat.zalo.me/',
+            'conversation_id': 'zalo-group-pending',
+            'conversation_title': 'Nhóm đang chờ duyệt',
+            'conversation_type': 'group',
+            'is_group': True,
+            'is_group_candidate': True,
+            'messages': [{'message_id': 'secret-1', 'sender_name': 'Thành viên', 'text': 'Nội dung chưa được duyệt'}],
+        }
+        client = backend.app.test_client()
+
+        with (
+            patch.object(backend, '_zalo_threads', {'conversations': [], 'messages': [], 'sync_targets': []}),
+            patch.object(backend, '_current_staff', return_value=staff),
+            patch.object(backend, '_is_admin', return_value=False),
+            patch.object(backend, 'USE_SUPABASE', False),
+            patch.object(backend, '_save_zalo_threads'),
+        ):
+            authorize_response = client.post('/api/zalo/sync/authorize', json=payload)
+            sync_response = client.post('/api/zalo/sync', json=payload)
+            stored_before_approval = {
+                'conversations': list(backend._zalo_threads['conversations']),
+                'messages': list(backend._zalo_threads['messages']),
+            }
+            target_key = backend._zalo_threads['sync_targets'][0]['target_key']
+            with patch.object(backend, '_is_admin', return_value=True):
+                backend._set_zalo_sync_target_status(target_key, 'approved')
+            approved_response = client.post('/api/zalo/sync', json=payload)
+
+        self.assertEqual(authorize_response.status_code, 409)
+        self.assertTrue(authorize_response.get_json()['approval_required'])
+        self.assertEqual(sync_response.status_code, 409)
+        self.assertEqual(stored_before_approval, {'conversations': [], 'messages': []})
+        self.assertEqual(approved_response.status_code, 200)
+        self.assertTrue(approved_response.get_json()['ok'])
+
 
 if __name__ == '__main__':
     unittest.main()
