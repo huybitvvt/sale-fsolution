@@ -1843,6 +1843,94 @@ def _load_zalo_threads(
     return conversations[:1000], messages[-limit:] if len(messages) > limit else messages, warning
 
 
+def _delete_zalo_conversation(conversation_key: str) -> tuple[dict, int]:
+    conversation_key = _messenger_text(conversation_key, 180)
+    if not conversation_key:
+        return {'ok': False, 'error': 'Thiếu mã hội thoại Zalo cần xoá.'}, 400
+
+    conversations, _, load_warning = _load_zalo_threads(conversation_key=conversation_key, limit=1)
+    target = next(
+        (
+            row for row in conversations
+            if _messenger_target_matches(row, conversation_key=conversation_key)
+        ),
+        None,
+    )
+    if not target:
+        return {'ok': False, 'error': 'Không tìm thấy hội thoại Zalo hoặc bạn không có quyền xoá.'}, 404
+
+    target_key = _messenger_row_conversation_key(target)
+    target_id = _messenger_text(target.get('conversation_id'), 220)
+    target_owner = _messenger_row_owner_key(target)
+    deleted_local_conversations = 0
+    deleted_local_messages = 0
+
+    def is_target_row(row: dict) -> bool:
+        normalised = _normalise_messenger_storage_row(row)
+        row_key = _messenger_row_conversation_key(normalised)
+        if target_key and row_key == target_key:
+            return True
+        if (
+            target_id
+            and _messenger_text(normalised.get('conversation_id'), 220) == target_id
+            and _messenger_row_owner_key(normalised) == target_owner
+        ):
+            return True
+        return False
+
+    with _zalo_threads_lock:
+        current_conversations = [
+            item for item in (_zalo_threads.get('conversations') or [])
+            if isinstance(item, dict)
+        ]
+        current_messages = [
+            item for item in (_zalo_threads.get('messages') or [])
+            if isinstance(item, dict)
+        ]
+        kept_conversations = [item for item in current_conversations if not is_target_row(item)]
+        kept_messages = [item for item in current_messages if not is_target_row(item)]
+        deleted_local_conversations = len(current_conversations) - len(kept_conversations)
+        deleted_local_messages = len(current_messages) - len(kept_messages)
+        _zalo_threads['conversations'] = kept_conversations
+        _zalo_threads['messages'] = kept_messages
+        _save_zalo_threads()
+
+    warning = load_warning
+    if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
+        headers = {
+            'apikey': SUPABASE_KEY,
+            'Authorization': f'Bearer {SUPABASE_KEY}',
+            'Prefer': 'return=minimal',
+        }
+        delete_specs = [
+            (SUPABASE_ZALO_MESSAGE_TABLE, {'conversation_key': f'eq.{target_key}'}),
+            (SUPABASE_ZALO_CONVERSATION_TABLE, {'conversation_key': f'eq.{target_key}'}),
+        ]
+        for table, params in delete_specs:
+            try:
+                response = _req.delete(
+                    f"{SUPABASE_URL.rstrip('/')}/rest/v1/{table}",
+                    headers=headers,
+                    params=params,
+                    timeout=20,
+                )
+                if response.status_code not in (200, 202, 204):
+                    warning = ' | '.join([item for item in (warning, response.text[:300]) if item])
+            except Exception as exc:
+                warning = ' | '.join([item for item in (warning, str(exc)[:300]) if item])
+
+    payload = {
+        'ok': True,
+        'conversation_key': target_key,
+        'deleted_local_conversations': deleted_local_conversations,
+        'deleted_local_messages': deleted_local_messages,
+        'storage': 'supabase' if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY and not warning else 'local',
+    }
+    if warning:
+        payload['warning'] = warning
+    return payload, 200
+
+
 def _record_publish_results(post: dict, targets: list[dict], result: dict, *, source: str, source_post_id: str = '', request_id: str = '') -> list[dict]:
     staff = _current_staff() or _active_staff()
     now = _utc_iso()
@@ -9321,6 +9409,12 @@ def zalo_conversations_get():
     if warning:
         payload['warning'] = warning
     return jsonify(payload)
+
+
+@app.route('/api/zalo/conversations/<path:conversation_key>', methods=['DELETE'])
+def zalo_conversations_delete(conversation_key):
+    payload, status_code = _delete_zalo_conversation(conversation_key)
+    return jsonify(payload), status_code
 
 
 def _is_synthetic_untrackable_facebook_post(row: dict) -> bool:

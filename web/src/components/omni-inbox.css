@@ -204,6 +204,21 @@
 
 .omni-btn-ghost:hover { background: var(--omni-surface-container-high); }
 
+.omni-btn-danger {
+  border: 1px solid #fecaca;
+  background: #fff1f2;
+  color: #be123c;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.omni-btn-danger:hover { background: #ffe4e6; }
+.omni-btn-danger:disabled { opacity: 0.55; cursor: not-allowed; }
+
 .omni-body {
   display: flex;
   flex: 1;
@@ -1360,6 +1375,14 @@
 .omni-messenger-thread-head p {
   margin: 0;
   font-size: 13px;
+}
+
+.omni-thread-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .omni-messenger-card {

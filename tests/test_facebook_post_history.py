@@ -985,6 +985,50 @@ class FacebookPostHistoryTests(unittest.TestCase):
         self.assertEqual(messages[2]['raw_message']['media_urls'], ['https://example.com/a.jpg'])
         self.assertEqual(len(stored_threads['messages']), 3)
 
+    def test_zalo_delete_conversation_removes_selected_thread_only(self):
+        base_payload = {
+            'conversation_url': 'https://chat.zalo.me/',
+            'participants': [{'name': 'Khách Zalo'}],
+        }
+        staff = {'id': 'sale-1', 'name': 'Sale A', 'username': 'salea'}
+
+        with backend.app.test_request_context('/'):
+            with (
+                patch.object(backend, '_zalo_threads', {'conversations': [], 'messages': []}),
+                patch.object(backend, '_current_staff', return_value=staff),
+                patch.object(backend, 'USE_SUPABASE', False),
+                patch.object(backend, '_save_zalo_threads'),
+            ):
+                conversation_a, _, _ = backend._store_zalo_sync_payload({
+                    **base_payload,
+                    'conversation_id': 'zalo-thread-a',
+                    'conversation_title': 'Khách A',
+                    'messages': [{'message_id': 'a1', 'sender_name': 'Khách A', 'text': 'Tin A'}],
+                })
+                conversation_b, _, _ = backend._store_zalo_sync_payload({
+                    **base_payload,
+                    'conversation_id': 'zalo-thread-b',
+                    'conversation_title': 'Khách B',
+                    'messages': [{'message_id': 'b1', 'sender_name': 'Khách B', 'text': 'Tin B'}],
+                })
+
+                payload, status = backend._delete_zalo_conversation(conversation_a['conversation_key'])
+                remaining_keys = [
+                    item['conversation_key']
+                    for item in backend._zalo_threads['conversations']
+                ]
+                remaining_texts = [
+                    item['text']
+                    for item in backend._zalo_threads['messages']
+                ]
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload['ok'])
+        self.assertEqual(payload['deleted_local_conversations'], 1)
+        self.assertEqual(payload['deleted_local_messages'], 1)
+        self.assertEqual(remaining_keys, [conversation_b['conversation_key']])
+        self.assertEqual(remaining_texts, ['Tin B'])
+
 
 if __name__ == '__main__':
     unittest.main()

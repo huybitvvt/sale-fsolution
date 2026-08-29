@@ -1371,6 +1371,40 @@ export function CommentLeadInboxPanel() {
     }
   }
 
+  async function deleteSelectedZaloConversation() {
+    const conversationKey = selectedZaloId || (selectedZalo ? messengerConversationKey(selectedZalo) : '');
+    if (!conversationKey) {
+      setStatus('❌ Chưa chọn hội thoại Zalo để xoá.');
+      return;
+    }
+    const label = safeConversationTitle(selectedZalo?.customer_name || selectedZalo?.title, conversationKey);
+    if (typeof window !== 'undefined' && !window.confirm(`Xoá hội thoại Zalo "${label}" khỏi hệ thống? Tin nhắn đã lưu cũng sẽ bị xoá.`)) {
+      return;
+    }
+
+    setZaloBusy(true);
+    setStatus('Đang xoá hội thoại Zalo...');
+    try {
+      const r = await api(`/api/zalo/conversations/${encodeURIComponent(conversationKey)}`, { method: 'DELETE' });
+      const data = await r.json().catch(() => ({ ok: false, error: `Server lỗi ${r.status}` }));
+      if (!r.ok || !data.ok) {
+        setStatus(`❌ ${data.error || 'Không xoá được hội thoại Zalo'}`);
+        return;
+      }
+      const remaining = zaloConversations.filter((item) => messengerConversationKey(item) !== conversationKey);
+      const nextId = remaining[0] ? messengerConversationKey(remaining[0]) : '';
+      setZaloConversations(remaining);
+      setZaloMessages([]);
+      setSelectedZaloId(nextId);
+      await loadZalo(nextId, zaloStaffFilter);
+      setStatus(data.warning ? `⚠️ Đã xoá hội thoại Zalo, nhưng có cảnh báo: ${data.warning}` : '✅ Đã xoá hội thoại Zalo khỏi hệ thống.');
+    } catch {
+      setStatus('❌ Lỗi kết nối khi xoá hội thoại Zalo');
+    } finally {
+      setZaloBusy(false);
+    }
+  }
+
   function requestTiktokOpenComment(payload: Record<string, unknown>): Promise<TikTokOpenCommentResult> {
     return new Promise((resolve) => {
       if (typeof window === 'undefined') {
@@ -2354,11 +2388,18 @@ export function CommentLeadInboxPanel() {
                   <h3>{safeConversationTitle(selectedZalo?.customer_name || selectedZalo?.title, 'Chọn hội thoại Zalo')}</h3>
                   <p>Chỉ hiển thị nội dung tin nhắn và ngày giờ đã đọc.</p>
                 </div>
-                {selectedZalo?.conversation_url ? (
-                  <button type="button" className="omni-btn-ghost" onClick={() => window.open(selectedZalo.conversation_url, '_blank', 'noopener,noreferrer')}>
-                    Mở gốc
-                  </button>
-                ) : null}
+                <div className="omni-thread-actions">
+                  {selectedZalo?.conversation_url ? (
+                    <button type="button" className="omni-btn-ghost" onClick={() => window.open(selectedZalo.conversation_url, '_blank', 'noopener,noreferrer')}>
+                      Mở gốc
+                    </button>
+                  ) : null}
+                  {selectedZaloId ? (
+                    <button type="button" className="omni-btn-danger" onClick={() => void deleteSelectedZaloConversation()} disabled={zaloBusy}>
+                      Xoá hội thoại
+                    </button>
+                  ) : null}
+                </div>
               </div>
               <div className="omni-messenger-messages">
                 {visibleZaloMessages.length ? visibleZaloMessages.map((message, index) => {
