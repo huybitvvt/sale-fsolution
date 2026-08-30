@@ -1090,6 +1090,103 @@
     };
   }
 
+  function unreadEvidenceScore(snapshot = {}) {
+    const attributes = normalize([
+      snapshot.className,
+      snapshot.ariaLabel,
+      snapshot.title,
+      snapshot.dataUnread,
+      snapshot.dataCount,
+    ].filter(Boolean).join(' ')).toLocaleLowerCase('vi-VN');
+    const text = normalize(snapshot.text).toLocaleLowerCase('vi-VN');
+    let score = 0;
+    if (/(^|[\s_-])(unread|unseen|not-read|has-new|new-message|chưa đọc|chua doc)([\s_-]|$)/i.test(attributes)) score += 10;
+    if (/\b(chưa đọc|chua doc|unread|tin nhắn mới|new message)\b/i.test(`${attributes} ${text}`)) score += 8;
+    if (/^(true|yes)$/i.test(normalize(snapshot.dataUnread))) score += 10;
+    const count = Number.parseInt(normalize(snapshot.dataCount || text), 10);
+    if (Number.isFinite(count) && count > 0 && count < 1000 && /(badge|count|unread|notify|new)/i.test(attributes)) score += 6;
+    if (snapshot.bold === true && /(message|preview|conv|chat|contact)/i.test(attributes)) score += 2;
+    return score;
+  }
+
+  function unreadMarkerSnapshot(node) {
+    if (!node || !(node instanceof Element)) return {};
+    let bold = false;
+    try {
+      bold = Number.parseInt(window.getComputedStyle(node).fontWeight || '0', 10) >= 600;
+    } catch {
+      // ignored
+    }
+    return {
+      className: String(node.className || ''),
+      ariaLabel: node.getAttribute('aria-label') || '',
+      title: node.getAttribute('title') || '',
+      dataUnread: node.getAttribute('data-unread') || node.getAttribute('data-is-unread') || '',
+      dataCount: node.getAttribute('data-unread-count') || node.getAttribute('data-count') || '',
+      text: normalize(node.innerText || node.textContent || ''),
+      bold,
+    };
+  }
+
+  function listenerRowKey(row) {
+    if (!row || !(row instanceof Element)) return '';
+    const stable = [
+      row.getAttribute('data-conversation-id'),
+      row.getAttribute('data-thread-id'),
+      row.getAttribute('data-id'),
+      row.getAttribute('href'),
+      row.id,
+    ].map((value) => stableIdValue(value)).find(Boolean);
+    const text = normalize(row.innerText || row.textContent || '').slice(0, 320);
+    return stable || (text ? `row_${hashString(text)}` : '');
+  }
+
+  function plausibleConversationListRow(node, threadLeft) {
+    if (!node || !(node instanceof Element) || !isVisible(node)) return false;
+    const rect = node.getBoundingClientRect();
+    if (rect.height < 42 || rect.height > 140 || rect.width < 160 || rect.width > 620) return false;
+    if (Number.isFinite(threadLeft) && rect.left >= threadLeft - 80) return false;
+    const classes = String(node.className || '');
+    const role = node.getAttribute('role') || '';
+    const clickable = /item|friend|contact|conversation|conv|chat|thread/i.test(classes)
+      || /^(listitem|option|row|link|button)$/i.test(role)
+      || node.hasAttribute('tabindex')
+      || node.tagName === 'A'
+      || node.tagName === 'BUTTON';
+    return clickable && normalize(node.innerText || node.textContent || '').length > 0;
+  }
+
+  function conversationRowFromUnreadMarker(marker, threadLeft) {
+    let current = marker;
+    for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+      if (plausibleConversationListRow(current, threadLeft)) return current;
+    }
+    return null;
+  }
+
+  function unreadConversationRows() {
+    const composer = findComposer();
+    const shell = findThreadShell(composer);
+    const scroller = findMessageScroller(shell, composer);
+    const threadLeft = scroller?.getBoundingClientRect?.().left;
+    const selectors = [
+      '[aria-label*="chưa đọc" i]', '[aria-label*="unread" i]',
+      '[title*="chưa đọc" i]', '[title*="unread" i]',
+      '[data-unread="true"]', '[data-is-unread="true"]', '[data-unread-count]',
+      '[class*="unread"]', '[class*="unseen"]', '[class*="new-message"]',
+      '[class*="badge"]', '[class*="notify"]',
+    ];
+    const markers = [...document.querySelectorAll(selectors.join(','))]
+      .filter((node) => isVisible(node) && unreadEvidenceScore(unreadMarkerSnapshot(node)) >= 6);
+    const byKey = new Map();
+    markers.forEach((marker) => {
+      const row = conversationRowFromUnreadMarker(marker, threadLeft);
+      const key = listenerRowKey(row);
+      if (row && key && !byKey.has(key)) byKey.set(key, row);
+    });
+    return [...byKey.entries()].map(([key, row]) => ({ key, row }));
+  }
+
   function collectMessages(scroller, limit, title, seed = '', round = 0, ignoredReplyIds = null, skippedReplyIds = null) {
     const roots = collectMessageRoots(scroller);
     const dateMarkers = timelineDateMarkers(scroller);
@@ -1431,6 +1528,7 @@
     markerIso,
     messageContentKey,
     latestIncomingSignal,
+    unreadEvidenceScore,
     parseTimelineMarker,
     cleanMessageText,
     containsReplyQuote,
@@ -1512,7 +1610,118 @@
 
   startIncomingMessageWatcher();
 
+  const zaloListenerState = {
+    enabled: false,
+    busy: false,
+    timer: null,
+    observer: null,
+    seenUntil: new Map(),
+    processedCount: 0,
+    lastActivityAt: '',
+    lastError: '',
+  };
+
+  function listenerStatus() {
+    const pageText = normalize(document.body?.innerText || '').slice(0, 5000);
+    const requiresLogin = /đăng nhập|quét mã qr|scan qr|login to zalo/i.test(pageText) && !findComposer();
+    return {
+      ok: true,
+      enabled: zaloListenerState.enabled,
+      ready: zaloListenerState.enabled && Boolean(document.body) && location.hostname.endsWith('zalo.me') && !requiresLogin,
+      busy: zaloListenerState.busy,
+      processed_count: zaloListenerState.processedCount,
+      last_activity_at: zaloListenerState.lastActivityAt,
+      last_error: zaloListenerState.lastError,
+      page_title: document.title || '',
+    };
+  }
+
+  function scheduleListenerScan(delay = 300) {
+    if (!zaloListenerState.enabled) return;
+    clearTimeout(zaloListenerState.timer);
+    zaloListenerState.timer = setTimeout(() => void scanUnreadConversations(), delay);
+  }
+
+  async function scanUnreadConversations() {
+    if (!zaloListenerState.enabled || zaloListenerState.busy) return;
+    zaloListenerState.busy = true;
+    let nextDelay = 2500;
+    try {
+      const now = Date.now();
+      for (const [key, expiresAt] of zaloListenerState.seenUntil.entries()) {
+        if (expiresAt <= now) zaloListenerState.seenUntil.delete(key);
+      }
+      const candidate = unreadConversationRows().find((item) => !zaloListenerState.seenUntil.has(item.key));
+      if (!candidate) return;
+      nextDelay = 700;
+      zaloListenerState.seenUntil.set(candidate.key, now + 45000);
+      const beforeComposer = findComposer();
+      const beforeScroller = findMessageScroller(findThreadShell(beforeComposer), beforeComposer);
+      const beforeTitle = beforeScroller ? cleanTitleText(findConversationHeader(beforeScroller).text) : '';
+      const clickTarget = candidate.row;
+      clickTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+      clickTarget.click();
+      await sleep(850);
+      const composer = findComposer();
+      const scroller = findMessageScroller(findThreadShell(composer), composer);
+      const afterTitle = scroller ? cleanTitleText(findConversationHeader(scroller).text) : '';
+      if (!afterTitle) throw new Error('Listener chưa mở được hội thoại có tin mới.');
+      const response = await chrome.runtime.sendMessage({
+        type: 'STREAL_ZALO_LISTENER_THREAD_READY',
+        payload: {
+          autoDetected: true,
+          listenerDetected: true,
+          unreadKey: candidate.key,
+          conversationTitle: afterTitle,
+          conversationChanged: beforeTitle !== afterTitle,
+        },
+      });
+      zaloListenerState.lastActivityAt = new Date().toISOString();
+      zaloListenerState.lastError = response?.ok ? '' : String(response?.error || response?.warning || 'Không đồng bộ được hội thoại mới.');
+      if (response?.ok) zaloListenerState.processedCount += 1;
+    } catch (error) {
+      zaloListenerState.lastError = error?.message || String(error);
+      zaloListenerState.lastActivityAt = new Date().toISOString();
+    } finally {
+      zaloListenerState.busy = false;
+      scheduleListenerScan(nextDelay);
+    }
+  }
+
+  function setListenerEnabled(enabled) {
+    const wasEnabled = zaloListenerState.enabled;
+    zaloListenerState.enabled = enabled === true;
+    if (!wasEnabled && zaloListenerState.enabled) zaloListenerState.lastError = '';
+    if (!zaloListenerState.enabled) {
+      clearTimeout(zaloListenerState.timer);
+      zaloListenerState.timer = null;
+      zaloListenerState.observer?.disconnect();
+      zaloListenerState.observer = null;
+      return listenerStatus();
+    }
+    if (!zaloListenerState.observer) {
+      zaloListenerState.observer = new MutationObserver(() => scheduleListenerScan(250));
+      zaloListenerState.observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['class', 'aria-label', 'title', 'data-unread', 'data-is-unread', 'data-unread-count', 'data-count'],
+      });
+    }
+    scheduleListenerScan(250);
+    return listenerStatus();
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === 'STREAL_ZALO_LISTENER_ENABLE') {
+      sendResponse(setListenerEnabled(message.enabled === true));
+      return false;
+    }
+    if (message?.type === 'STREAL_ZALO_LISTENER_STATUS') {
+      sendResponse(listenerStatus());
+      return false;
+    }
     if (message?.type !== 'STREAL_ZALO_COLLECT_THREAD') return false;
     collectZaloThread(message.payload || {})
       .then((response) => sendResponse(response))

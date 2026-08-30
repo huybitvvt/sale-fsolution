@@ -139,6 +139,21 @@ type MessengerSyncResult = {
   ai_suggestion?: ZaloAiSuggestion;
 };
 
+type ZaloListenerStatus = {
+  ok?: boolean;
+  enabled?: boolean;
+  ready?: boolean;
+  busy?: boolean;
+  tab_id?: number | null;
+  processed_count?: number;
+  started_at?: string;
+  last_activity_at?: string;
+  current_conversation?: string;
+  last_error?: string;
+  version?: string;
+  error?: string;
+};
+
 type TikTokBridgeResult = {
   ok?: boolean;
   comment_id?: string;
@@ -549,6 +564,39 @@ function tagMaterialIcon(key: string) {
   return map[key] || { icon: 'label', color: '#64748b' };
 }
 
+function requestZaloListenerBridge(action: 'status' | 'start' | 'stop'): Promise<ZaloListenerStatus> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') {
+      resolve({ ok: false, error: 'Chỉ dùng được Zalo Listener trên Chrome có cài extension.' });
+      return;
+    }
+    const requestId = `zalo_listener_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const timer = window.setTimeout(() => {
+      cleanup();
+      resolve({ ok: false, error: 'Không thấy extension phản hồi. Hãy cập nhật extension rồi tải lại web.' });
+    }, action === 'status' ? 12000 : 45000);
+    const handleMessage = (event: MessageEvent) => {
+      if (event.source !== window) return;
+      const data = event.data || {};
+      if (data.source !== 'streal-tiktok-extension') return;
+      if (data.type !== 'STREAL_ZALO_LISTENER_RESPONSE' || data.requestId !== requestId) return;
+      cleanup();
+      resolve(data as ZaloListenerStatus);
+    };
+    function cleanup() {
+      window.removeEventListener('message', handleMessage);
+      window.clearTimeout(timer);
+    }
+    window.addEventListener('message', handleMessage);
+    window.postMessage({
+      source: 'streal-web-page',
+      type: 'STREAL_ZALO_LISTENER_REQUEST',
+      requestId,
+      action,
+    }, window.location.origin);
+  });
+}
+
 function MaterialIcon({ name, filled, className, style }: { name: string; filled?: boolean; className?: string; style?: CSSProperties }) {
   return <span className={`material-symbols-outlined${filled ? ' filled' : ''}${className ? ` ${className}` : ''}`} style={style}>{name}</span>;
 }
@@ -608,6 +656,8 @@ export function CommentLeadInboxPanel() {
   const [zaloActiveStaffId, setZaloActiveStaffId] = useState('');
   const [zaloAiSuggestions, setZaloAiSuggestions] = useState<ZaloAiSuggestion[]>([]);
   const [zaloAiBusy, setZaloAiBusy] = useState(false);
+  const [zaloListener, setZaloListener] = useState<ZaloListenerStatus>({ enabled: false });
+  const [zaloListenerBusy, setZaloListenerBusy] = useState(false);
 
   const processedSet = useMemo(() => new Set(processedIds), [processedIds]);
   const starredSet = useMemo(() => new Set(starredIds), [starredIds]);
@@ -830,6 +880,21 @@ export function CommentLeadInboxPanel() {
   }, [tab, loadZalo]);
 
   useEffect(() => {
+    if (tab !== 'zalo') return undefined;
+    let cancelled = false;
+    const refresh = async () => {
+      const next = await requestZaloListenerBridge('status');
+      if (!cancelled) setZaloListener(next);
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 12000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [tab]);
+
+  useEffect(() => {
     if (tab !== 'zalo' || !selectedZaloId) return undefined;
     const timer = window.setInterval(() => {
       void loadZalo(selectedZaloId, zaloStaffFilter, true);
@@ -842,20 +907,27 @@ export function CommentLeadInboxPanel() {
     const handleZaloSuggestion = (event: MessageEvent) => {
       if (event.source !== window) return;
       const data = event.data || {};
-      if (data.source !== 'streal-tiktok-extension' || data.type !== 'STREAL_ZALO_AI_SUGGESTION_READY') return;
+      if (data.source !== 'streal-tiktok-extension') return;
+      if (data.type === 'STREAL_ZALO_LISTENER_STATUS_UPDATE') {
+        setZaloListener((data.status || {}) as ZaloListenerStatus);
+        return;
+      }
+      if (data.type !== 'STREAL_ZALO_AI_SUGGESTION_READY') return;
       const suggestion = data.suggestion as ZaloAiSuggestion | undefined;
       if (!suggestion?.suggestion_key) return;
       setZaloAiSuggestions((current) => [
         suggestion,
         ...current.filter((item) => item.suggestion_key !== suggestion.suggestion_key),
       ]);
-      if (suggestion.conversation_key && suggestion.conversation_key === selectedZaloId) {
-        void loadZalo(selectedZaloId, zaloStaffFilter, true);
+      if (suggestion.conversation_key) {
+        setSelectedZaloId(suggestion.conversation_key);
+        void loadZalo(suggestion.conversation_key, zaloStaffFilter, true);
+        setStatus(`🔔 AI vừa tạo gợi ý cho ${suggestion.customer_name || 'hội thoại Zalo mới'}.`);
       }
     };
     window.addEventListener('message', handleZaloSuggestion);
     return () => window.removeEventListener('message', handleZaloSuggestion);
-  }, [selectedZaloId, zaloStaffFilter, loadZalo]);
+  }, [zaloStaffFilter, loadZalo]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1439,6 +1511,28 @@ export function CommentLeadInboxPanel() {
         window.location.origin,
       );
     });
+  }
+
+  async function toggleZaloListener() {
+    const action = zaloListener.enabled ? 'stop' : 'start';
+    setZaloListenerBusy(true);
+    setStatus(action === 'start' ? 'Đang mở tab Zalo Listener nền...' : 'Đang tắt Zalo Listener...');
+    try {
+      const next = await requestZaloListenerBridge(action);
+      setZaloListener(next);
+      const error = next.error || next.last_error;
+      if (error) {
+        setStatus(`❌ ${error}`);
+        return;
+      }
+      setStatus(action === 'start'
+        ? '✅ Zalo Listener đã bật. Giữ Chrome và tài khoản Zalo Web đăng nhập để tự nhận tin mới.'
+        : '✅ Đã tắt Zalo Listener.');
+    } catch {
+      setStatus('❌ Không điều khiển được Zalo Listener.');
+    } finally {
+      setZaloListenerBusy(false);
+    }
   }
 
   async function syncCurrentZaloThread(expectedConversationId = '') {
@@ -2070,6 +2164,14 @@ export function CommentLeadInboxPanel() {
               <button type="button" className="omni-btn-ghost" onClick={() => window.open('https://chat.zalo.me/', '_blank', 'noopener,noreferrer')}>
                 Mở Zalo Web
               </button>
+              <button
+                type="button"
+                className={zaloListener.enabled ? 'omni-btn-danger' : 'omni-btn-primary'}
+                onClick={() => void toggleZaloListener()}
+                disabled={zaloListenerBusy}
+              >
+                {zaloListenerBusy ? 'Đang xử lý...' : zaloListener.enabled ? 'Tắt Zalo Listener' : 'Bật Zalo Listener'}
+              </button>
               <button type="button" className="omni-btn-ghost" onClick={() => void loadZalo()} disabled={zaloBusy}>
                 {zaloBusy ? 'Đang tải...' : 'Tải lại'}
               </button>
@@ -2583,7 +2685,23 @@ export function CommentLeadInboxPanel() {
           <div className="omni-messenger-note">
             <MaterialIcon name="info" style={{ fontSize: 18 }} />
             <span>
-              Extension tự theo dõi hội thoại Zalo Web đang mở. Chat riêng được đồng bộ trực tiếp; nhóm chỉ được lưu nội dung sau khi Admin cho phép.
+              Bật Zalo Listener để extension dùng một tab Zalo nền, tự mở hội thoại chưa đọc, đồng bộ và tạo gợi ý AI. Việc mở nền có thể làm Zalo đánh dấu đã đọc; nhóm vẫn phải được Admin cho phép.
+            </span>
+            <span
+              className={`omni-zalo-listener-state ${zaloListener.error || zaloListener.last_error ? 'error' : zaloListener.enabled && zaloListener.ready ? 'active' : ''}`}
+              title={zaloListener.error || zaloListener.last_error || ''}
+            >
+              {zaloListener.error
+                ? 'Chưa kết nối extension'
+                : zaloListener.last_error
+                  ? 'Listener có lỗi'
+                  : zaloListener.busy
+                    ? `Đang xử lý${zaloListener.current_conversation ? `: ${zaloListener.current_conversation}` : ''}`
+                    : zaloListener.enabled && zaloListener.ready
+                      ? `Listener đang bật · ${zaloListener.processed_count || 0} lượt`
+                      : zaloListener.enabled
+                        ? 'Đang chờ Zalo Web'
+                        : 'Listener đang tắt'}
             </span>
           </div>
           {zaloCanManage ? (
@@ -2676,7 +2794,7 @@ export function CommentLeadInboxPanel() {
                   </button>
                 );
               }) : (
-                <div className="omni-empty">Chưa có hội thoại đã lưu. Mở chat riêng hoặc nhóm Zalo đã được duyệt rồi bấm đồng bộ.</div>
+                <div className="omni-empty">Chưa có hội thoại đã lưu. Bật Zalo Listener hoặc mở chat riêng/nhóm đã duyệt rồi bấm đồng bộ.</div>
               )}
             </aside>
 
@@ -2753,7 +2871,7 @@ export function CommentLeadInboxPanel() {
                     <p className="omni-zalo-ai-error">{selectedZaloSuggestion.error || 'AI chưa tạo được gợi ý. Kiểm tra cấu hình AI rồi thử lại.'}</p>
                   ) : (
                     <p className="omni-zalo-ai-empty">
-                      Khi khách gửi tin mới trong hội thoại Zalo Web đang mở, extension sẽ đồng bộ và tạo gợi ý tự động.
+                      Khi Zalo Listener phát hiện khách gửi tin mới, extension sẽ đồng bộ nền và tạo gợi ý tự động.
                     </p>
                   )}
                 </div>

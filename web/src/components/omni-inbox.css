@@ -1330,6 +1330,28 @@
   font-size: 13px;
 }
 
+.omni-zalo-listener-state {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.omni-zalo-listener-state.active {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.omni-zalo-listener-state.error {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
 .omni-zalo-target-panel {
   margin-bottom: 16px;
   overflow: hidden;
@@ -1735,4 +1757,6 @@
   .omni-thread { min-height: 50vh; }
   .omni-message-bubble { max-width: 90%; }
   .omni-zalo-ai-reply { align-items: flex-start; flex-direction: column; }
+  .omni-messenger-note { flex-wrap: wrap; }
+  .omni-zalo-listener-state { margin-left: 28px; }
 }

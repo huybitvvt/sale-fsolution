@@ -105,6 +105,14 @@ test('detects only the latest incoming bubble for automatic suggestions', () => 
   ]), null);
 });
 
+test('requires explicit unread evidence before the listener opens a conversation', () => {
+  assert.ok(api.unreadEvidenceScore({ className: 'conv-item unread', text: 'Khách vừa nhắn' }) >= 6);
+  assert.ok(api.unreadEvidenceScore({ ariaLabel: '2 tin nhắn chưa đọc', text: '2' }) >= 6);
+  assert.ok(api.unreadEvidenceScore({ className: 'z-notify-badge', dataCount: '3', text: '3' }) >= 6);
+  assert.equal(api.unreadEvidenceScore({ className: 'conv-item', text: '3' }), 0);
+  assert.equal(api.unreadEvidenceScore({ className: 'message-preview', text: 'Khách vừa nhắn', bold: true }), 2);
+});
+
 test('removes Zalo reaction artifacts and the rendered bubble timestamp', () => {
   const marker = api.parseTimelineMarker('15:08');
   assert.equal(

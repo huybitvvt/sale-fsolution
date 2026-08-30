@@ -1,5 +1,6 @@
 const TIKTOK_HOST = 'https://www.tiktok.com';
 const STREAL_API_ORIGIN_KEY = 'strealApiOrigin';
+const STREAL_ZALO_LISTENER_KEY = 'strealZaloListenerV1';
 
 function isAllowedApiOrigin(value) {
   try {
@@ -239,6 +240,198 @@ async function notifyZaloAiSuggestion(suggestion) {
   }
 }
 
+function defaultZaloListenerState() {
+  return {
+    enabled: false,
+    tabId: null,
+    dedicated: false,
+    ready: false,
+    busy: false,
+    processedCount: 0,
+    startedAt: '',
+    lastActivityAt: '',
+    currentConversation: '',
+    lastError: '',
+  };
+}
+
+async function getZaloListenerState() {
+  const stored = await storageGet(STREAL_ZALO_LISTENER_KEY);
+  return { ...defaultZaloListenerState(), ...(stored || {}) };
+}
+
+function publicZaloListenerStatus(state = {}) {
+  return {
+    ok: !state.lastError,
+    enabled: state.enabled === true,
+    ready: state.ready === true,
+    busy: state.busy === true,
+    tab_id: Number.isInteger(state.tabId) ? state.tabId : null,
+    processed_count: Math.max(0, Number(state.processedCount || 0)),
+    started_at: String(state.startedAt || ''),
+    last_activity_at: String(state.lastActivityAt || ''),
+    current_conversation: String(state.currentConversation || ''),
+    last_error: String(state.lastError || ''),
+    version: chrome.runtime.getManifest().version,
+  };
+}
+
+async function broadcastZaloListenerStatus(state) {
+  const status = publicZaloListenerStatus(state);
+  try {
+    const stored = await chrome.storage.local.get(STREAL_API_ORIGIN_KEY);
+    const origin = String(stored?.[STREAL_API_ORIGIN_KEY] || '');
+    if (!isAllowedApiOrigin(origin)) return status;
+    const appTabs = await chrome.tabs.query({ url: `${origin}/*` });
+    await Promise.all(appTabs
+      .filter((tab) => Number.isInteger(tab.id))
+      .map((tab) => chrome.tabs.sendMessage(tab.id, {
+        type: 'STREAL_ZALO_LISTENER_STATUS_UPDATE',
+        status,
+      }).catch(() => null)));
+  } catch {
+    // Giao diện sẽ hỏi lại trạng thái khi tab Zalo được mở.
+  }
+  return status;
+}
+
+async function getTab(tabId) {
+  if (!Number.isInteger(tabId)) return null;
+  try {
+    return await chrome.tabs.get(tabId);
+  } catch {
+    return null;
+  }
+}
+
+function isZaloChatTab(tab) {
+  try {
+    return Number.isInteger(tab?.id) && new URL(tab.url || '').hostname === 'chat.zalo.me';
+  } catch {
+    return false;
+  }
+}
+
+async function readZaloListenerContent(tabId, enable = false) {
+  await waitForTabLoaded(tabId, 30000);
+  let response = await sendTabMessage(tabId, enable
+    ? { type: 'STREAL_ZALO_LISTENER_ENABLE', enabled: true }
+    : { type: 'STREAL_ZALO_LISTENER_STATUS' });
+  if (!response?.ok && /receiving end|could not establish connection|khong ton tai|does not exist/i.test(String(response?.error || ''))) {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['zalo-content.js'] });
+    await sleep(500);
+    response = await sendTabMessage(tabId, { type: 'STREAL_ZALO_LISTENER_ENABLE', enabled: true });
+  } else if (!enable && response?.ok && response?.enabled !== true) {
+    response = await sendTabMessage(tabId, { type: 'STREAL_ZALO_LISTENER_ENABLE', enabled: true });
+  }
+  return response || { ok: false, error: 'Listener Zalo không phản hồi.' };
+}
+
+async function ensureZaloListenerTab(state, createIfMissing = false, enableContent = false) {
+  let next = { ...defaultZaloListenerState(), ...(state || {}) };
+  let tab = await getTab(next.tabId);
+  let created = false;
+  if (!isZaloChatTab(tab)) tab = null;
+  if (!tab && createIfMissing) {
+    tab = await chrome.tabs.create({ url: 'https://chat.zalo.me/', active: false, pinned: true });
+    created = true;
+    next = {
+      ...next,
+      tabId: tab.id,
+      dedicated: true,
+      ready: false,
+      busy: false,
+      lastError: '',
+    };
+    await storageSet(STREAL_ZALO_LISTENER_KEY, next);
+  }
+  if (!tab?.id) {
+    return { state: { ...next, tabId: null, ready: false }, tab: null, response: null };
+  }
+  if (next.dedicated) {
+    try {
+      tab = await chrome.tabs.update(tab.id, { pinned: true, autoDiscardable: false });
+    } catch {
+      // Vẫn tiếp tục nếu phiên bản Chrome không hỗ trợ autoDiscardable.
+    }
+  }
+  const response = await readZaloListenerContent(tab.id, enableContent || created);
+  next = {
+    ...next,
+    tabId: tab.id,
+    ready: response?.ready === true,
+    busy: response?.busy === true,
+    processedCount: Math.max(Number(next.processedCount || 0), Number(response?.processed_count || 0)),
+    lastActivityAt: response?.last_activity_at || next.lastActivityAt || '',
+    lastError: response?.ok ? String(response?.last_error || '') : String(response?.error || 'Listener Zalo không phản hồi.'),
+  };
+  await storageSet(STREAL_ZALO_LISTENER_KEY, next);
+  return { state: next, tab, response };
+}
+
+async function startZaloListener() {
+  const origin = String((await chrome.storage.local.get(STREAL_API_ORIGIN_KEY))?.[STREAL_API_ORIGIN_KEY] || '');
+  if (!isAllowedApiOrigin(origin)) {
+    return { ...publicZaloListenerStatus(defaultZaloListenerState()), error: 'Hãy mở và đăng nhập F-Solution trước khi bật Zalo Listener.' };
+  }
+  const previous = await getZaloListenerState();
+  const state = {
+    ...previous,
+    enabled: true,
+    startedAt: previous.startedAt || new Date().toISOString(),
+    lastError: '',
+  };
+  await storageSet(STREAL_ZALO_LISTENER_KEY, state);
+  try {
+    const ensured = await ensureZaloListenerTab(state, true, true);
+    await broadcastZaloListenerStatus(ensured.state);
+    return publicZaloListenerStatus(ensured.state);
+  } catch (error) {
+    const failed = { ...state, ready: false, busy: false, lastError: error?.message || String(error) };
+    await storageSet(STREAL_ZALO_LISTENER_KEY, failed);
+    await broadcastZaloListenerStatus(failed);
+    return { ...publicZaloListenerStatus(failed), error: failed.lastError };
+  }
+}
+
+async function stopZaloListener() {
+  const previous = await getZaloListenerState();
+  const stopped = { ...defaultZaloListenerState(), processedCount: previous.processedCount || 0 };
+  await storageSet(STREAL_ZALO_LISTENER_KEY, stopped);
+  if (previous.tabId) {
+    await sendTabMessage(previous.tabId, { type: 'STREAL_ZALO_LISTENER_ENABLE', enabled: false }).catch(() => null);
+    if (previous.dedicated) {
+      try { await chrome.tabs.remove(previous.tabId); } catch {}
+    }
+  }
+  await broadcastZaloListenerStatus(stopped);
+  return publicZaloListenerStatus(stopped);
+}
+
+async function getZaloListenerStatus({ heal = true } = {}) {
+  let state = await getZaloListenerState();
+  if (!state.enabled) return publicZaloListenerStatus(state);
+  try {
+    const ensured = await ensureZaloListenerTab(state, heal);
+    state = ensured.state;
+    if (!ensured.tab) {
+      state = { ...state, ready: false, lastError: 'Tab Zalo Listener đang đóng.' };
+      await storageSet(STREAL_ZALO_LISTENER_KEY, state);
+    }
+  } catch (error) {
+    state = { ...state, ready: false, busy: false, lastError: error?.message || String(error) };
+    await storageSet(STREAL_ZALO_LISTENER_KEY, state);
+  }
+  return publicZaloListenerStatus(state);
+}
+
+async function handleZaloListenerRequest(message) {
+  const action = String(message?.action || 'status').toLowerCase();
+  if (action === 'start') return startZaloListener();
+  if (action === 'stop') return stopZaloListener();
+  return getZaloListenerStatus();
+}
+
 async function findOpenMessengerTab() {
   const patterns = [
     'https://www.messenger.com/*',
@@ -411,10 +604,19 @@ async function collectZaloThread(request, sender) {
       }
       return { ok: false, error: 'Hội thoại Zalo đã thay đổi sau khi kiểm tra quyền. Hãy giữ nguyên hội thoại rồi đồng bộ lại.' };
     }
+    const collectedMessages = Array.isArray(result.messages) ? result.messages : [];
+    const latestCollected = collectedMessages[collectedMessages.length - 1] || {};
+    const explicitTriggerId = String(request?.payload?.trigger_message_id || '');
+    const shouldSuggest = automatic && (
+      Boolean(explicitTriggerId)
+      || latestCollected.direction === 'incoming'
+      || latestCollected.sender_type === 'customer'
+    );
     const savePayload = automatic ? {
       ...result,
-      auto_detected: true,
-      trigger_message_id: String(request?.payload?.trigger_message_id || ''),
+      auto_detected: shouldSuggest,
+      trigger_message_key: String(request?.payload?.trigger_message_key || ''),
+      trigger_message_id: explicitTriggerId,
       trigger_text: String(request?.payload?.trigger_text || ''),
     } : result;
     const saved = await saveZaloThread(savePayload, sender?.tab?.id);
@@ -473,6 +675,46 @@ async function enqueueAutomaticZaloSync(message, sender) {
   } finally {
     state.running = false;
     if (!state.queued) zaloAutoSyncQueues.delete(tabId);
+  }
+}
+
+async function handleZaloListenerThreadReady(message, sender) {
+  const tabId = sender?.tab?.id;
+  let state = await getZaloListenerState();
+  if (!state.enabled || !Number.isInteger(tabId) || state.tabId !== tabId) {
+    return { ok: false, error: 'Tin nhắn không đến từ tab Zalo Listener đang hoạt động.' };
+  }
+  state = {
+    ...state,
+    ready: true,
+    busy: true,
+    currentConversation: String(message?.payload?.conversationTitle || ''),
+    lastError: '',
+  };
+  await storageSet(STREAL_ZALO_LISTENER_KEY, state);
+  await broadcastZaloListenerStatus(state);
+  try {
+    const result = await enqueueAutomaticZaloSync(message, sender);
+    state = {
+      ...state,
+      busy: false,
+      processedCount: Number(state.processedCount || 0) + (result?.ok ? 1 : 0),
+      lastActivityAt: new Date().toISOString(),
+      lastError: result?.ok ? '' : String(result?.error || result?.warning || 'Không đồng bộ được hội thoại Zalo mới.'),
+    };
+    await storageSet(STREAL_ZALO_LISTENER_KEY, state);
+    await broadcastZaloListenerStatus(state);
+    return result;
+  } catch (error) {
+    state = {
+      ...state,
+      busy: false,
+      lastActivityAt: new Date().toISOString(),
+      lastError: error?.message || String(error),
+    };
+    await storageSet(STREAL_ZALO_LISTENER_KEY, state);
+    await broadcastZaloListenerStatus(state);
+    return { ok: false, error: state.lastError };
   }
 }
 
@@ -1882,6 +2124,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;
   }
+  if (message?.type === 'STREAL_EXTENSION_ZALO_LISTENER') {
+    handleZaloListenerRequest(message)
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+  if (message?.type === 'STREAL_ZALO_LISTENER_THREAD_READY') {
+    handleZaloListenerThreadReady(message, sender)
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
   if (message?.type === 'STREAL_ZALO_INCOMING_MESSAGE_DETECTED') {
     enqueueAutomaticZaloSync(message, sender)
       .then((response) => sendResponse(response))
@@ -1959,5 +2213,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     .then((response) => sendResponse(response))
     .catch((error) => sendResponse({ ok: false, final: true, error: error?.message || String(error) }));
   return true;
+});
+
+async function restoreZaloListener() {
+  const state = await getZaloListenerState();
+  if (!state.enabled) return;
+  await getZaloListenerStatus({ heal: true });
+  await broadcastZaloListenerStatus(await getZaloListenerState());
+}
+
+chrome.runtime.onStartup.addListener(() => {
+  void restoreZaloListener();
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  void restoreZaloListener();
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void (async () => {
+    const state = await getZaloListenerState();
+    if (!state.enabled || state.tabId !== tabId) return;
+    const missing = {
+      ...state,
+      tabId: null,
+      ready: false,
+      busy: false,
+      lastError: 'Tab Zalo Listener vừa đóng, extension đang mở lại.',
+    };
+    await storageSet(STREAL_ZALO_LISTENER_KEY, missing);
+    await broadcastZaloListenerStatus(missing);
+    setTimeout(() => void restoreZaloListener(), 1200);
+  })();
 });
 

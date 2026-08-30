@@ -10,7 +10,8 @@
 
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === 'STREAL_FACEBOOK_GROUP_QUEUE_PROGRESS'
-      || message?.type === 'STREAL_ZALO_AI_SUGGESTION_READY') {
+      || message?.type === 'STREAL_ZALO_AI_SUGGESTION_READY'
+      || message?.type === 'STREAL_ZALO_LISTENER_STATUS_UPDATE') {
       postToPage(message);
     }
     return false;
@@ -266,6 +267,33 @@
             type: 'STREAL_ZALO_SYNC_RESPONSE',
             requestId: data.requestId,
             ...(response || { ok: false, error: 'Extension không đồng bộ được Zalo' }),
+          });
+        },
+      );
+      return;
+    }
+
+    if (data.type === 'STREAL_ZALO_LISTENER_REQUEST') {
+      chrome.runtime.sendMessage(
+        {
+          type: 'STREAL_EXTENSION_ZALO_LISTENER',
+          requestId: data.requestId,
+          action: data.action || 'status',
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            postToPage({
+              type: 'STREAL_ZALO_LISTENER_RESPONSE',
+              requestId: data.requestId,
+              ok: false,
+              error: chrome.runtime.lastError.message || 'Extension không phản hồi',
+            });
+            return;
+          }
+          postToPage({
+            type: 'STREAL_ZALO_LISTENER_RESPONSE',
+            requestId: data.requestId,
+            ...(response || { ok: false, error: 'Extension không điều khiển được Zalo Listener' }),
           });
         },
       );
