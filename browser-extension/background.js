@@ -829,20 +829,26 @@ function getTikTokCookies() {
 
 function getFacebookCookies() {
   return new Promise((resolve) => {
-    chrome.cookies.getAll({ domain: '.facebook.com' }, (cookies) => {
+    chrome.cookies.getAll({ url: 'https://www.facebook.com/' }, (cookies) => {
       if (chrome.runtime.lastError) {
         resolve({ ok: false, cookie: '', c_user: '', error: chrome.runtime.lastError.message });
         return;
       }
       const rows = Array.isArray(cookies) ? cookies : [];
-      const cookie = rows.map((item) => `${item.name}=${item.value}`).join('; ');
-      const cUser = rows.find((item) => item.name === 'c_user')?.value || '';
+      const priority = (item) => (String(item.domain || '').startsWith('.facebook.com') ? 0 : 1) + (item.path === '/' ? 0 : 1);
+      const byName = new Map();
+      rows.sort((left, right) => priority(left) - priority(right)).forEach((item) => {
+        if (item?.name && !byName.has(item.name)) byName.set(item.name, item);
+      });
+      const uniqueRows = [...byName.values()];
+      const cookie = uniqueRows.map((item) => `${item.name}=${item.value}`).join('; ');
+      const cUser = uniqueRows.find((item) => item.name === 'c_user')?.value || '';
       if (!cookie || !cUser) {
         resolve({
           ok: false,
           cookie: '',
           c_user: '',
-          error: 'Chrome chua dang nhap Facebook hoac extension chua du quyen doc cookie facebook.com.',
+          error: 'Không thấy cookie c_user. Hãy đăng nhập Facebook trong cùng hồ sơ Chrome rồi thử lại.',
         });
         return;
       }
@@ -2012,6 +2018,85 @@ async function collectFacebookPostData(request, sender) {
   }
 }
 
+async function collectFacebookGroupFeeds(request, sender) {
+  const payload = request.payload || {};
+  const groups = (Array.isArray(payload.groups) ? payload.groups : [])
+    .map((item) => ({ id: String(item?.id || '').trim(), name: String(item?.name || '').trim() }))
+    .filter((item) => item.id)
+    .slice(0, 10);
+  if (!groups.length) return { ok: false, posts: [], report: [], error: 'Chưa chọn Group để quét.' };
+
+  const limit = Math.max(1, Math.min(Number(payload.limit) || 10, 50));
+  const collected = [];
+  const report = [];
+  try {
+    for (const group of groups) {
+      let tab = null;
+      try {
+        tab = await chrome.tabs.create({
+          url: `https://www.facebook.com/groups/${encodeURIComponent(group.id)}/?sorting_setting=CHRONOLOGICAL`,
+          active: true,
+        });
+        await waitForTabLoaded(tab.id, 45000);
+        await sleep(1600);
+        let result = null;
+        for (let attempt = 0; attempt < 24; attempt += 1) {
+          result = await sendTabMessage(tab.id, {
+            type: 'STREAL_FACEBOOK_COLLECT_GROUP_FEED',
+            payload: { group_id: group.id, limit },
+          });
+          if (result?.ok || result?.final) break;
+          await sleep(400);
+        }
+        const posts = Array.isArray(result?.posts) ? result.posts : [];
+        posts.forEach((post) => {
+          post._group_id = group.id;
+          post._group_name = group.name || group.id;
+          post._source = 'facebook_chrome_dom';
+          collected.push(post);
+        });
+        report.push({
+          group_id: group.id,
+          target_id: group.id,
+          group_name: group.name || group.id,
+          target_type: 'group',
+          source: 'facebook_chrome_dom',
+          ok: Boolean(result?.ok),
+          count: posts.length,
+          error: result?.error || '',
+        });
+      } catch (error) {
+        report.push({
+          group_id: group.id,
+          target_id: group.id,
+          group_name: group.name || group.id,
+          target_type: 'group',
+          source: 'facebook_chrome_dom',
+          ok: false,
+          count: 0,
+          error: error?.message || String(error),
+        });
+      } finally {
+        if (tab?.id) {
+          try { await chrome.tabs.remove(tab.id); } catch {}
+        }
+      }
+    }
+  } finally {
+    if (sender?.tab?.id) {
+      try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch {}
+    }
+  }
+  collected.sort((left, right) => String(right.created_time || '').localeCompare(String(left.created_time || '')));
+  return {
+    ok: collected.length > 0,
+    posts: collected,
+    report,
+    source: 'facebook_chrome_dom',
+    error: collected.length ? '' : (report.find((item) => item.error)?.error || 'Chrome không lấy được bài nào từ các Group đã chọn.'),
+  };
+}
+
 async function handleFacebookQueueEvent(message, sender) {
   const queue = await storageGet(FACEBOOK_QUEUE_STORAGE_KEY);
   if (!queue || queue.requestId !== message.requestId) return { ok: false, error: 'Khong tim thay hang doi Facebook.' };
@@ -2176,6 +2261,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     collectFacebookPostData(message, sender)
       .then((response) => sendResponse(response))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+  if (message?.type === 'STREAL_EXTENSION_COLLECT_FACEBOOK_GROUP_FEEDS') {
+    collectFacebookGroupFeeds(message, sender)
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ ok: false, posts: [], report: [], error: error?.message || String(error) }));
     return true;
   }
   if (message?.type === 'STREAL_FACEBOOK_GROUP_QUEUE_EVENT') {

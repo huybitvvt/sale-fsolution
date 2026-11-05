@@ -574,6 +574,9 @@ export function MarketingPipelinePanel({
   const [historyToDate, setHistoryToDate] = useState('');
   const [historyExporting, setHistoryExporting] = useState(false);
   const [historyExportError, setHistoryExportError] = useState('');
+  const [facebookImportPageId, setFacebookImportPageId] = useState('');
+  const [syncingFacebookPages, setSyncingFacebookPages] = useState(false);
+  const [importingFacebookPosts, setImportingFacebookPosts] = useState(false);
   const assistedQueueRequestRef = useRef('');
   const assistedQueuePayloadRef = useRef<{ requestId: string; title: string; content: string; hashtags: string; mediaUrls: string[]; targets: PublishTarget[] } | null>(null);
   const localFacebookHistoryRecoveryRef = useRef<Set<string>>(new Set());
@@ -597,6 +600,16 @@ export function MarketingPipelinePanel({
   useEffect(() => {
     void loadFacebookHistory();
   }, [data.posts]);
+
+  useEffect(() => {
+    if (!pages.length) {
+      setFacebookImportPageId('');
+      return;
+    }
+    setFacebookImportPageId((current) => (
+      pages.some((page) => page.id === current) ? current : pages[0].id
+    ));
+  }, [pages]);
 
   useEffect(() => {
     const refreshHistory = () => {
@@ -633,7 +646,13 @@ export function MarketingPipelinePanel({
 
   function upsertFacebookPosts(posts: FacebookPublishedPost[]) {
     if (!posts.length) return;
-    const normalized = posts.map(normalizeFacebookPublishedPost);
+    const normalizedById = new Map(
+      posts.map((post) => {
+        const item = normalizeFacebookPublishedPost(post);
+        return [item.id, item] as const;
+      }),
+    );
+    const normalized = [...normalizedById.values()];
     const savedIds = new Set(normalized.map((item) => item.id));
     setFacebookPosts((prev) => [...normalized, ...prev.filter((item) => !savedIds.has(item.id))]);
   }
@@ -1011,6 +1030,58 @@ export function MarketingPipelinePanel({
       setLocalStatus(`Lỗi kết nối khi tải nhóm/Page từ DB: ${formatFetchError(error)}`);
     } finally {
       setLoadingTargets(false);
+    }
+  }
+
+  async function syncFacebookPagesFromActiveLogin() {
+    if (syncingFacebookPages) return;
+    setSyncingFacebookPages(true);
+    setLocalStatus('Đang lấy các Page từ cookie Facebook đang lưu...');
+    try {
+      const response = await api('/api/channels/sync-facebook-pages', { method: 'POST', timeoutMs: 60000 });
+      const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không lấy được Facebook Page');
+      const syncedPages = safeList<{ target_id?: string; channel_name?: string; channel_type?: string; platform?: string }>(payload.channels)
+        .filter((item) => String(item.platform || '').toLowerCase() === 'facebook'
+          && ['page', 'fanpage'].includes(String(item.channel_type || '').toLowerCase())
+          && item.target_id);
+      await loadTargets();
+      if (syncedPages.length) {
+        setFacebookImportPageId((current) => current || String(syncedPages[0].target_id));
+      }
+      setLocalStatus(`Đã đồng bộ ${syncedPages.length} Facebook Page từ phiên đăng nhập hiện có.${payload.warning ? ` ${payload.warning}` : ''}`);
+    } catch (error) {
+      setLocalStatus(`Không kết nối được Facebook: ${formatFetchError(error)}`);
+    } finally {
+      setSyncingFacebookPages(false);
+    }
+  }
+
+  async function importFacebookPagePosts() {
+    if (!facebookImportPageId || importingFacebookPosts) return;
+    setImportingFacebookPosts(true);
+    setLocalStatus('Đang kéo 30 bài gần nhất và lưu vào lịch sử Facebook...');
+    try {
+      const response = await api('/api/facebook-pages/posts/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ page_id: facebookImportPageId, limit: 30 }),
+        timeoutMs: 90000,
+      });
+      const payload = await response.json().catch(() => ({ ok: false, error: `Server lỗi ${response.status}` }));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Không kéo được bài từ Facebook');
+      const posts = safeList<FacebookPublishedPost>(payload.posts);
+      upsertFacebookPosts(posts);
+      const commentsByPost = payload.comments_by_post && typeof payload.comments_by_post === 'object'
+        ? payload.comments_by_post as Record<string, StoredPostComment[]>
+        : {};
+      setFacebookComments((previous) => ({ ...previous, ...commentsByPost }));
+      if (posts[0]?.id) setExpandedComments(posts[0].id);
+      setLocalStatus(`Đã kéo ${Number(payload.count || posts.length)} bài, ${Number(payload.comment_count || 0)} bình luận và nhận diện SĐT trong ${Number(payload.phone_comment_count || 0)} bình luận từ ${payload.page?.name || 'Facebook Page'}.${payload.warning ? ` ${payload.warning}` : ''}`);
+    } catch (error) {
+      setLocalStatus(`Không kéo được bài Facebook: ${formatFetchError(error)}`);
+    } finally {
+      setImportingFacebookPosts(false);
     }
   }
 
@@ -2044,7 +2115,8 @@ export function MarketingPipelinePanel({
             <thead><tr><th>Người comment</th><th>Nội dung</th><th>Facebook</th><th>SĐT</th><th>Nguồn SĐT</th><th>Trạng thái</th><th>Hành động</th></tr></thead>
             <tbody>
               {comments.length ? comments.map((comment, index) => {
-                const replyKey = comment.comment_id || `${comment.author_name || 'comment'}-${comment.created_time || index}`;
+                const commentIdentity = comment.comment_id || `${comment.author_name || 'comment'}-${comment.created_time || index}`;
+                const replyKey = `${commentIdentity}-${index}`;
                 return (
                   <tr key={replyKey}>
                     <td>{comment.author_name || 'Ẩn danh'}</td>
@@ -2380,6 +2452,32 @@ export function MarketingPipelinePanel({
           </p>
         </div>
         <div className="module-actions">
+          <button
+            type="button"
+            className="btn-cancel"
+            disabled={syncingFacebookPages || busy}
+            onClick={() => void syncFacebookPagesFromActiveLogin()}
+          >
+            {syncingFacebookPages ? 'Đang kết nối...' : 'Lấy Page Facebook'}
+          </button>
+          <select
+            className="facebook-import-page-select"
+            aria-label="Chọn Facebook Page để kéo bài"
+            value={facebookImportPageId}
+            disabled={!pages.length || importingFacebookPosts}
+            onChange={(event) => setFacebookImportPageId(event.target.value)}
+          >
+            <option value="">Chọn Facebook Page</option>
+            {pages.map((page) => <option key={page.id} value={page.id}>{page.name || page.id}</option>)}
+          </select>
+          <button
+            type="button"
+            className="btn-submit"
+            disabled={!facebookImportPageId || importingFacebookPosts || busy}
+            onClick={() => void importFacebookPagePosts()}
+          >
+            {importingFacebookPosts ? 'Đang kéo bài + SĐT...' : 'Kéo bài + SĐT'}
+          </button>
           <button type="button" className="btn-cancel" disabled={loadingTargets || busy} onClick={() => void loadTargets()}>
             {loadingTargets ? 'Đang tải...' : 'Tải nhóm/Page'}
           </button>

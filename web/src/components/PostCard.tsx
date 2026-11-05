@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { catBg, catFg } from '@/lib/constants';
 import { LeadBlock } from '@/components/LeadBlock';
@@ -109,7 +109,7 @@ export function PostCard({
   const pid = postShortId(post);
   const gid = post._group_id || '';
   const pageIdFromPost = post._page_id || '';
-  const gName = gid && groupNames[gid] ? groupNames[gid] : gid;
+  const gName = gid && groupNames[gid] ? groupNames[gid] : post._group_name || gid;
   const pageName = post._page_name || pageIdFromPost;
 
   // ── Bài viết chuẩn: structured fields ──
@@ -143,13 +143,32 @@ export function PostCard({
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [replySendingById, setReplySendingById] = useState<Record<string, boolean>>({});
   const [replyStatusById, setReplyStatusById] = useState<Record<string, string>>({});
+  const [replyImageUrls, setReplyImageUrls] = useState<Record<string, string>>({});
+  const [replyImageUploadingById, setReplyImageUploadingById] = useState<Record<string, boolean>>({});
+  const cardRef = useRef<HTMLDivElement>(null);
   const postLeads = leads || [];
+  const postPhones = [...new Set([
+    ...(post.phones || []),
+    ...(post.phone_matches || []).map((item) => item.phone).filter(Boolean),
+  ])];
   const visibleCommentSummary =
     commentSummary &&
     (Boolean(commentSummary.summary?.trim()) ||
       !((commentSummary.fetched_comment_count ?? 0) === 0 && cCount > 0))
       ? commentSummary
       : undefined;
+
+  useEffect(() => {
+    function applySelectedCommentTemplate(event: Event) {
+      const detail = (event as CustomEvent<{ text?: string }>).detail;
+      const activeComposer = cardRef.current?.querySelector<HTMLTextAreaElement>('[data-comment-reply-active="true"]');
+      const activeKey = activeComposer?.dataset.commentReplyKey;
+      if (!activeComposer || !activeKey || !detail?.text) return;
+      setReplyDrafts((prev) => ({ ...prev, [activeKey]: detail.text || '' }));
+    }
+    window.addEventListener('comment-template-selected', applySelectedCommentTemplate);
+    return () => window.removeEventListener('comment-template-selected', applySelectedCommentTemplate);
+  }, []);
 
   const atts = (post.attachments?.data || []).map((a, i) => {
     if (a.type === 'photo') {
@@ -334,12 +353,13 @@ export function PostCard({
   async function sendCommentReply(comment: FbComment, key: string, depth = 0) {
     const commentId = comment.id || '';
     const message = (replyDrafts[key] || '').trim();
+    const imageUrl = (replyImageUrls[key] || '').trim();
     if (!commentId) {
       setReplyStatusById((prev) => ({ ...prev, [key]: 'Không có ID comment để trả lời.' }));
       return;
     }
-    if (!message) {
-      setReplyStatusById((prev) => ({ ...prev, [key]: 'Nhập nội dung trả lời.' }));
+    if (!message && !imageUrl) {
+      setReplyStatusById((prev) => ({ ...prev, [key]: 'Nhập nội dung hoặc tải ảnh lên.' }));
       return;
     }
     setReplySendingById((prev) => ({ ...prev, [key]: true }));
@@ -354,6 +374,7 @@ export function PostCard({
           group_id: gid || pageIdFromPost,
           post_url: post.permalink_url || '',
           message,
+          image_url: imageUrl,
           page_id: pageIdFromPost || pageId,
           source: pageIdFromPost ? 'facebook_page' : 'facebook',
           depth,
@@ -371,11 +392,14 @@ export function PostCard({
         id: d.comment_id || `local-reply-${Date.now()}`,
         from: { name: 'Bạn' },
         message,
+        image_url: imageUrl,
         created_time: new Date().toISOString(),
       };
       setEngagementComments((prev) => appendReply(prev, commentId, reply));
       setReplyDrafts((prev) => ({ ...prev, [key]: '' }));
+      setReplyImageUrls((prev) => ({ ...prev, [key]: '' }));
       setReplyOpenById((prev) => ({ ...prev, [key]: false }));
+      cardRef.current?.querySelector('[data-comment-reply-active="true"]')?.removeAttribute('data-comment-reply-active');
       setReplyStatusById((prev) => ({ ...prev, [key]: d.warning ? `Đã gửi. ${d.warning}` : 'Đã gửi trả lời.' }));
       await onCommentSent?.(post.id);
     } catch {
@@ -388,12 +412,44 @@ export function PostCard({
     }
   }
 
+  async function uploadReplyImage(file: File | undefined, key: string) {
+    if (!file) return;
+    setReplyImageUploadingById((prev) => ({ ...prev, [key]: true }));
+    setReplyStatusById((prev) => ({ ...prev, [key]: 'Đang tải ảnh lên...' }));
+    try {
+      const fd = new FormData();
+      fd.append('image', file);
+      const r = await api('/api/uploads/comment-image', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok || !d.ok || !d.image_url) {
+        setReplyStatusById((prev) => ({ ...prev, [key]: d.error || 'Tải ảnh lên thất bại.' }));
+        return;
+      }
+      setReplyImageUrls((prev) => ({ ...prev, [key]: d.image_url }));
+      setReplyStatusById((prev) => ({ ...prev, [key]: 'Đã tải ảnh lên. Ảnh sẽ được gửi cùng câu trả lời.' }));
+    } catch {
+      setReplyStatusById((prev) => ({ ...prev, [key]: 'Lỗi kết nối khi tải ảnh lên.' }));
+    } finally {
+      setReplyImageUploadingById((prev) => ({ ...prev, [key]: false }));
+      window.setTimeout(() => setReplyStatusById((prev) => ({ ...prev, [key]: '' })), 5000);
+    }
+  }
+
+  function activateReplyComposer(textarea: HTMLTextAreaElement, key: string) {
+    document.querySelectorAll('[data-comment-reply-active="true"]').forEach((node) => {
+      node.removeAttribute('data-comment-reply-active');
+    });
+    textarea.setAttribute('data-comment-reply-active', 'true');
+    textarea.dataset.commentReplyKey = key;
+  }
+
   function renderFacebookComment(comment: FbComment, index: number, depth = 0) {
     const name = comment.from?.name || 'Ẩn danh';
     const key = comment.id || `cmt-${depth}-${index}`;
     const replies = comment.comments?.data || [];
     const isReplyOpen = Boolean(replyOpenById[key]);
     const isSendingReply = Boolean(replySendingById[key]);
+    const isUploadingReplyImage = Boolean(replyImageUploadingById[key]);
     return (
       <div key={key} className={`comment${depth ? ' comment-reply' : ''}`}>
         <div className="comment-av">{initials(name)}</div>
@@ -401,6 +457,7 @@ export function PostCard({
           <div className="comment-bubble">
             <div className="comment-name">{name}</div>
             <div className="comment-msg">{comment.message || '[Không có nội dung chữ]'}</div>
+            {comment.image_url ? <img className="comment-reply-image" src={comment.image_url} alt="Ảnh đính kèm bình luận" loading="lazy" /> : null}
             {comment.created_time ? (
               <small style={{ color: '#64748b', fontSize: 11 }}>{timeAgo(comment.created_time)}</small>
             ) : null}
@@ -419,13 +476,33 @@ export function PostCard({
           {isReplyOpen ? (
             <div className="comment-inline-reply">
               <textarea
+                data-comment-reply-key={key}
                 value={replyDrafts[key] || ''}
                 onChange={(e) => setReplyDrafts((prev) => ({ ...prev, [key]: e.target.value }))}
+                onFocus={(e) => activateReplyComposer(e.currentTarget, key)}
                 placeholder={`Trả lời ${name}...`}
                 rows={2}
               />
+              {replyImageUrls[key] ? (
+                <div className="comment-reply-image-preview">
+                  <img src={replyImageUrls[key]} alt="Ảnh sẽ gửi kèm" />
+                  <button type="button" onClick={() => setReplyImageUrls((prev) => ({ ...prev, [key]: '' }))}>Bỏ ảnh</button>
+                </div>
+              ) : null}
               <div className="comment-inline-reply-actions">
-                <button type="button" onClick={() => void sendCommentReply(comment, key, depth)} disabled={isSendingReply}>
+                <label className="comment-reply-upload">
+                  {isUploadingReplyImage ? 'Đang tải ảnh...' : 'Tải ảnh'}
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    disabled={isUploadingReplyImage || isSendingReply}
+                    onChange={(e) => {
+                      void uploadReplyImage(e.currentTarget.files?.[0], key);
+                      e.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+                <button className="comment-reply-send" type="button" onClick={() => void sendCommentReply(comment, key, depth)} disabled={isSendingReply || isUploadingReplyImage}>
                   {isSendingReply ? 'Đang gửi...' : 'Gửi trả lời'}
                 </button>
                 <button type="button" onClick={() => setReplyOpenById((prev) => ({ ...prev, [key]: false }))}>
@@ -495,7 +572,7 @@ export function PostCard({
   }
 
   return (
-    <div className="card">
+    <div className="card" ref={cardRef}>
       <div className="card-header">
         <div className="avatar" style={{ background: avatarColor(authorName) }}>
           {initials(authorName)}
@@ -572,6 +649,23 @@ export function PostCard({
               Xem thêm ▾
             </span>
           ) : null}
+        </div>
+      ) : null}
+      {postPhones.length ? (
+        <div className="card-body" style={{ paddingTop: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <strong style={{ fontSize: 13, color: '#166534' }}>SĐT tìm thấy:</strong>
+            {postPhones.map((phone) => (
+              <a
+                key={`${post.id}-${phone}`}
+                href={`tel:${phone}`}
+                title={post.phone_matches?.filter((item) => item.phone === phone).map((item) => item.source === 'comment' ? `Bình luận: ${item.author_name || 'ẩn danh'}` : 'Nội dung bài').join('\n') || 'Nội dung bài'}
+                style={{ color: '#166534', background: '#dcfce7', borderRadius: 999, padding: '4px 9px', fontWeight: 700, fontSize: 13 }}
+              >
+                {phone}
+              </a>
+            ))}
+          </div>
         </div>
       ) : null}
       {mediaUrl ? (

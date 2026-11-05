@@ -6,6 +6,7 @@ export type FbComment = {
   message?: string;
   created_time?: string;
   attachment?: { type?: string };
+  image_url?: string;
   comments?: { data?: FbComment[]; summary?: { total_count?: number } };
 };
 
@@ -29,12 +30,16 @@ export type FbPost = {
   is_hidden?: boolean;
   group_id?: string;
   _group_id?: string;
+  _group_name?: string;
   _page_id?: string;
   _page_name?: string;
   _source?: string;
   reactions?: { summary?: { total_count?: number }; data?: FbReaction[] };
   shares?: { count?: number };
   comments?: { data?: FbComment[]; summary?: { total_count?: number } };
+  phones?: string[];
+  phone_count?: number;
+  phone_matches?: Array<{ phone: string; source?: 'post' | 'comment' | string; author_name?: string; message?: string }>;
   attachments?: { data?: FbAttachment[] };
 };
 
@@ -63,9 +68,11 @@ export type FacebookCookieContext = {
   active_cookie_id?: string;
   active_facebook_name?: string;
   active_facebook_user_id?: string;
+  active_cookie_present?: boolean;
   cookies?: StaffFacebookCookie[];
   message?: string;
   error?: string;
+  warning?: string;
 };
 
 export type StaffManagedGroup = {

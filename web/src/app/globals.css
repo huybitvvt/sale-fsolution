@@ -390,6 +390,19 @@ button, input, select, textarea { font-family: inherit; }
 }
 .module-head h2 { font-size: 22px; color: #111827; margin-top: 3px; }
 .module-actions { display: flex; gap: 8px; align-items: center; }
+.marketing-panel .module-actions { flex-wrap: wrap; justify-content: flex-end; }
+.facebook-import-page-select {
+  min-width: 190px;
+  max-width: 250px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
+  background: #fff;
+  color: #1f2937;
+  font: inherit;
+}
+.facebook-import-page-select:disabled { opacity: .55; }
 .table-icon-button {
   width: 36px;
   height: 36px;
@@ -2231,8 +2244,40 @@ button, input, select, textarea { font-family: inherit; }
   font-weight: 800;
   padding: 6px 11px;
 }
-.comment-inline-reply-actions button:first-child { background: #2563eb; border-color: #2563eb; color: #fff; }
+.comment-inline-reply-actions button.comment-reply-send { background: #2563eb; border-color: #2563eb; color: #fff; }
 .comment-inline-reply-actions button:disabled { opacity: .55; cursor: not-allowed; }
+.comment-inline-reply-actions .comment-reply-upload {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #dbe3ef;
+  border-radius: 999px;
+  background: #fff;
+  color: #334155;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 6px 11px;
+}
+.comment-reply-upload input { display: none; }
+.comment-reply-image,
+.comment-reply-image-preview img {
+  display: block;
+  max-width: min(100%, 320px);
+  max-height: 240px;
+  margin-top: 7px;
+  border-radius: 10px;
+  object-fit: contain;
+}
+.comment-reply-image-preview { display: flex; align-items: flex-end; gap: 8px; }
+.comment-reply-image-preview button {
+  border: 0;
+  background: transparent;
+  color: #b91c1c;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
 .comment-replies { margin-top: 4px; padding-left: 12px; border-left: 2px solid #e5eaf3; }
 
 .card-footer { padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
@@ -2884,6 +2929,11 @@ button, input, select, textarea { font-family: inherit; }
 }
 
 .seeding-studio { display: grid; gap: 16px; }
+@media (max-width: 1100px) {
+  .marketing-panel .module-head { align-items: flex-start; flex-direction: column; }
+  .marketing-panel .module-actions { width: 100%; justify-content: flex-start; }
+  .facebook-import-page-select { flex: 1 1 190px; }
+}
 .seeding-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;

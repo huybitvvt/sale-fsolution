@@ -10,6 +10,8 @@ Extension này dùng để gửi bình luận TikTok, lấy cookie Facebook khi 
 4. Chọn thư mục `browser-extension` trong source dự án.
 5. Đăng nhập TikTok/Facebook trên Chrome.
 6. Mở web Seeding Fsolution:
+   - Vào `Quản lý`, chọn Group cần đọc rồi bấm `Quét bài Group`. Extension mở từng Group trong phiên Chrome hiện tại, lấy các bài đang hiển thị và tìm SĐT trong bài/bình luận đã tải.
+   - Trong thẻ bài viết, bấm `Khám phá bình luận` để extension mở bài và tải thêm bình luận; số điện thoại trong bình luận được lưu vào Lead.
    - Vào `Lead` hoặc `TikTok CMT`, chọn video và bấm `Gửi CMT TikTok`.
    - Vào `Quản lý Cooki` -> thêm/sửa nhân sự -> bấm `Lấy từ Chrome` để lấy cookie Facebook.
    - Vào `TikTok CMT` -> `Một kênh`, dán `@username` hoặc link kênh. Extension sẽ mở kênh TikTok trong Chrome, cuộn trang để gom link video thật, rồi web mới đọc comment theo từng video.
@@ -21,7 +23,7 @@ Khi source có thay đổi extension:
 
 1. Mở `chrome://extensions`.
 2. Bấm nút reload trên `Seeding Fsolution Bridge` hoặc bấm `Update`.
-3. Đảm bảo version hiện tại là `0.1.50` trở lên.
+3. Đảm bảo version hiện tại là `0.1.75` trở lên.
 4. Tải lại web Seeding Fsolution trước khi test lại `TikTok CMT`.
 
 ## Lưu ý vận hành

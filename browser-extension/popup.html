@@ -2,36 +2,36 @@
 <html lang="vi">
   <head>
     <meta charset="utf-8" />
-    <style>
-      body {
-        width: 280px;
-        margin: 0;
-        padding: 16px;
-        font-family: Arial, sans-serif;
-        color: #0f172a;
-      }
-      h1 {
-        margin: 0 0 8px;
-        font-size: 16px;
-      }
-      p {
-        margin: 0 0 10px;
-        color: #475569;
-        line-height: 1.45;
-      }
-      .badge {
-        display: inline-flex;
-        padding: 6px 10px;
-        border-radius: 999px;
-        background: #dcfce7;
-        color: #047857;
-        font-weight: 700;
-      }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cookie manager</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="popup.js" defer></script>
   </head>
   <body>
-    <h1>Seeding Fsolution Bridge</h1>
-    <p>Extension đang sẵn sàng. Đăng nhập TikTok/Facebook trên Chrome, sau đó thao tác từ Seeding Fsolution.</p>
-    <span class="badge">Đã bật</span>
+    <main class="popup">
+      <header class="header">
+        <div class="brand-mark" aria-hidden="true">C</div>
+        <div class="heading">
+          <h1>Cookie Manager</h1>
+          <p id="domain-label">Đang đọc tab hiện tại…</p>
+        </div>
+        <button id="refresh-button" class="icon-button" type="button" title="Tải lại cookie" aria-label="Tải lại cookie">↻</button>
+      </header>
+
+      <div class="toolbar">
+        <span id="cookie-count" class="count">0 cookie</span>
+        <span class="hint">JSON array</span>
+      </div>
+
+      <label class="sr-only" for="cookie-text">Cookie JSON</label>
+      <textarea id="cookie-text" spellcheck="false" aria-describedby="status-message" placeholder="Cookie của domain hiện tại sẽ hiển thị ở đây. Bạn cũng có thể dán JSON array để nhập."></textarea>
+
+      <div class="actions">
+        <button id="copy-button" class="button button-blue" type="button">Copy Cookie</button>
+        <button id="import-button" class="button button-red" type="button">Nhập Cookie</button>
+      </div>
+
+      <p id="status-message" class="status" role="status" aria-live="polite">Cookie chỉ được đọc hoặc ghi cho domain của tab hiện tại.</p>
+    </main>
   </body>
 </html>

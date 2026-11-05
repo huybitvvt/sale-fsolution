@@ -922,7 +922,7 @@ def _normalize_facebook_post_record(row: dict) -> dict:
     return item
 
 
-def _save_facebook_post(row: dict) -> tuple[dict, str]:
+def _save_facebook_post(row: dict, *, preserve_existing: bool = False) -> tuple[dict, str]:
     """Upsert one publish target. Supabase is canonical; JSON/app_kv is fallback."""
     global _facebook_posts
     now = _utc_iso()
@@ -943,7 +943,8 @@ def _save_facebook_post(row: dict) -> tuple[dict, str]:
         item = _normalize_facebook_post_record(item)
         _facebook_posts = [old for old in _facebook_posts if str(old.get('external_key')) != item['external_key']]
         _facebook_posts.insert(0, item)
-        _facebook_posts = _facebook_posts[:1000]
+        if not preserve_existing:
+            _facebook_posts = _facebook_posts[:1000]
         _write_json(FACEBOOK_POSTS_FILE, _facebook_posts)
 
     warning = ''
@@ -970,7 +971,8 @@ def _save_facebook_post(row: dict) -> tuple[dict, str]:
                     with _facebook_posts_lock:
                         _facebook_posts = [old for old in _facebook_posts if str(old.get('external_key')) != item['external_key']]
                         _facebook_posts.insert(0, item)
-                        _facebook_posts = _facebook_posts[:1000]
+                        if not preserve_existing:
+                            _facebook_posts = _facebook_posts[:1000]
                         _write_json(FACEBOOK_POSTS_FILE, _facebook_posts)
         except Exception as exc:
             warning = str(exc)[:300]
@@ -4269,6 +4271,39 @@ def _extract_cookie_user(cookie: str) -> str:
     return match.group(1) if match else ''
 
 
+def _normalize_facebook_cookie_input(value) -> str:
+    """Accept a raw Cookie header or common browser-export JSON without dropping entries."""
+    raw = str(value or '').strip()
+    if not raw:
+        return ''
+    if raw.lower().startswith('cookie:'):
+        raw = raw.split(':', 1)[1].strip()
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+
+    if isinstance(parsed, dict) and isinstance(parsed.get('cookie'), str):
+        nested = parsed['cookie'].strip()
+        return nested.split(':', 1)[1].strip() if nested.lower().startswith('cookie:') else nested
+    if isinstance(parsed, dict) and isinstance(parsed.get('cookies'), list):
+        parsed = parsed['cookies']
+
+    pairs = []
+    if isinstance(parsed, list):
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('name') or '').strip()
+            if name and item.get('value') is not None:
+                pairs.append(f"{name}={item.get('value')}")
+    elif isinstance(parsed, dict):
+        for name, cookie_value in parsed.items():
+            if name not in {'ok', 'success', 'source'} and isinstance(cookie_value, (str, int, float)):
+                pairs.append(f'{name}={cookie_value}')
+    return '; '.join(pairs) if pairs else raw
+
+
 def _extract_cookie_value(cookie: str, name: str) -> str:
     match = re.search(rf'(?:^|;\s*){re.escape(name)}=([^;]+)', cookie or '')
     return match.group(1) if match else ''
@@ -5331,15 +5366,27 @@ def _facebook_cookie_context_payload(staff: dict, *, resolve_name: bool = False,
     active_name = active_item.get('facebook_name', '') or _cached_facebook_display_name(staff, active_item.get('facebook_user_id', ''))
     if _is_invalid_facebook_display_name(active_name):
         active_name = ''
+    active_cookie_raw = next(
+        (item for item in cookies if str(item.get('id') or '') == active_id),
+        cookies[0] if cookies else {},
+    )
+    active_cookie_present = bool(
+        str((active_cookie_raw or {}).get('cookie') or '').strip()
+        and active_item.get('facebook_user_id')
+    )
     payload = {
         'ok': True,
         'active_cookie_id': active_id,
         'active_facebook_name': active_name,
         'active_facebook_user_id': active_item.get('facebook_user_id', ''),
+        'active_cookie_present': active_cookie_present,
         'cookies': items,
     }
     if resolve_name and not active_name:
-        payload['error'] = 'Không đọc được tên Facebook. Cookie có thể hết hạn — lấy cookie mới từ Chrome.'
+        if active_cookie_present:
+            payload['warning'] = 'Đã nhận cookie Facebook nhưng chưa đọc được tên tài khoản.'
+        else:
+            payload['error'] = 'Chưa có cookie Facebook hợp lệ. Bấm «Lấy từ Chrome» để kết nối phiên đang đăng nhập.'
     return payload
 
 
@@ -6811,6 +6858,7 @@ def _public_comment_row(row: dict) -> dict:
         'author_name': row.get('author_name') or 'Ẩn danh',
         'message': row.get('message') or '',
         'attachment_type': row.get('attachment_type') or '',
+        'image_url': row.get('image_url') or raw.get('image_url') or '',
         'created_time': row.get('created_time'),
         'matched_keywords': row.get('matched_keywords') or [],
         'manual_tags': _comment_tag_assignments.get(cid) or row.get('manual_tags') or [],
@@ -8628,7 +8676,7 @@ def auth_setup():
     name = str(body.get('name') or '').strip()[:80]
     username = str(body.get('username') or '').strip().lower()[:60]
     password = str(body.get('password') or '')
-    cookie = str(body.get('cookie') or '').strip()
+    cookie = _normalize_facebook_cookie_input(body.get('cookie'))
     if not _setup_required():
         existing = next((item for item in _staff_accounts()
                          if item.get('enabled', True) and item.get('username') == username), None)
@@ -8646,7 +8694,7 @@ def auth_setup():
         return jsonify({'ok': False, 'error': 'Nhập đủ tên, tài khoản và mật khẩu'}), 400
     if len(password) < 6:
         return jsonify({'ok': False, 'error': 'Mật khẩu tối thiểu 6 ký tự'}), 400
-    if cookie and 'c_user=' not in cookie:
+    if cookie and not _extract_cookie_user(cookie):
         return jsonify({'ok': False, 'error': 'Cookie chưa có c_user, vui lòng kiểm tra lại'}), 400
 
     salt, digest = _hash_password(password)
@@ -9172,6 +9220,7 @@ def api_reply_post_comment():
     comment_id = str(body.get('comment_id') or '').strip()
     post_id = str(body.get('post_id') or '').strip()
     message = str(body.get('message') or body.get('text') or '').strip()
+    image_url = str(body.get('image_url') or '').strip()
     group_id = str(body.get('group_id') or DEFAULT_GROUP).strip()
     post_url = str(body.get('post_url') or body.get('comment_url') or '').strip()
     source = str(body.get('source') or '').strip().lower()
@@ -9181,8 +9230,8 @@ def api_reply_post_comment():
 
     if not comment_id:
         return jsonify({'ok': False, 'error': 'Thiếu comment_id để trả lời'}), 400
-    if not message:
-        return jsonify({'ok': False, 'error': 'Nhập nội dung trả lời'}), 400
+    if not message and not image_url:
+        return jsonify({'ok': False, 'error': 'Nhập nội dung hoặc tải ảnh lên để trả lời'}), 400
     if comment_id.startswith('tiktok_') or 'tiktok' in source:
         return jsonify({
             'ok': False,
@@ -9194,16 +9243,18 @@ def api_reply_post_comment():
     try:
         page_token = _page_token_from_cache(page_id) if page_id else None
         api_group_id = DEFAULT_GROUP if page_token else (group_id or DEFAULT_GROUP)
-        result = get_api(api_group_id).post_comment(comment_id, message, page_token)
+        result = get_api(api_group_id).post_comment(comment_id, message, page_token, image_url)
         if result and result.get('id'):
+            log_message = message or '[Bình luận bằng ảnh]'
             log = _record_comment_log(
                 post_id or comment_id,
                 group_id,
                 post_url,
-                message,
+                log_message,
                 page_id,
                 'success',
                 comment_id=result['id'],
+                image_url=image_url,
                 lead_context={
                     'platform': 'facebook',
                     'customer_name': body.get('customer_name') or body.get('author_name'),
@@ -9223,11 +9274,16 @@ def api_reply_post_comment():
                 'author_id': staff.get('id', ''),
                 'author_name': staff.get('name') or staff.get('username') or 'Nhân sự',
                 'message': message,
-                'attachment_type': '',
+                'attachment_type': 'photo' if image_url else '',
                 'created_time': now,
                 'matched_keywords': [],
                 'is_matched': False,
-                'raw_comment': {'outbound_reply': True, 'reply_to_comment_id': comment_id, 'publish_response': result},
+                'raw_comment': {
+                    'outbound_reply': True,
+                    'reply_to_comment_id': comment_id,
+                    'image_url': image_url,
+                    'publish_response': result,
+                },
                 'fetched_by_staff_id': staff.get('id', ''),
                 'fetched_by_staff_name': staff.get('name', ''),
                 'fetched_by_staff_username': staff.get('username', ''),
@@ -9250,14 +9306,14 @@ def api_reply_post_comment():
             return jsonify(payload)
 
         err = (result or {}).get('error', {}).get('message') or 'Facebook không nhận trả lời comment'
-        log = _record_comment_log(post_id or comment_id, group_id, post_url, message, page_id, 'failed', error_message=err)
+        log = _record_comment_log(post_id or comment_id, group_id, post_url, message or '[Bình luận bằng ảnh]', page_id, 'failed', error_message=err, image_url=image_url)
         payload = {'ok': False, 'error': err, 'log_storage': log.get('storage')}
         if log.get('storage_warning'):
             payload['warning'] = f"Đã lưu local, Supabase chưa ghi được: {log['storage_warning']}"
         return jsonify(payload), 502
     except Exception as e:
         err = str(e)
-        log = _record_comment_log(post_id or comment_id, group_id, post_url, message, page_id, 'failed', error_message=err)
+        log = _record_comment_log(post_id or comment_id, group_id, post_url, message or '[Bình luận bằng ảnh]', page_id, 'failed', error_message=err, image_url=image_url)
         payload = {'ok': False, 'error': err, 'log_storage': log.get('storage')}
         if log.get('storage_warning'):
             payload['warning'] = f"Đã lưu local, Supabase chưa ghi được: {log['storage_warning']}"
@@ -9615,6 +9671,185 @@ def fetch_facebook_post_comments():
         return jsonify(payload)
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/post-comments/dom-import', methods=['POST'])
+def import_facebook_dom_comments():
+    body = request.get_json(silent=True) or {}
+    post = body.get('post') if isinstance(body.get('post'), dict) else {}
+    comments = body.get('comments') if isinstance(body.get('comments'), list) else []
+    staff = _current_staff()
+    if not staff:
+        return jsonify({'ok': False, 'error': 'Chưa đăng nhập'}), 401
+    if not post.get('id') or not post.get('permalink_url'):
+        return jsonify({'ok': False, 'error': 'Bài viết thiếu ID hoặc link Facebook'}), 400
+    if len(comments) > 1000:
+        return jsonify({'ok': False, 'error': 'Tối đa 1000 bình luận mỗi bài'}), 400
+
+    group_id = str(post.get('_group_id') or post.get('group_id') or '').strip()
+    page_id = str(post.get('_page_id') or '').strip()
+    if page_id:
+        _refresh_managed_channels_from_supabase()
+        visible_page_ids = {
+            str(item.get('target_id') or '').strip()
+            for item in _filter_managed_channels_for_staff(_managed_channels)
+            if str(item.get('platform') or '').lower() == 'facebook'
+            and str(item.get('channel_type') or '').lower() in ('page', 'fanpage', 'trang')
+        }
+        if page_id not in visible_page_ids:
+            return jsonify({'ok': False, 'error': 'Bạn không được phân quyền đọc Page này'}), 403
+    else:
+        allowed_groups = set(_filter_group_ids_for_staff([group_id])) if group_id else set()
+        if not group_id or group_id not in allowed_groups:
+            return jsonify({'ok': False, 'error': 'Bạn không được phân quyền đọc Group này'}), 403
+
+    keywords = _normalize_keywords(body.get('keywords') or [])
+    normalized_comments = []
+    for index, item in enumerate(comments):
+        if not isinstance(item, dict):
+            continue
+        message = str(item.get('message') or '').strip()
+        if not message:
+            continue
+        comment_id = str(item.get('comment_id') or item.get('id') or '').strip()
+        if not comment_id:
+            seed = f"{post.get('id')}|{item.get('author_name')}|{item.get('created_time')}|{message}"
+            comment_id = 'dom_' + hashlib.sha1(seed.encode('utf-8', errors='ignore')).hexdigest()[:24]
+        normalized_comments.append({
+            'id': comment_id,
+            'message': message[:5000],
+            'from': {
+                'id': str(item.get('author_id') or ''),
+                'name': str(item.get('author_name') or 'Ẩn danh'),
+            },
+            'created_time': item.get('created_time') or None,
+        })
+
+    fetched_at = _utc_iso()
+    rows = _flatten_facebook_comment_rows(post, normalized_comments, keywords, fetched_at, staff)
+    storage, warning = _store_post_comment_rows(rows)
+    public_rows = [_public_comment_row(row) for row in rows]
+    matched_count = sum(1 for row in rows if row.get('is_matched'))
+    phone_count = sum(1 for row in public_rows if row.get('phones'))
+    payload = {
+        'ok': True,
+        'source': 'facebook_chrome_dom',
+        'post_id': str(post.get('id')),
+        'comment_count': len(normalized_comments),
+        'fetched_comment_count': len(rows),
+        'matched_count': matched_count,
+        'phone_count': phone_count,
+        'comments': public_rows,
+        'storage': storage,
+    }
+    if warning:
+        payload['warning'] = warning if storage == 'supabase' else f'Đã lưu local, Supabase chưa ghi được: {warning}'
+    return jsonify(payload)
+
+
+@app.route('/api/facebook-groups/import', methods=['POST'])
+def import_facebook_group_posts_from_chrome():
+    body = request.get_json(silent=True) or {}
+    raw_posts = body.get('posts') if isinstance(body.get('posts'), list) else []
+    staff = _current_staff()
+    if not staff:
+        return jsonify({'ok': False, 'error': 'Chưa đăng nhập'}), 401
+    if not raw_posts:
+        return jsonify({'ok': False, 'error': 'Chrome chưa trả bài viết nào'}), 400
+    if len(raw_posts) > 500:
+        return jsonify({'ok': False, 'error': 'Tối đa 500 bài mỗi lần quét'}), 400
+
+    allowed_groups = set(_filter_group_ids_for_staff([
+        str(item.get('_group_id') or item.get('group_id') or '').strip()
+        for item in raw_posts if isinstance(item, dict)
+    ]))
+    imported = []
+    comment_rows = []
+    captured_at = _utc_iso()
+    for raw in raw_posts:
+        if not isinstance(raw, dict):
+            continue
+        group_id = str(raw.get('_group_id') or raw.get('group_id') or '').strip()
+        post_id = str(raw.get('id') or '').strip()
+        if not group_id or group_id not in allowed_groups or not post_id:
+            continue
+        message = str(raw.get('message') or raw.get('story') or '').strip()[:12000]
+        comments_obj = raw.get('comments') if isinstance(raw.get('comments'), dict) else {}
+        comments = comments_obj.get('data') if isinstance(comments_obj.get('data'), list) else []
+        author_obj = raw.get('from') if isinstance(raw.get('from'), dict) else {}
+        phones = _normalize_phones_list(extract_phones(message))
+        phone_matches = [
+            {'phone': phone, 'source': 'post', 'author_name': author_obj.get('name') or '', 'message': message[:500]}
+            for phone in phones
+        ]
+        normalized_comments = []
+        for index, item in enumerate(comments[:1000]):
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get('message') or '').strip()[:5000]
+            if not text:
+                continue
+            author = item.get('from') if isinstance(item.get('from'), dict) else {}
+            comment_id = str(item.get('id') or '').strip()
+            if not comment_id:
+                comment_author = str(author.get('name') or item.get('author_name') or '')
+                comment_time = str(item.get('created_time') or '')
+                seed = f'{post_id}|{comment_author}|{comment_time}|{text}'
+                comment_id = 'dom_' + hashlib.sha1(seed.encode('utf-8', errors='ignore')).hexdigest()[:24]
+            normalized_comments.append({
+                'id': comment_id,
+                'message': text,
+                'from': {'id': str(author.get('id') or item.get('author_id') or ''), 'name': str(author.get('name') or item.get('author_name') or 'Ẩn danh')},
+                'created_time': item.get('created_time') or None,
+            })
+            for phone in _normalize_phones_list(extract_phones(text)):
+                phone_matches.append({
+                    'phone': phone,
+                    'source': 'comment',
+                    'author_name': str(author.get('name') or item.get('author_name') or 'Ẩn danh'),
+                    'message': text[:500],
+                })
+
+        normalized_comments = list({item['id']: item for item in normalized_comments}.values())
+        comment_summary = comments_obj.get('summary') if isinstance(comments_obj.get('summary'), dict) else {}
+        try:
+            raw_comment_count = max(0, int(comment_summary.get('total_count') or len(normalized_comments)))
+        except (TypeError, ValueError):
+            raw_comment_count = len(normalized_comments)
+        normalized_post = {
+            **raw,
+            'id': post_id,
+            'message': message,
+            '_group_id': group_id,
+            '_group_name': str(raw.get('_group_name') or _group_display_name(group_id)),
+            '_source': 'facebook_chrome_dom',
+            'phones': phones,
+            'phone_matches': phone_matches,
+            'phone_count': len({item['phone'] for item in phone_matches}),
+            'comments': {
+                **comments_obj,
+                'data': normalized_comments,
+                'summary': {'total_count': raw_comment_count},
+            },
+        }
+        imported.append(normalized_post)
+        if normalized_comments:
+            comment_rows.extend(_flatten_facebook_comment_rows(normalized_post, normalized_comments, [], captured_at, staff))
+
+    if not imported:
+        return jsonify({'ok': False, 'error': 'Không có bài nào thuộc Group bạn được phân quyền'}), 403
+    storage, warning = _store_post_comment_rows(comment_rows) if comment_rows else ('local', '')
+    return jsonify({
+        'ok': True,
+        'posts': imported,
+        'count': len(imported),
+        'comment_count': len(comment_rows),
+        'phone_post_count': sum(1 for post in imported if post.get('phones')),
+        'phone_comment_count': sum(1 for post in imported for item in post.get('phone_matches', []) if item.get('source') == 'comment'),
+        'storage': storage,
+        'source': 'facebook_chrome_dom',
+        'warning': warning,
+    })
 
 
 @app.route('/api/tiktok/comments/fetch', methods=['POST'])
@@ -10563,6 +10798,142 @@ def facebook_posts_get():
     }
     if warning:
         payload['warning'] = warning
+    return jsonify(payload)
+
+
+@app.route('/api/facebook-pages/posts/import', methods=['POST'])
+def facebook_page_posts_import():
+    """Import recent posts from a Page managed by the active Facebook session."""
+    body = request.get_json(silent=True) or {}
+    page_id = str(body.get('page_id') or '').strip()
+    if not re.fullmatch(r'\d{10,20}', page_id):
+        return jsonify({'ok': False, 'error': 'Chọn một Facebook Page hợp lệ trước khi kéo bài.'}), 400
+
+    try:
+        limit = max(1, min(int(body.get('limit') or 30), 100))
+    except (TypeError, ValueError):
+        limit = 30
+
+    pages, page_warning, page_source = _load_facebook_pages_for_active_cookie()
+    for page in pages:
+        cached = _pages_cache.get(str(page.get('id') or '')) or {}
+        page_key = str(page.get('id') or '')
+        if page_key:
+            _pages_cache[page_key] = {
+                'name': str(page.get('name') or cached.get('name') or ''),
+                'access_token': str(page.get('access_token') or cached.get('access_token') or ''),
+            }
+
+    page = next((item for item in pages if str(item.get('id') or '') == page_id), None)
+    channel = next((
+        item for item in _managed_channels
+        if str(item.get('target_id') or '').strip() == page_id
+        and str(item.get('platform') or '').strip().lower() == 'facebook'
+        and str(item.get('channel_type') or '').strip().lower() in ('page', 'fanpage')
+    ), None)
+    page_cache = _pages_cache.get(page_id) or {}
+    page_name = str((page or {}).get('name') or page_cache.get('name') or (channel or {}).get('channel_name') or page_id)
+    page_token, _, token_warning = _page_token_lookup(page_id)
+    if not page and not channel and not page_token:
+        return jsonify({
+            'ok': False,
+            'error': page_warning or 'Facebook hiện tại chưa trả về Page bạn quản trị. Hãy kiểm tra cookie Facebook và quyền quản trị Page.',
+        }), 403
+
+    client = get_api(DEFAULT_GROUP)
+    raw_posts = client.get_page_posts(page_id, page_token, limit=limit)
+    if raw_posts is None:
+        detail = getattr(client, 'last_graph_error', '') or token_warning or page_warning or 'Facebook không trả bài viết cho Page này.'
+        return jsonify({'ok': False, 'error': detail}), 502
+
+    staff = _current_staff()
+    imported = []
+    warnings = []
+    comments_by_post = {}
+    total_comments = 0
+    phone_comment_count = 0
+    imported_at = _utc_iso()
+    for post in raw_posts:
+        if not isinstance(post, dict):
+            continue
+        facebook_post_id = str(post.get('id') or '').strip()
+        if not facebook_post_id:
+            continue
+        external_key = f'facebook_page_import:{page_id}:{facebook_post_id}'
+        comments = post.get('comments') if isinstance(post.get('comments'), dict) else {}
+        reactions = post.get('reactions') if isinstance(post.get('reactions'), dict) else {}
+        comment_summary = comments.get('summary') if isinstance(comments.get('summary'), dict) else {}
+        reaction_summary = reactions.get('summary') if isinstance(reactions.get('summary'), dict) else {}
+        shares = post.get('shares') if isinstance(post.get('shares'), dict) else {}
+        reaction_count = reaction_summary.get('total_count')
+        comment_count = comment_summary.get('total_count')
+        share_count = shares.get('count')
+        counts = [value for value in (reaction_count, comment_count, share_count) if isinstance(value, (int, float))]
+        post_url = str(post.get('permalink_url') or _facebook_post_url(facebook_post_id))
+        row = {
+            'id': uuid.uuid4().hex,
+            'external_key': external_key,
+            'source': 'facebook_page_import',
+            'source_post_id': facebook_post_id,
+            'facebook_post_id': facebook_post_id,
+            'target_type': 'page',
+            'target_id': page_id,
+            'target_name': page_name,
+            'facebook_page_id': page_id,
+            'post_url': post_url,
+            'content': str(post.get('message') or post.get('story') or ''),
+            'media_urls': [],
+            'status': 'success',
+            'delivery': 'feed_sync',
+            'reaction_count': reaction_count,
+            'comment_count': comment_count,
+            'share_count': share_count,
+            'total_interactions': sum(counts) if counts else None,
+            'metrics_updated_at': imported_at,
+            'created_by_staff_id': staff.get('id') or '',
+            'created_by_staff_name': staff.get('name') or '',
+            'created_by_staff_username': staff.get('username') or '',
+            'published_at': post.get('created_time') or post.get('updated_time') or imported_at,
+            'created_at': imported_at,
+        }
+        saved, save_warning = _save_facebook_post(row, preserve_existing=True)
+        imported.append(saved)
+        raw_comments = comments.get('data') if isinstance(comments.get('data'), list) else []
+        comment_rows = _flatten_facebook_comment_rows(
+            {
+                'id': facebook_post_id,
+                'message': row['content'],
+                'permalink_url': post_url,
+                '_page_id': page_id,
+                '_group_id': '',
+                '_page_name': page_name,
+            },
+            raw_comments,
+            [],
+            imported_at,
+            staff,
+        )
+        public_comments = _public_comment_rows(comment_rows)
+        comments_by_post[str(saved.get('id') or '')] = public_comments
+        total_comments += len(public_comments)
+        phone_comment_count += sum(1 for item in public_comments if item.get('phones'))
+        if save_warning:
+            warnings.append(save_warning)
+
+    payload = {
+        'ok': True,
+        'page': {'id': page_id, 'name': page_name},
+        'posts': imported,
+        'count': len(imported),
+        'comments_by_post': comments_by_post,
+        'comment_count': total_comments,
+        'phone_comment_count': phone_comment_count,
+        'source': page_source or 'facebook_graph',
+    }
+    if warnings:
+        payload['warning'] = ' | '.join(warnings[:3])
+    elif page_warning:
+        payload['warning'] = page_warning
     return jsonify(payload)
 
 
@@ -12266,9 +12637,13 @@ def channels_sync_facebook_pages():
 
     if not pages:
         return jsonify({
-            'ok': False,
-            'error': warning or 'Không tìm thấy Page nào qua Facebook API/cookie HTML. Có thể Page mới tạo chưa được Facebook trả về; hãy bấm + Thêm và nhập thủ công ID Page.',
-        }), 400
+            'ok': True,
+            'channels': _visible_managed_channels(),
+            'added': 0,
+            'updated': 0,
+            'source': source or 'facebook_cookie',
+            'warning': warning or 'Cookie hiện tại không quản trị Fanpage nào. Bạn vẫn có thể quét bài trong các Group đã chọn.',
+        }), 200
 
     _pages_cache = {
         str(p.get('id') or ''): {
@@ -12624,6 +12999,55 @@ def facebook_cookie_refresh_names():
         context['message'] = f'Đã cập nhật tên Facebook: {active_name}'
     else:
         context['message'] = 'Không đọc được tên Facebook. Kiểm tra cookie còn hợp lệ.'
+    return jsonify(context)
+
+
+@app.route('/api/facebook-cookie/import-chrome', methods=['POST'])
+def facebook_cookie_import_chrome():
+    staff = _current_staff()
+    if not staff:
+        return jsonify({'ok': False, 'error': 'Chưa đăng nhập ứng dụng'}), 401
+    body = request.get_json(silent=True) or {}
+    cookie = str(body.get('cookie') or '').strip()
+    reported_user_id = str(body.get('c_user') or '').strip()
+    if not cookie or len(cookie) > 100_000:
+        return jsonify({'ok': False, 'error': 'Extension không trả cookie Facebook hợp lệ'}), 400
+    user_id = _extract_cookie_user(cookie)
+    if not user_id or (reported_user_id and reported_user_id != user_id):
+        return jsonify({'ok': False, 'error': 'Cookie Chrome thiếu c_user hoặc ID không khớp'}), 400
+
+    cookies = _normalize_staff_facebook_cookies(staff.get('facebook_cookies'), staff.get('cookie', ''))
+    existing = next(
+        (item for item in cookies if str(item.get('facebook_user_id') or _extract_cookie_user(item.get('cookie', ''))) == user_id),
+        None,
+    )
+    if existing:
+        cookie_id = str(existing.get('id') or f'chrome_{user_id}')
+        existing.update({
+            'id': cookie_id,
+            'label': existing.get('label') or 'Facebook Chrome',
+            'cookie': cookie,
+            'facebook_user_id': user_id,
+        })
+    else:
+        cookie_id = f'chrome_{user_id}'
+        cookies.append({
+            'id': cookie_id,
+            'label': 'Facebook Chrome',
+            'cookie': cookie,
+            'facebook_user_id': user_id,
+            'facebook_name': '',
+        })
+
+    updated_staff = dict(staff)
+    updated_staff['facebook_cookies'] = cookies
+    updated_staff['active_cookie_id'] = cookie_id
+    _persist_active_cookie_choice(updated_staff, cookie_id, cookie)
+    _invalidate_staff_list_cache()
+    _prefetch_facebook_display_name(updated_staff)
+
+    context = _facebook_cookie_context_payload(updated_staff, resolve_name=False)
+    context['message'] = f'Đã kết nối cookie Facebook từ Chrome · ID {user_id}'
     return jsonify(context)
 
 

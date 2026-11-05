@@ -70,8 +70,10 @@ function renderFacebookAccountBar(props: {
   busy?: boolean;
   loading?: boolean;
   error?: string;
+  warning?: string;
   onSwitch?: (cookieId: string) => void;
   onRefresh?: () => void;
+  onConnectChrome?: () => void;
   compact?: boolean;
 }) {
   const {
@@ -82,17 +84,22 @@ function renderFacebookAccountBar(props: {
     busy,
     loading,
     error,
+    warning,
     onSwitch,
     onRefresh,
+    onConnectChrome,
     compact,
   } = props;
   const resolvedActiveId = activeId || cookies.find((item) => item.active)?.id || cookies[0]?.id || '';
   const activeCookie = cookies.find((item) => item.id === resolvedActiveId) || cookies[0];
+  const hasCookie = Boolean(activeCookie?.cookie_masked || activeCookie?.cookie || activeUserId);
   const displayName =
     pickFacebookDisplayName(activeCookie?.facebook_name, activeName, activeCookie?.label) ||
-    (activeUserId || activeCookie?.facebook_user_id ? `Facebook ID ${activeUserId || activeCookie?.facebook_user_id}` : 'Chưa có cookie Facebook');
+    (activeUserId || activeCookie?.facebook_user_id
+      ? `Facebook ID ${activeUserId || activeCookie?.facebook_user_id}`
+      : hasCookie ? 'Đã nhận cookie Facebook' : 'Chưa có cookie Facebook');
   const displayUserId = activeCookie?.facebook_user_id || activeUserId || '';
-  const showError = error || (isInvalidFacebookDisplayName(activeCookie?.facebook_name) && isInvalidFacebookDisplayName(activeName));
+  const showError = Boolean(error) || (!hasCookie && isInvalidFacebookDisplayName(activeCookie?.facebook_name) && isInvalidFacebookDisplayName(activeName));
   return (
     <div className={`md-fb-account-bar${compact ? ' compact' : ''}`}>
       <div className="md-fb-cookie-current">
@@ -102,6 +109,7 @@ function renderFacebookAccountBar(props: {
           <p className="md-fb-cookie-name">{loading && !displayName ? 'Đang đọc tên tài khoản...' : displayName}</p>
           {displayUserId ? <small className="md-fb-cookie-id">ID: {displayUserId}</small> : null}
           {showError ? <small className="md-fb-cookie-error">{error || 'Cookie hết hạn hoặc chưa đọc được tên — bấm «Làm mới tên» hoặc lấy cookie mới từ Chrome.'}</small> : null}
+          {!showError && warning ? <small className="md-fb-cookie-warning">{warning}</small> : null}
           {cookies.length ? (
             <div className="md-fb-cookie-list" role="tablist" aria-label="Chọn cookie Facebook">
               {cookies.map((item, index) => {
@@ -131,6 +139,9 @@ function renderFacebookAccountBar(props: {
         </div>
       </div>
       <div className="md-fb-account-actions">
+        <button type="button" className="md-ghost-btn" disabled={busy || loading} onClick={() => onConnectChrome?.()}>
+          {busy ? 'Đang kết nối...' : 'Kết nối Facebook'}
+        </button>
         <button type="button" className="md-ghost-btn" disabled={busy || loading} onClick={() => onRefresh?.()}>
           {loading ? 'Đang tải...' : 'Làm mới tên'}
         </button>
@@ -158,6 +169,7 @@ export type ManageDashboardProps = {
   facebookCookieLoading?: boolean;
   onSwitchFacebookCookie?: (cookieId: string) => void;
   onRefreshFacebookCookie?: () => void;
+  onConnectFacebookChrome?: () => void;
   headerSub?: string;
   onLogout: () => void;
   onOpenView: (view: ViewKey) => void;
@@ -198,6 +210,8 @@ export type ManageDashboardProps = {
   setLimit: (n: number) => void;
   loading: boolean;
   onLoadPosts: () => void;
+  groupScanBusy: boolean;
+  onScanGroupPosts: () => void;
   onOpenPostModal: () => void;
   classifyBusy: boolean;
   onClassifyAll: () => void;
@@ -241,6 +255,7 @@ export function ManageDashboardPanel(props: ManageDashboardProps) {
     facebookCookieLoading = false,
     onSwitchFacebookCookie,
     onRefreshFacebookCookie,
+    onConnectFacebookChrome,
     headerSub,
     onLogout,
     onOpenView,
@@ -281,6 +296,8 @@ export function ManageDashboardPanel(props: ManageDashboardProps) {
     setLimit,
     loading,
     onLoadPosts,
+    groupScanBusy,
+    onScanGroupPosts,
     onOpenPostModal,
     classifyBusy,
     onClassifyAll,
@@ -425,8 +442,10 @@ export function ManageDashboardPanel(props: ManageDashboardProps) {
           busy: facebookCookieBusy,
           loading: facebookCookieLoading,
           error: fbCookieError,
+          warning: facebookCookieContext?.warning,
           onSwitch: onSwitchFacebookCookie,
           onRefresh: onRefreshFacebookCookie,
+          onConnectChrome: onConnectFacebookChrome,
         })}
 
         <div className="md-split">
@@ -455,7 +474,7 @@ export function ManageDashboardPanel(props: ManageDashboardProps) {
                   <p className="md-join-hint">
                     Chỉ hiển thị <b>nhóm/kênh được phân công</b> cho tài khoản đang đăng nhập
                     {staffGroupsScoped ? '' : ' (admin gán tại /kenh → Sửa kênh → Nhân sự phụ trách)'}.
-                    Chỉ <b>quét bài</b> từ các nhóm đã tick. Nhóm kín thường phải bấm <b>Mở FB</b> rồi <b>Kiểm tra lại</b>.
+                    Chỉ <b>quét bài</b> từ các nhóm đã tick. Nút <b>Quét bài Group</b> dùng Facebook đang đăng nhập trong Chrome, không cần cookie Facebook lưu ở ứng dụng. Nhóm kín cần có quyền xem trong chính tài khoản Chrome đó.
                   </p>
 
                   {facebookGroupChannels.length ? (
@@ -770,6 +789,10 @@ export function ManageDashboardPanel(props: ManageDashboardProps) {
                       <button type="button" className="md-tool-btn md-tool-btn-sm" onClick={onLoadPosts}>
                         <i className={`fa-solid fa-rotate-right${loading ? ' fa-spin' : ''}`} />
                         Tải lại
+                      </button>
+                      <button type="button" className="md-tool-btn md-tool-btn-sm primary" onClick={onScanGroupPosts} disabled={groupScanBusy} title="Đọc các bài đang hiển thị trong Group bằng phiên Chrome đã đăng nhập">
+                        <i className={`fa-brands fa-facebook${groupScanBusy ? ' fa-spin' : ''}`} />
+                        {groupScanBusy ? 'Đang quét nhóm…' : 'Quét bài Group'}
                       </button>
                       <button type="button" className="md-tool-btn md-tool-btn-sm primary" onClick={onOpenPostModal}>
                         Đăng bài

@@ -130,6 +130,12 @@
   font-size: 11px;
   margin-top: 2px;
 }
+.md-fb-cookie-warning {
+  display: block;
+  color: #475569;
+  font-size: 11px;
+  margin-top: 2px;
+}
 .md-fb-cookie-current {
   display: flex;
   align-items: flex-start;

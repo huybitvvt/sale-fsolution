@@ -88,6 +88,14 @@ type TikTokDomCollectResult = TikTokBridgeResult & {
 type TikTokVideoCollectResult = TikTokBridgeResult & {
   videos?: Array<Record<string, unknown>>;
 };
+type FacebookDomPostResult = {
+  ok?: boolean;
+  error?: string;
+  report?: PostFetchReport[];
+  posts?: FbPost[];
+  comments?: Array<Record<string, unknown>>;
+};
+type FacebookCookieBridgeResult = { ok?: boolean; cookie?: string; c_user?: string; error?: string };
 type PostFetchReport = {
   group_id?: string;
   target_type?: 'group' | 'page' | string;
@@ -98,6 +106,84 @@ type PostFetchReport = {
   source?: string;
   error?: string;
 };
+
+function requestFacebookGroupFeeds(payload: Record<string, unknown>): Promise<FacebookDomPostResult> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') {
+      resolve({ ok: false, error: 'Chỉ quét được Group bằng Chrome có cài Seeding Fsolution Bridge.' });
+      return;
+    }
+    const requestId = `facebook_groups_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const timer = window.setTimeout(() => {
+      cleanup();
+      resolve({ ok: false, error: 'Extension chưa phản hồi. Hãy bật extension và tải lại trang.' });
+    }, 240000);
+    const handleMessage = (event: MessageEvent) => {
+      if (event.source !== window || event.data?.source !== 'streal-tiktok-extension') return;
+      if (event.data?.type !== 'STREAL_FACEBOOK_GROUP_FEED_RESPONSE' || event.data?.requestId !== requestId) return;
+      cleanup();
+      resolve(event.data as FacebookDomPostResult);
+    };
+    function cleanup() {
+      window.removeEventListener('message', handleMessage);
+      window.clearTimeout(timer);
+    }
+    window.addEventListener('message', handleMessage);
+    window.postMessage({ source: 'streal-web-page', type: 'STREAL_FACEBOOK_GROUP_FEED_REQUEST', requestId, payload }, window.location.origin);
+  });
+}
+
+function requestFacebookPostDomData(payload: Record<string, unknown>): Promise<FacebookDomPostResult> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') {
+      resolve({ ok: false, error: 'Chỉ đọc được bài viết qua Chrome có extension.' });
+      return;
+    }
+    const requestId = `facebook_post_dom_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const timer = window.setTimeout(() => {
+      cleanup();
+      resolve({ ok: false, error: 'Extension chưa phản hồi khi đọc bình luận.' });
+    }, 180000);
+    const handleMessage = (event: MessageEvent) => {
+      if (event.source !== window || event.data?.source !== 'streal-tiktok-extension') return;
+      if (event.data?.type !== 'STREAL_FACEBOOK_COLLECT_POST_DATA_RESPONSE' || event.data?.requestId !== requestId) return;
+      cleanup();
+      resolve(event.data as FacebookDomPostResult);
+    };
+    function cleanup() {
+      window.removeEventListener('message', handleMessage);
+      window.clearTimeout(timer);
+    }
+    window.addEventListener('message', handleMessage);
+    window.postMessage({ source: 'streal-web-page', type: 'STREAL_FACEBOOK_COLLECT_POST_DATA_REQUEST', requestId, payload }, window.location.origin);
+  });
+}
+
+function requestFacebookCookieFromChrome(): Promise<FacebookCookieBridgeResult> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') {
+      resolve({ ok: false, error: 'Chỉ kết nối Facebook được trong Chrome.' });
+      return;
+    }
+    const requestId = `facebook_cookie_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const timer = window.setTimeout(() => {
+      cleanup();
+      resolve({ ok: false, error: 'Extension không phản hồi. Hãy tải lại Seeding Fsolution Bridge rồi thử lại.' });
+    }, 15000);
+    const handleMessage = (event: MessageEvent) => {
+      if (event.source !== window || event.data?.source !== 'streal-tiktok-extension') return;
+      if (event.data?.type !== 'STREAL_FACEBOOK_COOKIE_RESPONSE' || event.data?.requestId !== requestId) return;
+      cleanup();
+      resolve(event.data as FacebookCookieBridgeResult);
+    };
+    function cleanup() {
+      window.removeEventListener('message', handleMessage);
+      window.clearTimeout(timer);
+    }
+    window.addEventListener('message', handleMessage);
+    window.postMessage({ source: 'streal-web-page', type: 'STREAL_FACEBOOK_COOKIE_REQUEST', requestId }, window.location.origin);
+  });
+}
 
 const SCAN_SELECTED_STORAGE_KEY = 'scanSelectedGroups';
 const LEGACY_AUTH_STAFF_STORAGE_KEY = 'seeding.auth.staff.v1';
@@ -186,6 +272,16 @@ function defaultModelForProvider(provider?: string) {
   if (provider === 'groq') return DEFAULT_GROQ_MODEL;
   if (provider === 'openai') return DEFAULT_OPENAI_MODEL;
   return DEFAULT_GEMINI_PRO_MODEL;
+}
+
+function extensionVersionAtLeast(current: string, minimum: string): boolean {
+  const parse = (value: string) => String(value || '').split('.').map((part) => Number(part) || 0);
+  const left = parse(current);
+  const right = parse(minimum);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    if ((left[index] || 0) !== (right[index] || 0)) return (left[index] || 0) > (right[index] || 0);
+  }
+  return true;
 }
 
 function fallbackModelsForProvider(provider?: string) {
@@ -325,6 +421,7 @@ export function MonitorPage() {
   const [intervalMin, setIntervalMin] = useState(5);
   const [autoOn, setAutoOn] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [groupScanBusy, setGroupScanBusy] = useState(false);
   const [feedError, setFeedError] = useState('');
   const [postFetchReport, setPostFetchReport] = useState<PostFetchReport[]>([]);
   const [toolStatus, setToolStatus] = useState('');
@@ -677,6 +774,49 @@ export function MonitorPage() {
       setFacebookCookieLoading(false);
     }
   }, []);
+
+  const connectFacebookCookieFromChrome = useCallback(async () => {
+    if (facebookCookieBusy) return;
+    setFacebookCookieBusy(true);
+    setToolStatus('Đang kết nối Facebook từ Chrome…');
+    try {
+      if (!tiktokBridgeReady || !extensionVersionAtLeast(tiktokBridgeVersion, '0.1.74')) {
+        throw new Error('Tải lại Seeding Fsolution Bridge phiên bản 0.1.74 trở lên trong chrome://extensions.');
+      }
+      const chromeCookie = await requestFacebookCookieFromChrome();
+      if (!chromeCookie.ok || !chromeCookie.cookie || !chromeCookie.c_user) {
+        throw new Error(chromeCookie.error || 'Chrome chưa có phiên Facebook hợp lệ.');
+      }
+      const response = await api('/api/facebook-cookie/import-chrome', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cookie: chromeCookie.cookie, c_user: chromeCookie.c_user }),
+        timeoutMs: 30000,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || `Không lưu được cookie Facebook (HTTP ${response.status})`);
+      }
+      setFacebookCookieContext(data);
+      setCurrentStaff((previous) => previous ? {
+        ...previous,
+        active_facebook_name: data.active_facebook_name || '',
+        facebook_user_id: data.active_facebook_user_id || chromeCookie.c_user || '',
+        active_cookie_id: data.active_cookie_id || previous.active_cookie_id,
+      } : previous);
+      setToolStatus(data.message || 'Đã kết nối phiên Facebook trong Chrome.');
+    } catch (error) {
+      const message = formatFetchError(error, 'Không kết nối được Facebook từ Chrome');
+      setFacebookCookieContext((previous) => ({
+        ...(previous || { ok: false }),
+        ok: false,
+        error: message,
+      }));
+      setToolStatus(`❌ ${message}`);
+    } finally {
+      setFacebookCookieBusy(false);
+    }
+  }, [facebookCookieBusy, tiktokBridgeReady, tiktokBridgeVersion]);
 
   const applyScopedFacebookGroups = useCallback((scoped: ManagedChannel[]) => {
     const gIds: string[] = [];
@@ -1226,6 +1366,74 @@ export function MonitorPage() {
       setLoading(false);
     }
   }, []);
+
+  const scanGroupPostsWithChrome = useCallback(async () => {
+    const selectedGroups = groupsRef.current
+      .filter((gid) => scanSelectedGroupsRef.current[gid])
+      .map((id) => ({ id, name: groupNames[id] || id }));
+    if (!selectedGroups.length) {
+      setToolStatus('Chọn ít nhất một Group để quét');
+      return;
+    }
+    if (!authenticated) {
+      setFeedError('Ứng dụng chưa đăng nhập. Hãy đăng nhập bằng tài khoản hiện có rồi quét lại.');
+      setToolStatus('Cần đăng nhập ứng dụng');
+      return;
+    }
+    if (!tiktokBridgeReady || !extensionVersionAtLeast(tiktokBridgeVersion, '0.1.75')) {
+      setToolStatus('Cần tải lại Seeding Fsolution Bridge phiên bản 0.1.75 trở lên trong chrome://extensions.');
+      return;
+    }
+
+    setGroupScanBusy(true);
+    setFeedError('');
+    setToolStatus(`Đang đọc ${selectedGroups.length} Group bằng Chrome…`);
+    try {
+      const captured = await requestFacebookGroupFeeds({ groups: selectedGroups, limit: limitRef.current });
+      const capturedPosts = Array.isArray(captured.posts) ? captured.posts : [];
+      if (!captured.ok || !capturedPosts.length) {
+        const report = Array.isArray(captured.report) ? captured.report : [];
+        setPostFetchReport(report);
+        setFeedError(captured.error || report.find((item) => item.error)?.error || 'Chrome chưa lấy được bài nào.');
+        setToolStatus('Không đọc được bài trong Group');
+        return;
+      }
+
+      const response = await api('/api/facebook-groups/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ posts: capturedPosts }),
+        timeoutMs: 60000,
+      });
+      const imported = await response.json().catch(() => ({}));
+      if (!response.ok || !imported.ok) {
+        setFeedError(imported.error || `Không lưu được bài đọc từ Chrome (HTTP ${response.status})`);
+        setToolStatus('Lỗi nhập bài Group');
+        return;
+      }
+
+      const rows: FbPost[] = Array.isArray(imported.posts) ? imported.posts : [];
+      setAllPosts((previous) => {
+        const byId = new Map(previous.map((post) => [post.id, post]));
+        rows.forEach((post) => byId.set(post.id, post));
+        return [...byId.values()]
+          .sort((left, right) => String(right.created_time || '').localeCompare(String(left.created_time || '')))
+          .slice(0, 500);
+      });
+      setPostFetchReport(Array.isArray(captured.report) ? captured.report : []);
+      const phonePostCount = Number(imported.phone_post_count || 0);
+      const phoneCommentCount = Number(imported.phone_comment_count || 0);
+      const commentCount = Number(imported.comment_count || 0);
+      const warning = imported.warning ? ` · ${imported.warning}` : '';
+      setToolStatus(`Đã đọc ${rows.length} bài · ${commentCount} bình luận đang hiển thị · ${phonePostCount} bài có SĐT · ${phoneCommentCount} bình luận có SĐT${warning}`);
+      void reloadLeads();
+    } catch (error) {
+      setFeedError(formatFetchError(error, 'Không đọc được bài từ Chrome'));
+      setToolStatus('Lỗi quét Group bằng Chrome');
+    } finally {
+      setGroupScanBusy(false);
+    }
+  }, [authenticated, groupNames, reloadLeads, tiktokBridgeReady, tiktokBridgeVersion]);
 
   const switchFacebookCookie = useCallback(async (cookieId: string) => {
     if (!cookieId || facebookCookieBusy) return;
@@ -1782,29 +1990,53 @@ export function MonitorPage() {
   async function fetchFacebookCommentsForFilter() {
     if (!fbCommentModalPost) return;
     setFbCommentBusy(true);
-    setFbCommentStatus('Đang lấy toàn bộ comment Facebook...');
+    setFbCommentStatus('Đang mở bài bằng Chrome để đọc bình luận...');
     try {
-      const r = await api('/api/post-comments/fetch', {
+      if (!tiktokBridgeReady) {
+        throw new Error('Chưa thấy Seeding Fsolution Bridge. Bật extension rồi tải lại trang.');
+      }
+      const groupId = String(fbCommentModalPost._group_id || fbCommentModalPost.group_id || '');
+      const domResult = await requestFacebookPostDomData({
+        post_id: fbCommentModalPost.id,
+        post_url: fbCommentModalPost.permalink_url,
+        content: fbCommentModalPost.message || '',
+        target_type: fbCommentModalPost._page_id ? 'page' : 'group',
+        target_id: fbCommentModalPost._page_id || groupId,
+      });
+      if (!domResult.ok) throw new Error(domResult.error || 'Extension không đọc được bình luận của bài này.');
+      const r = await api('/api/post-comments/dom-import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           post: fbCommentModalPost,
+          comments: domResult.comments || [],
           keywords: parseKeywordInput(fbCommentKeywords),
-          limit: 1000,
         }),
+        timeoutMs: 60000,
       });
       const d = await r.json();
       if (d.ok) {
-        setFbCommentRows(d.comments || []);
+        const fetchedRows = (Array.isArray(d.comments) ? d.comments : []) as StoredPostComment[];
+        setFbCommentRows(fetchedRows);
+        const commentPhoneMatches: NonNullable<FbPost['phone_matches']> = fetchedRows.flatMap((row) =>
+          (row.phones || []).map((phone) => ({ phone, source: 'comment' as const, author_name: row.author_name, message: row.message })),
+        );
+        if (commentPhoneMatches.length) {
+          setAllPosts((previous) => previous.map((post) => post.id === fbCommentModalPost.id ? {
+            ...post,
+            phones: [...new Set([...(post.phones || []), ...commentPhoneMatches.map((item) => item.phone)])],
+            phone_matches: [...(post.phone_matches || []), ...commentPhoneMatches],
+          } : post));
+        }
         const warn = d.warning ? ` · ${d.warning}` : '';
-        setFbCommentStatus(`Đã đọc ${d.fetched_comment_count}/${d.comment_count} comment · khớp ${d.matched_count} · lưu ${d.storage}${warn}`);
+        setFbCommentStatus(`Đã đọc ${d.fetched_comment_count}/${d.comment_count} comment · khớp ${d.matched_count} · ${d.phone_count || 0} comment có SĐT · lưu ${d.storage}${warn}`);
       } else {
         setFbCommentRows([]);
         setFbCommentStatus(`Lỗi: ${d.error || 'Không lấy được comment'}`);
       }
-    } catch {
+    } catch (error) {
       setFbCommentRows([]);
-      setFbCommentStatus('Lỗi kết nối backend');
+      setFbCommentStatus(`Lỗi: ${formatFetchError(error, 'Không đọc được bình luận')}`);
     }
     setFbCommentBusy(false);
   }
@@ -3085,6 +3317,7 @@ export function MonitorPage() {
           facebookCookieBusy={facebookCookieBusy}
           facebookCookieLoading={facebookCookieLoading}
           onRefreshFacebookCookie={() => void refreshFacebookCookieNames()}
+          onConnectFacebookChrome={() => void connectFacebookCookieFromChrome()}
           onSwitchFacebookCookie={(cookieId) => void switchFacebookCookie(cookieId)}
           headerSub={headerSub}
           onLogout={() => void logout()}
@@ -3126,6 +3359,8 @@ export function MonitorPage() {
           setLimit={setLimit}
           loading={loading}
           onLoadPosts={() => void loadPosts()}
+          groupScanBusy={groupScanBusy}
+          onScanGroupPosts={() => void scanGroupPostsWithChrome()}
           onOpenPostModal={openPostModal}
           classifyBusy={classifyBusy}
           onClassifyAll={() => void classifyAll()}

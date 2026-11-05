@@ -216,7 +216,14 @@ export function StaffCookiePanel({
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return staff.filter((item) => {
+    const uniqueStaff = new Map<string, StaffAccount>();
+    staff.forEach((item, index) => {
+      const id = String(item.id || '').trim();
+      const username = String(item.username || '').trim().toLowerCase();
+      const identity = id ? `id:${id}` : username ? `username:${username}` : `row:${index}`;
+      if (!uniqueStaff.has(identity)) uniqueStaff.set(identity, item);
+    });
+    return [...uniqueStaff.values()].filter((item) => {
       const managedText = (item.managed_groups || []).map((group) => formatManagedGroupLabel(group)).join(' ');
       const cookieText = (item.facebook_cookies || [])
         .map((cookie) => cookie.facebook_name || cookie.label || cookie.facebook_user_id || '')

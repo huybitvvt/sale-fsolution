@@ -57,6 +57,18 @@ export function CommentTemplatesSidebar() {
     setTimeout(() => setStatus(''), 3000);
   }
 
+  function useTemplate(item: ReplyTemplate) {
+    const activeComposer = document.querySelector('[data-comment-reply-active="true"]');
+    if (!activeComposer) {
+      setStatus('Mở Trả lời ở bình luận cần phản hồi, rồi chọn Dùng mẫu.');
+      setTimeout(() => setStatus(''), 4000);
+      return;
+    }
+    window.dispatchEvent(new CustomEvent('comment-template-selected', { detail: { text: item.text, templateId: item.id } }));
+    setStatus(`Đã chèn mẫu “${item.title}” vào ô trả lời.`);
+    setTimeout(() => setStatus(''), 3000);
+  }
+
   async function createTemplate() {
     if (!form.title.trim() || !form.text.trim()) {
       setStatus('Nhập tên và nội dung mẫu');
@@ -174,6 +186,9 @@ export function CommentTemplatesSidebar() {
                 </div>
                 <p>{item.text}</p>
                 <div className="md-template-card-actions">
+                  <button type="button" className="md-join-btn" onClick={() => useTemplate(item)}>
+                    Dùng mẫu
+                  </button>
                   <button type="button" className="md-join-btn" onClick={() => void copyTemplate(item)}>
                     Sao chép
                   </button>

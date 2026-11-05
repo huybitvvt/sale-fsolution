@@ -1667,6 +1667,129 @@
     };
   }
 
+  function groupFeedPostFromArticle(article, groupId, index) {
+    const ownArticle = (node) => node.closest('[role="article"]') === article;
+    const permalink = [...article.querySelectorAll('a[href]')]
+      .map((anchor) => anchor.href || '')
+      .find((href) => isPostReferenceUrl(href) && groupIdFromUrl(href) === String(groupId));
+    const postId = permalink ? postIdFromUrl(permalink) : '';
+    const messageNode = article.querySelector('[data-ad-preview="message"], [data-ad-comet-preview="message"], [data-testid="post_message"]');
+    if (!permalink && !messageNode) return null;
+    const blocked = /^(like|thích|comment|bình luận|reply|trả lời|share|chia sẻ|see more|xem thêm|send|gửi)$/i;
+    const candidates = [...article.querySelectorAll('[dir="auto"]')]
+      .filter((node) => ownArticle(node) && !node.querySelector('[dir="auto"]'))
+      .map((node) => normalize(node.innerText || node.textContent || ''))
+      .filter((text) => text && !blocked.test(text) && !/^\d+\s*(m|h|d|w|phút|giờ|ngày|tuần)$/i.test(text));
+    const message = normalize(messageNode?.innerText || messageNode?.textContent || '')
+      || candidates.sort((left, right) => right.length - left.length)[0]
+      || '';
+    if (!message || message.length > 12000) return null;
+
+    const anchors = [...article.querySelectorAll('a[href]')];
+    const authorAnchor = anchors.find((anchor) => {
+      const label = normalize(anchor.innerText || anchor.textContent || '');
+      return label && profileIdFromUrl(anchor.href || '') && !blocked.test(label);
+    });
+    const authorName = normalize(authorAnchor?.innerText || authorAnchor?.textContent || '') || 'Ẩn danh';
+    const timeNode = article.querySelector('abbr[data-utime], time[datetime]');
+    const unixTime = Number(timeNode?.getAttribute('data-utime') || 0);
+    const createdTime = unixTime > 0
+      ? new Date(unixTime * 1000).toISOString()
+      : String(timeNode?.getAttribute('datetime') || '');
+    const comments = [...article.querySelectorAll('[role="article"]')]
+      .filter((node) => node !== article && isVisible(node))
+      .map((node, commentIndex) => facebookCommentFromArticle(node, commentIndex))
+      .filter(Boolean);
+    const stableSeed = `${groupId}|${authorName}|${createdTime}|${message}`;
+    let hash = 2166136261;
+    for (let i = 0; i < stableSeed.length; i += 1) hash = Math.imul(hash ^ stableSeed.charCodeAt(i), 16777619);
+    const metrics = globalThis.STREALFacebookPostData?.extractMetricCounts([article.innerText || '']) || {};
+    return {
+      id: postId || `dom_${groupId}_${(hash >>> 0).toString(16)}`,
+      message,
+      from: { name: authorName },
+      created_time: createdTime,
+      permalink_url: permalink || `https://www.facebook.com/groups/${encodeURIComponent(groupId)}`,
+      _group_id: String(groupId),
+      _source: 'facebook_chrome_dom',
+      comments: { data: comments, summary: { total_count: comments.length } },
+      reactions: { summary: { total_count: metrics.reactionCount || 0 } },
+      shares: { count: metrics.shareCount || 0 },
+      dom_index: index,
+    };
+  }
+
+  function isGroupCommentExpansionControl(node) {
+    const label = normalize(`${node?.getAttribute?.('aria-label') || ''} ${node?.innerText || node?.textContent || ''}`);
+    return /^(?:xem|hiá»ƒn thá»‹|táº£i|view|show|see).{0,100}(?:bÃ¬nh luáº­n|comments?|cÃ¢u tráº£ lá»i|replies)/i.test(label)
+      || /(?:bÃ¬nh luáº­n|comments?|cÃ¢u tráº£ lá»i|replies).{0,100}(?:xem thÃªm|xem táº¥t cáº£|thÃªm|cÅ© hÆ¡n|more|all|older|previous)/i.test(label);
+  }
+
+  async function expandGroupPostComments(article, maxClicks = 3) {
+    let clicks = 0;
+    while (clicks < maxClicks) {
+      const control = [...article.querySelectorAll('button, [role="button"], a[role="link"]')]
+        .find((node) => isVisible(node) && isGroupCommentExpansionControl(node));
+      if (!control) break;
+      try {
+        control.click();
+        clicks += 1;
+        await sleep(300);
+      } catch {
+        break;
+      }
+    }
+  }
+
+  async function collectFacebookGroupFeed(payload) {
+    const groupId = String(payload?.group_id || '').trim();
+    const limit = Math.max(1, Math.min(Number(payload?.limit) || 10, 50));
+    if (!groupId || groupIdFromUrl(window.location.href) !== groupId) {
+      return { ok: false, final: true, posts: [], error: 'Tab Facebook không mở đúng Group được chọn.' };
+    }
+    const seen = new Map();
+    const expandedCommentArticles = new WeakSet();
+    let unchanged = 0;
+    for (let attempt = 0; attempt < 12 && seen.size < limit && unchanged < 3; attempt += 1) {
+      const articles = [...document.querySelectorAll('[role="article"]')]
+        .filter((node) => isVisible(node) && !node.parentElement?.closest('[role="article"]'));
+      const before = seen.size;
+      let expandedText = false;
+      articles.forEach((article) => {
+        const expandText = [...article.querySelectorAll('button, [role="button"]')]
+          .find((node) => isVisible(node) && /^(xem thêm|see more)$/i.test(normalize(node.innerText || node.textContent || '')));
+        if (expandText) {
+          try { expandText.click(); } catch {}
+          expandedText = true;
+        }
+      });
+      if (expandedText) await sleep(120);
+      for (const article of articles) {
+        if (!expandedCommentArticles.has(article)) {
+          expandedCommentArticles.add(article);
+          await expandGroupPostComments(article, 3);
+        }
+      }
+      articles.forEach((article, index) => {
+        const post = groupFeedPostFromArticle(article, groupId, index);
+        if (post && post.message) seen.set(post.id, post);
+      });
+      if (seen.size === before) unchanged += 1;
+      else unchanged = 0;
+      if (seen.size >= limit) break;
+      window.scrollTo(0, document.documentElement.scrollHeight);
+      await sleep(950);
+    }
+    const posts = [...seen.values()].slice(0, limit);
+    return {
+      ok: posts.length > 0,
+      final: true,
+      posts,
+      count: posts.length,
+      error: posts.length ? '' : 'Không thấy bài viết hiển thị trong Group này. Kiểm tra đăng nhập/quyền xem nhóm rồi thử lại.',
+    };
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'STREAL_FACEBOOK_CANCEL_GROUP_POST') {
       if (!message.requestId || message.requestId !== state.requestId) {
@@ -1715,6 +1838,12 @@
       collectFacebookPostData(message.payload || {})
         .then((response) => sendResponse(response))
         .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+      return true;
+    }
+    if (message?.type === 'STREAL_FACEBOOK_COLLECT_GROUP_FEED') {
+      collectFacebookGroupFeed(message.payload || {})
+        .then((response) => sendResponse(response))
+        .catch((error) => sendResponse({ ok: false, final: true, posts: [], error: error?.message || String(error) }));
       return true;
     }
     if (message?.type !== 'STREAL_FACEBOOK_PREPARE_GROUP_POST') return false;
