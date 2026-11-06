@@ -116,13 +116,8 @@ def _normalize_supabase_url(value: str) -> str:
     return url
 
 
-SUPABASE_URL = _normalize_supabase_url(os.environ.get('SUPABASE_URL') or os.environ.get('VITE_SUPABASE_URL') or '')
-SUPABASE_KEY = (
-    os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
-    or os.environ.get('SUPABASE_ANON_KEY')
-    or os.environ.get('SUPABASE_PUBLISHABLE_KEY')
-    or os.environ.get('VITE_SUPABASE_PUBLISHABLE_KEY', '')
-)
+SUPABASE_URL = sb.SUPABASE_URL
+SUPABASE_KEY = sb.SUPABASE_KEY
 SUPABASE_REPLY_TABLE = os.environ.get('SUPABASE_REPLY_TABLE', 'ai_reply_suggestions')
 SUPABASE_PROFILE_TABLE = os.environ.get('SUPABASE_PROFILE_TABLE', 'business_profiles')
 SUPABASE_COMMENT_LOG_TABLE = os.environ.get('SUPABASE_COMMENT_LOG_TABLE', 'comment_logs')
@@ -178,15 +173,7 @@ def _supabase_project_ref() -> str:
 
 
 def _supabase_key_source() -> str:
-    if os.environ.get('SUPABASE_SERVICE_ROLE_KEY'):
-        return 'service_role'
-    if os.environ.get('SUPABASE_ANON_KEY'):
-        return 'anon'
-    if os.environ.get('SUPABASE_PUBLISHABLE_KEY'):
-        return 'publishable'
-    if os.environ.get('VITE_SUPABASE_PUBLISHABLE_KEY'):
-        return 'vite_publishable'
-    return 'missing'
+    return sb.SUPABASE_KEY_SOURCE
 
 
 def _supabase_debug_context(table: str = '') -> str:
@@ -8578,6 +8565,7 @@ def api_health():
         'ok': True,
         'supabase_project_ref': _supabase_project_ref(),
         'supabase_enabled': USE_SUPABASE,
+        'supabase_key_source': _supabase_key_source(),
         'features': {
             'staff_cookie_optional': True,
             'groups_resolve_public': True,
@@ -8595,6 +8583,8 @@ def api_health():
     render_commit = str(os.environ.get('RENDER_GIT_COMMIT') or '').strip()
     if render_commit:
         payload['deploy_commit'] = render_commit
+    if str(request.args.get('check_supabase') or '').strip() == '1':
+        payload['supabase_check'] = sb.ping()
     if str(request.args.get('diagnostics') or '').strip() == 'facebook-history':
         legacy_rows = []
         remote_rows = []

@@ -33,14 +33,19 @@ def _normalize_supabase_url(value: str) -> str:
     return url
 
 
-SUPABASE_URL = _normalize_supabase_url(os.environ.get('SUPABASE_URL') or os.environ.get('VITE_SUPABASE_URL') or '')
-SUPABASE_KEY = (
-    os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
-    or os.environ.get('SUPABASE_ANON_KEY')
-    or os.environ.get('SUPABASE_PUBLISHABLE_KEY')
-    or os.environ.get('VITE_SUPABASE_PUBLISHABLE_KEY')
-    or ''
-)
+TARGET_SUPABASE_URL = 'https://omohfacsvuaetyewwxmw.supabase.co'
+TARGET_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_ZIkoO8Ux-bB3o5lF6lwMYg_FV5-F6RD'
+_configured_url = _normalize_supabase_url(os.environ.get('SUPABASE_URL') or os.environ.get('VITE_SUPABASE_URL') or '')
+
+# Render may retain variables from the previous project after a Git deploy.
+# Only use a service key when its configured URL is this project's URL.
+SUPABASE_URL = TARGET_SUPABASE_URL
+if _configured_url == TARGET_SUPABASE_URL and os.environ.get('SUPABASE_SERVICE_ROLE_KEY'):
+    SUPABASE_KEY = os.environ['SUPABASE_SERVICE_ROLE_KEY']
+    SUPABASE_KEY_SOURCE = 'service_role'
+else:
+    SUPABASE_KEY = TARGET_SUPABASE_PUBLISHABLE_KEY
+    SUPABASE_KEY_SOURCE = 'publishable'
 STAFF_USERS_TABLE = os.environ.get('SUPABASE_STAFF_TABLE', 'staff_users')
 MANAGED_CHANNEL_TABLE = os.environ.get('SUPABASE_CHANNEL_TABLE', 'managed_channels')
 CONTENT_SCRIPT_TABLE = os.environ.get('SUPABASE_SCRIPT_TABLE', 'content_scripts')
