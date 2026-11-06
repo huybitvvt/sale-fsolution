@@ -20,9 +20,9 @@ services:
       - key: GROQ_API_KEY
         sync: false
       - key: SUPABASE_URL
-        sync: false
+        value: https://omohfacsvuaetyewwxmw.supabase.co
       - key: SUPABASE_PUBLISHABLE_KEY
-        sync: false
+        value: sb_publishable_ZIkoO8Ux-bB3o5lF6lwMYg_FV5-F6RD
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: CLOUDINARY_CLOUD_NAME
