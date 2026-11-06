@@ -8576,6 +8576,8 @@ def index():
 def api_health():
     payload = {
         'ok': True,
+        'supabase_project_ref': _supabase_project_ref(),
+        'supabase_enabled': USE_SUPABASE,
         'features': {
             'staff_cookie_optional': True,
             'groups_resolve_public': True,
