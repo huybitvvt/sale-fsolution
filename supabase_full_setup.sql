@@ -1,6 +1,6 @@
 -- Full Supabase setup for sale-fsolution (fresh project).
 -- Run once in Supabase Dashboard > SQL Editor.
--- This creates schema/storage/policies. Add your own admin account after running.
+-- This creates schema/storage/policies and keeps the original demo admin account.
 -- App connection still requires SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in .env.
 begin;
 
@@ -47,7 +47,10 @@ create table if not exists public.staff_users (
 create unique index if not exists staff_users_username_uidx
     on public.staff_users (username);
 
--- Demo admin account omitted. Create your own admin account.
+-- Original account from supabase_schema.sql. Existing passwords are preserved on rerun.
+insert into public.staff_users (id, name, username, password, role, enabled)
+values ('test-khach', 'Khách Test', 'khachtest', '123456', 'admin', true)
+on conflict (username) do nothing;
 
 create table if not exists public.managed_channels (
     id           text primary key,
@@ -380,7 +383,7 @@ begin
   end if;
 end $$;
 
--- Demo admin account omitted. Create your own admin account.
+-- Demo admin account is inserted in the schema section above.
 
 create table if not exists public.managed_channels (
   id text primary key,
@@ -2824,6 +2827,4 @@ order by tablename, policyname;
 notify pgrst, 'reload schema';
 commit;
 
--- Create your first admin separately after choosing a strong password:
--- insert into public.staff_users (name, username, password, role, enabled)
--- values ('Admin', 'admin', 'REPLACE_WITH_A_STRONG_PASSWORD', 'admin', true);
+-- Original login: khachtest / 123456. Change this password after signing in.
