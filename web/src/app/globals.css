@@ -777,7 +777,7 @@ button, input, select, textarea { font-family: inherit; }
 .module-sub { margin: 6px 0 0; font-size: 13px; color: #64748b; line-height: 1.45; max-width: 720px; }
 .lead-level-summary {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   margin: 0 0 16px;
 }
@@ -906,6 +906,10 @@ button, input, select, textarea { font-family: inherit; }
 .lead-crm-filter-meta { margin: -6px 0 12px; font-size: 12px; color: #64748b; }
 .lead-settings-modal { max-width: 820px; }
 .lead-settings-hint { margin: 0 0 14px; font-size: 13px; color: #64748b; line-height: 1.5; }
+.lead-settings-groups { margin-bottom: 16px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 10px; background: #f8fafc; }
+.lead-settings-group-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 7px 12px; }
+.lead-settings-group-list label { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: #334155; }
+.lead-settings-group-list input { flex: 0 0 auto; }
 .lead-settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
 .lead-settings-grid textarea { min-height: 120px; resize: vertical; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; font-family: inherit; }
 .lead-settings-levels { margin-bottom: 12px; }
@@ -914,6 +918,17 @@ button, input, select, textarea { font-family: inherit; }
 .lead-settings-level-row { display: grid; grid-template-columns: 140px 1fr 72px 72px; gap: 8px; align-items: center; }
 .lead-settings-level-row label { display: grid; gap: 4px; font-size: 11px; color: #64748b; }
 .lead-settings-level-row input { padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; }
+.lead-settings-level-keywords { grid-column: 1 / -1; }
+.lead-settings-level-keywords textarea { min-height: 64px; resize: vertical; padding: 7px 9px; border: 1px solid #cbd5e1; border-radius: 7px; font: inherit; }
+.lead-workflow-status { margin: 0 0 12px; padding: 9px 12px; border-radius: 9px; color: #334155; background: #eff6ff; font-size: 13px; }
+.lead-row-action { white-space: nowrap; padding: 7px 10px; font-size: 12px; }
+.lead-proof-list { display: grid; gap: 4px; min-width: 120px; font-size: 11px; }
+.lead-proof-list a { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lead-follow-up-modal { width: min(480px, 94vw); }
+.lead-follow-up-modal .modal-hd { margin-bottom: 14px; }
+.lead-follow-up-modal .modal-hd button { border: 0; background: transparent; cursor: pointer; font-size: 18px; color: #64748b; }
+.lead-follow-up-modal .lead-process-field { margin-bottom: 12px; }
+.lead-follow-up-modal .modal-result { margin-top: 10px; font-size: 12px; }
 @media (max-width: 900px) {
   .lead-level-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
@@ -927,7 +942,7 @@ button, input, select, textarea { font-family: inherit; }
 }
 .lead-level-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; border-radius: 999px; padding: 3px 9px; white-space: nowrap; }
 .lead-crm-status { font-size: 12px; font-weight: 600; color: #334155; }
-.lead-crm-table { min-width: 1280px; }
+.lead-crm-table { min-width: 1480px; }
 .lead-process-modal { max-width: 560px; }
 .lead-process-preview { margin-bottom: 14px; padding: 12px 14px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0; }
 .lead-process-preview p { margin: 0 0 6px; }

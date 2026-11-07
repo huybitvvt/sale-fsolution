@@ -11,6 +11,7 @@ export type LeadScoreRules = {
 };
 
 export type LeadHunterConfig = {
+  groupIds: string[];
   needKeywords: string[];
   platformKeywords: string[];
   businessModules: string[];
@@ -40,6 +41,7 @@ export const SCORE_RULE_LABELS: { key: keyof LeadScoreRules; label: string }[] =
 ];
 
 export const DEFAULT_LEAD_HUNTER_CONFIG: LeadHunterConfig = {
+  groupIds: [],
   needKeywords: [
     'tôi cần',
     'nhu cầu',
@@ -90,11 +92,10 @@ export const DEFAULT_LEAD_HUNTER_CONFIG: LeadHunterConfig = {
     'Theo dõi',
   ],
   levels: [
-    { id: 'cold', label: 'Lead lạnh', min: 0, max: 10, color: '#475569', bg: '#f1f5f9' },
-    { id: 'interest', label: 'Lead quan tâm', min: 11, max: 30, color: '#1d4ed8', bg: '#dbeafe' },
-    { id: 'warm', label: 'Lead ấm', min: 31, max: 60, color: '#a16207', bg: '#fef9c3' },
-    { id: 'hot', label: 'Lead nóng', min: 61, max: 90, color: '#c2410c', bg: '#ffedd5' },
-    { id: 'vip', label: 'Lead rất nóng', min: 91, max: 999, color: '#b91c1c', bg: '#fee2e2' },
+    { id: 'hot', label: 'Nóng', min: 61, max: 999, color: '#b91c1c', bg: '#fee2e2', keywords: ['cần gấp', 'báo giá', 'tìm đơn vị ngay'] },
+    { id: 'warm', label: 'Ấm', min: 31, max: 60, color: '#c2410c', bg: '#ffedd5', keywords: ['cần tư vấn', 'cần làm', 'đang tìm đơn vị'] },
+    { id: 'interest', label: 'Quan tâm', min: 11, max: 30, color: '#1d4ed8', bg: '#dbeafe', keywords: ['đang tìm hiểu', 'xin tư vấn', 'tham khảo'] },
+    { id: 'cold', label: 'Lạnh', min: 0, max: 10, color: '#475569', bg: '#f1f5f9', keywords: ['quan tâm', 'tìm hiểu', 'có ai biết'] },
   ],
   scoreRules: { ...DEFAULT_SCORE_RULES },
 };
@@ -117,6 +118,9 @@ function normalizeLevels(levels: LeadLevel[]): LeadLevel[] {
       label: String(incoming?.label || level.label).trim() || level.label,
       min: Number.isFinite(incoming?.min) ? Number(incoming!.min) : level.min,
       max: Number.isFinite(incoming?.max) ? Number(incoming!.max) : level.max,
+      keywords: Array.isArray(incoming?.keywords)
+        ? incoming.keywords.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+        : [...(level.keywords || [])],
     });
   }
   return DEFAULT_LEAD_HUNTER_CONFIG.levels.map((level) => byId.get(level.id)!);
@@ -141,6 +145,7 @@ function normalizeScoreRules(rules?: Partial<LeadScoreRules>): LeadScoreRules {
 
 function mergeConfig(parsed: Partial<LeadHunterConfig>): LeadHunterConfig {
   return {
+    groupIds: Array.isArray(parsed.groupIds) ? [...new Set(parsed.groupIds.map((id) => String(id || '').trim()).filter(Boolean))] : [],
     needKeywords: parsed.needKeywords?.length ? parsed.needKeywords.map((s) => s.trim().toLowerCase()).filter(Boolean) : DEFAULT_LEAD_HUNTER_CONFIG.needKeywords,
     platformKeywords: parsed.platformKeywords?.length ? parsed.platformKeywords.map((s) => s.trim().toLowerCase()).filter(Boolean) : DEFAULT_LEAD_HUNTER_CONFIG.platformKeywords,
     businessModules: parsed.businessModules?.length ? parsed.businessModules.map((s) => s.trim().toLowerCase()).filter(Boolean) : DEFAULT_LEAD_HUNTER_CONFIG.businessModules,
@@ -174,6 +179,7 @@ export function resetLeadHunterConfig(): LeadHunterConfig {
 }
 
 export function configFromForm(input: {
+  groupIds: string[];
   needKeywordsText: string;
   platformKeywordsText: string;
   businessModulesText: string;
@@ -182,6 +188,7 @@ export function configFromForm(input: {
   scoreRules: LeadScoreRules;
 }): LeadHunterConfig {
   return {
+    groupIds: [...new Set(input.groupIds.map((id) => String(id || '').trim()).filter(Boolean))],
     needKeywords: splitLines(input.needKeywordsText),
     platformKeywords: splitLines(input.platformKeywordsText),
     businessModules: splitLines(input.businessModulesText),

@@ -151,6 +151,16 @@ export type Lead = {
   lead_level_label?: string;
   crm_status?: string;
   assigned_sale?: string;
+  assigned_sale_staff_id?: string;
+  assigned_sale_at?: string;
+  follow_ups?: {
+    id?: string;
+    action_type?: 'message' | 'comment' | string;
+    image_url?: string;
+    staff_id?: string;
+    staff_name?: string;
+    created_at?: string;
+  }[];
   matched_keyword?: string;
   platform_tag?: string;
   business_module?: string;

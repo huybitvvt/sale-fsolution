@@ -3268,6 +3268,9 @@ export function MonitorPage() {
               leads={leads}
               groupNames={groupNames}
               busy={leadsBusy}
+              isAdmin={adminStaff}
+              currentStaffId={String(currentStaff?.id || '')}
+              onReload={reloadLeads}
               onDelete={deleteLead}
               onDeleteMany={deleteSelectedLeads}
             />

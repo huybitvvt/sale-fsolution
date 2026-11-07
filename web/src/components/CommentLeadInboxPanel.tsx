@@ -5,7 +5,7 @@ import { CommentAuthorHeading, CommentAuthorLink } from '@/components/CommentAut
 import { api } from '@/lib/api';
 import { buildTikTokCommentUrl } from '@/lib/utils';
 import { extractPhones, phonesForComment } from '@/lib/phone-utils';
-import type { ManagedChannel, StoredPostComment } from '@/lib/types';
+import type { Lead, ManagedChannel, StoredPostComment } from '@/lib/types';
 import './omni-inbox.css';
 
 type TabKey = 'inbox' | 'customers' | 'stats' | 'templates' | 'messenger' | 'zalo';
@@ -611,6 +611,13 @@ function postTitle(row: StoredPostComment) {
   return row.post_title || row.video_title || '-';
 }
 
+function commentHasCustomerInfo(row: StoredPostComment, phoneInput: string) {
+  const name = normalizeText(row.author_name || '');
+  if (/^(ẩn danh|an danh|anonymous( participant)?|facebook user|người dùng facebook|nguoi dung facebook|tiktok user|unknown)$/i.test(name)) return false;
+  if (phoneInput.trim() || phonesForComment(row).length) return true;
+  return Boolean(row.author_id?.trim() || row.author_url?.trim() || name);
+}
+
 export function CommentLeadInboxPanel() {
   const [tab, setTab] = useState<TabKey>('inbox');
   const [comments, setComments] = useState<StoredPostComment[]>([]);
@@ -626,6 +633,11 @@ export function CommentLeadInboxPanel() {
   const [replyText, setReplyText] = useState('');
   const [replyBusy, setReplyBusy] = useState(false);
   const [replyStatus, setReplyStatus] = useState('');
+  const [messageLeads, setMessageLeads] = useState<Lead[]>([]);
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [proofBusy, setProofBusy] = useState(false);
+  const [proofStatus, setProofStatus] = useState('');
+  const [proofInputKey, setProofInputKey] = useState(0);
   const [templates, setTemplates] = useState<ReplyTemplate[]>(() => templateRows(QUICK_REPLIES));
   const [templateForm, setTemplateForm] = useState({ title: '', trigger: '', text: '' });
   const [tagOptions, setTagOptions] = useState<TagMeta[]>(() => tagRows(TAGS));
@@ -676,6 +688,19 @@ export function CommentLeadInboxPanel() {
       const local = readWorkflowStore();
       setProcessedIds(local.processed);
       setStarredIds(local.starred);
+    }
+  }, []);
+
+  const loadMessageLeads = useCallback(async () => {
+    try {
+      const response = await api('/api/ai/leads');
+      if (!response.ok) return;
+      const data = await response.json().catch(() => ({}));
+      const rows = Object.values(data as Record<string, Lead[]>)
+        .flatMap((items) => Array.isArray(items) ? items : []);
+      setMessageLeads(rows);
+    } catch {
+      // Giữ lịch sử minh chứng đang hiển thị nếu mạng tạm lỗi.
     }
   }, []);
 
@@ -848,6 +873,7 @@ export function CommentLeadInboxPanel() {
 
   useEffect(() => {
     void loadWorkflow();
+    void loadMessageLeads();
     void loadTemplateConfig();
     void (async () => {
       try {
@@ -860,7 +886,7 @@ export function CommentLeadInboxPanel() {
         /* giữ danh sách rỗng */
       }
     })();
-  }, [loadWorkflow]);
+  }, [loadWorkflow, loadMessageLeads]);
 
   useEffect(() => {
     if (tab !== 'inbox') return;
@@ -1001,10 +1027,18 @@ export function CommentLeadInboxPanel() {
   }, [comments, query, sourceFilter, namedChannelFilter, managedChannels, tagFilter, workflowFilter, processedSet, starredSet, tagsForRow]);
 
   const selected = filtered.find((row) => commentKey(row) === selectedId) || filtered[0] || null;
+  const selectedHasCustomerInfo = selected ? commentHasCustomerInfo(selected, phoneInput) : false;
+  const selectedMessageLead = selected
+    ? messageLeads.find((lead) => String(lead.comment_id || '') === String(selected.comment_id || '')
+      && (!lead.post_id || lead.post_id === selected.post_id)) || null
+    : null;
+  const selectedMessageProofs = (selectedMessageLead?.follow_ups || []).filter((followUp) => followUp.action_type === 'message');
 
   useEffect(() => {
     setReplyStatus('');
     setPhoneHint('');
+    setProofStatus('');
+    setProofFile(null);
     if (!selected) {
       setPhoneInput('');
       return;
@@ -1182,6 +1216,61 @@ export function CommentLeadInboxPanel() {
       setStatus(data.ok ? `✅ Đã đồng bộ ${data.count || 0} lead vào bảng Lead` : `❌ ${data.error || 'Không đồng bộ được lead'}`);
     } catch {
       setStatus('❌ Lỗi kết nối khi đồng bộ lead');
+    }
+  };
+
+  const saveMessageProof = async () => {
+    if (!selected || !selectedHasCustomerInfo || !proofFile) return;
+    if (!selected.comment_id || !selected.post_id) {
+      setProofStatus('Không lưu được: bình luận đang thiếu mã bài viết hoặc mã comment.');
+      return;
+    }
+    setProofBusy(true);
+    setProofStatus('Đang lưu ảnh xác nhận đã nhắn...');
+    try {
+      const leadResponse = await api('/api/leads/from-comments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: selected.source || '',
+          post_id: selected.post_id,
+          comment_id: selected.comment_id,
+          include_without_phone: true,
+        }),
+      });
+      const leadData = await leadResponse.json().catch(() => ({}));
+      if (!leadResponse.ok || !leadData.ok) throw new Error(leadData.error || 'Không tạo được lead từ bình luận');
+      const leadBuckets = leadData.leads && typeof leadData.leads === 'object'
+        ? Object.values(leadData.leads as Record<string, Lead[]>)
+        : [];
+      const lead = leadBuckets.flatMap((items) => Array.isArray(items) ? items : [])
+        .find((item) => String(item.comment_id || '') === String(selected.comment_id));
+      if (!lead?.lead_key) throw new Error('Không tìm thấy lead tương ứng với bình luận này');
+
+      const claimResponse = await api('/api/leads/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lead_key: lead.lead_key, post_id: lead.post_id || selected.post_id }),
+      });
+      const claimData = await claimResponse.json().catch(() => ({}));
+      if (!claimResponse.ok || !claimData.ok) throw new Error(claimData.error || 'Nhận lead trước khi lưu minh chứng');
+
+      const form = new FormData();
+      form.set('lead_key', lead.lead_key);
+      form.set('post_id', lead.post_id || selected.post_id);
+      form.set('action_type', 'message');
+      form.set('image', proofFile);
+      const response = await api('/api/leads/follow-up', { method: 'POST', body: form, timeoutMs: 120000 });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) throw new Error(data.error || 'Không lưu được ảnh minh chứng');
+      setProofFile(null);
+      setProofInputKey((current) => current + 1);
+      setProofStatus('Đã ghi nhận ảnh nhắn riêng cùng người lưu và thời gian.');
+      await loadMessageLeads();
+    } catch (error) {
+      setProofStatus(error instanceof Error ? error.message : 'Không lưu được ảnh minh chứng');
+    } finally {
+      setProofBusy(false);
     }
   };
 
@@ -2493,6 +2582,61 @@ export function CommentLeadInboxPanel() {
                       </div>
                     </div>
                   </div>
+
+                  <section className="omni-message-proof" aria-label="Minh chứng nhắn riêng">
+                    <div className="omni-message-proof-head">
+                      <div>
+                        <b>Minh chứng nhắn riêng</b>
+                        <p>Ảnh này xác nhận sale đã nhắn khách. Phần trả lời bình luận công khai bên dưới vẫn dùng như cũ.</p>
+                      </div>
+                      {selectedHasCustomerInfo ? (
+                        <span className={`omni-message-proof-state${selectedMessageProofs.length ? ' saved' : ' missing'}`}>
+                          {selectedMessageProofs.length ? `Đã có ${selectedMessageProofs.length} ảnh` : 'Chưa có ảnh xác nhận'}
+                        </span>
+                      ) : null}
+                    </div>
+                    {selectedHasCustomerInfo ? (
+                      <>
+                        {selectedMessageProofs.length ? (
+                          <div className="omni-message-proof-history">
+                            {selectedMessageProofs.map((followUp, index) => (
+                              <a
+                                key={followUp.id || `${followUp.created_at}-${index}`}
+                                href={followUp.image_url || undefined}
+                                target="_blank"
+                                rel="noreferrer"
+                                aria-disabled={!followUp.image_url}
+                              >
+                                {followUp.staff_name || 'Sale'} · {commentTime({ created_time: followUp.created_at })}
+                                {followUp.image_url ? ' · Xem ảnh' : ''}
+                              </a>
+                            ))}
+                          </div>
+                        ) : <p className="omni-message-proof-empty">Chưa có minh chứng cho khách này.</p>}
+                        <div className="omni-message-proof-actions">
+                          <input
+                            key={`${selectedId}-${proofInputKey}`}
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp,image/gif"
+                            capture="environment"
+                            disabled={proofBusy}
+                            onChange={(event) => setProofFile(event.target.files?.[0] || null)}
+                          />
+                          <button
+                            type="button"
+                            className="omni-btn-primary"
+                            disabled={proofBusy || !proofFile}
+                            onClick={() => void saveMessageProof()}
+                          >
+                            {proofBusy ? 'Đang lưu...' : 'Lưu ảnh đã nhắn'}
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="omni-message-proof-anonymous">Khách ẩn danh — không hiện tải ảnh nhắn riêng; cần gửi tin nhắn/bình luận ở ô bên dưới để ghi nhận chăm sóc.</p>
+                    )}
+                    {proofStatus ? <p className="omni-message-proof-status" role="status">{proofStatus}</p> : null}
+                  </section>
 
                   <footer className="omni-composer">
                     <div className="omni-composer-inner">

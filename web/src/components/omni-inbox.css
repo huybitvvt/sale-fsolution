@@ -813,6 +813,59 @@
 .omni-action-row .omni-btn-ghost { flex: 1; min-width: 100px; }
 .omni-action-row .omni-btn-primary { flex: 2; min-width: 140px; }
 
+.omni-message-proof {
+  flex-shrink: 0;
+  padding: 14px 24px;
+  border-top: 1px solid var(--omni-outline-variant);
+  background: #f8fafc;
+}
+
+.omni-message-proof-head,
+.omni-message-proof-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.omni-message-proof-head b { font-size: 13px; }
+.omni-message-proof-head p,
+.omni-message-proof-empty,
+.omni-message-proof-anonymous,
+.omni-message-proof-status {
+  margin: 3px 0 0;
+  color: var(--omni-on-surface-variant);
+  font-size: 12px;
+}
+
+.omni-message-proof-state {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.omni-message-proof-state.saved { background: #dcfce7; color: #166534; }
+.omni-message-proof-state.missing { background: #fef3c7; color: #92400e; }
+
+.omni-message-proof-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.omni-message-proof-history a { color: var(--omni-primary); font-weight: 600; }
+.omni-message-proof-history a[aria-disabled="true"] { color: var(--omni-outline); pointer-events: none; }
+
+.omni-message-proof-actions { justify-content: flex-start; margin-top: 9px; }
+.omni-message-proof-actions input { min-width: 0; max-width: 360px; font-size: 12px; }
+.omni-message-proof-actions .omni-btn-primary { flex: 0 0 auto; padding: 8px 12px; font-size: 12px; }
+.omni-message-proof-status { font-weight: 600; }
+.omni-message-proof-anonymous { margin-top: 8px; color: #475569; }
+
 .omni-composer {
   padding: 24px;
   background: #fff;
@@ -1759,4 +1812,8 @@
   .omni-zalo-ai-reply { align-items: flex-start; flex-direction: column; }
   .omni-messenger-note { flex-wrap: wrap; }
   .omni-zalo-listener-state { margin-left: 28px; }
+  .omni-message-proof { padding: 12px 16px; }
+  .omni-message-proof-head,
+  .omni-message-proof-actions { align-items: flex-start; flex-direction: column; }
+  .omni-message-proof-actions input { max-width: 100%; }
 }

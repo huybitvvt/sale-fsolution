@@ -13,7 +13,7 @@ export const LEAD_PLATFORM_KEYWORDS = DEFAULT_LEAD_HUNTER_CONFIG.platformKeyword
 export const LEAD_BUSINESS_MODULES = DEFAULT_LEAD_HUNTER_CONFIG.businessModules;
 export const LEAD_CRM_STATUSES = DEFAULT_LEAD_HUNTER_CONFIG.crmStatuses;
 
-export type LeadLevelId = 'cold' | 'interest' | 'warm' | 'hot' | 'vip';
+export type LeadLevelId = 'hot' | 'warm' | 'interest' | 'cold';
 
 export type LeadLevel = {
   id: LeadLevelId;
@@ -22,6 +22,7 @@ export type LeadLevel = {
   max: number;
   color: string;
   bg: string;
+  keywords?: string[];
 };
 
 export const LEAD_LEVELS: LeadLevel[] = DEFAULT_LEAD_HUNTER_CONFIG.levels;
@@ -116,6 +117,13 @@ export function leadLevelFromScore(score: number, config = getLeadHunterConfig()
   return config.levels[0]!;
 }
 
+export function leadLevelFromText(text: string, config = getLeadHunterConfig()): LeadLevel | null {
+  const normalized = String(text || '').toLowerCase();
+  return config.levels.find((level) =>
+    (level.keywords || []).some((keyword) => keyword && normalized.includes(keyword.toLowerCase())),
+  ) || null;
+}
+
 export function defaultCrmStatus(lead: Lead, score: number, config = getLeadHunterConfig()): string {
   if (lead.crm_status) return lead.crm_status;
   if (score > 10) return config.crmStatuses[0] || 'Lead mới';
@@ -142,7 +150,7 @@ export function enrichLead(
   lead_level_label: string;
 } {
   const { score, breakdown } = scoreLead(lead, config);
-  const level = leadLevelFromScore(score, config);
+  const level = leadLevelFromText(haystack(lead), config) || leadLevelFromScore(score, config);
   const fields = detectLeadFields(lead, config);
   return {
     ...lead,

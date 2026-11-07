@@ -277,6 +277,7 @@ _messenger_threads_lock = threading.Lock()
 _zalo_threads_lock = threading.Lock()
 _zalo_ai_inflight_lock = threading.Lock()
 _zalo_ai_inflight: set[str] = set()
+_lead_workflow_lock = threading.Lock()
 
 
 def _default_business_profile() -> dict:
@@ -3390,12 +3391,65 @@ _LEAD_BUSINESS_MODULES = [
     'quản lý kho', 'quản lý vận tải',
 ]
 _LEAD_LEVELS = [
-    ('cold', 'Lead lạnh', 0, 10),
-    ('interest', 'Lead quan tâm', 11, 30),
-    ('warm', 'Lead ấm', 31, 60),
-    ('hot', 'Lead nóng', 61, 90),
-    ('vip', 'Lead rất nóng', 91, 999),
+    ('hot', 'Nóng', 61, 999),
+    ('warm', 'Ấm', 31, 60),
+    ('interest', 'Quan tâm', 11, 30),
+    ('cold', 'Lạnh', 0, 10),
 ]
+
+_LEAD_LEVEL_KEYWORDS = {
+    'hot': ['cần gấp', 'báo giá', 'tìm đơn vị ngay'],
+    'warm': ['cần tư vấn', 'cần làm', 'đang tìm đơn vị'],
+    'interest': ['đang tìm hiểu', 'xin tư vấn', 'tham khảo'],
+    'cold': ['quan tâm', 'tìm hiểu', 'có ai biết'],
+}
+
+
+def _default_lead_hunter_config() -> dict:
+    return {
+        'groupIds': [],
+        'levels': [
+            {'id': 'hot', 'label': 'Nóng', 'min': 61, 'max': 999, 'color': '#b91c1c', 'bg': '#fee2e2', 'keywords': list(_LEAD_LEVEL_KEYWORDS['hot'])},
+            {'id': 'warm', 'label': 'Ấm', 'min': 31, 'max': 60, 'color': '#c2410c', 'bg': '#ffedd5', 'keywords': list(_LEAD_LEVEL_KEYWORDS['warm'])},
+            {'id': 'interest', 'label': 'Quan tâm', 'min': 11, 'max': 30, 'color': '#1d4ed8', 'bg': '#dbeafe', 'keywords': list(_LEAD_LEVEL_KEYWORDS['interest'])},
+            {'id': 'cold', 'label': 'Lạnh', 'min': 0, 'max': 10, 'color': '#475569', 'bg': '#f1f5f9', 'keywords': list(_LEAD_LEVEL_KEYWORDS['cold'])},
+        ],
+    }
+
+
+def _lead_hunter_config() -> dict:
+    defaults = _default_lead_hunter_config()
+    saved = _settings.get('lead_hunter') if isinstance(_settings, dict) else None
+    saved = saved if isinstance(saved, dict) else {}
+    saved_levels = saved.get('levels') if isinstance(saved.get('levels'), list) else []
+    levels_by_id = {str(item.get('id') or ''): item for item in saved_levels if isinstance(item, dict)}
+    levels = []
+    for default in defaults['levels']:
+        incoming = levels_by_id.get(default['id']) or {}
+        keywords = incoming.get('keywords')
+        levels.append({
+            **default,
+            'label': str(incoming.get('label') or default['label']).strip()[:40],
+            'min': max(0, int(incoming.get('min', default['min']))),
+            'max': max(0, int(incoming.get('max', default['max']))),
+            'keywords': [str(word).strip().lower()[:100] for word in keywords if str(word).strip()][:100]
+            if isinstance(keywords, list) else list(default['keywords']),
+        })
+    group_ids = saved.get('groupIds') if isinstance(saved.get('groupIds'), list) else []
+    return {
+        'groupIds': list(dict.fromkeys(str(gid).strip() for gid in group_ids if str(gid).strip()))[:200],
+        'levels': levels,
+    }
+
+
+def _match_lead_level(text: str, config: dict | None = None) -> tuple[str, str, str] | None:
+    normalized = str(text or '').lower()
+    for level in (config or _lead_hunter_config()).get('levels', []):
+        for keyword in level.get('keywords') or []:
+            word = str(keyword or '').strip().lower()
+            if word and word in normalized:
+                return str(level.get('id') or ''), str(level.get('label') or ''), word
+    return None
 
 
 def _lead_text_blob(lead: dict) -> str:
@@ -3451,10 +3505,10 @@ def _score_lead(lead: dict) -> tuple[int, dict]:
 
 
 def _lead_level_from_score(score: int) -> tuple[str, str]:
-    for level_id, label, low, high in _LEAD_LEVELS:
-        if low <= score <= high:
-            return level_id, label
-    return 'cold', 'Lead lạnh'
+    for level in _lead_hunter_config().get('levels') or []:
+        if int(level.get('min') or 0) <= score <= int(level.get('max') or 0):
+            return str(level.get('id') or 'cold'), str(level.get('label') or 'Lạnh')
+    return 'cold', 'Lạnh'
 
 
 def _lead_key(lead: dict) -> str:
@@ -3530,6 +3584,9 @@ def _normalise_lead(lead: dict, post_id: str = '') -> dict:
         'confidence': float(lead.get('confidence') or (0.95 if phone else 0.6)),
         'evidence': str(lead.get('evidence') or '').strip(),
         'assigned_sale': str(lead.get('assigned_sale') or lead.get('sale_owner') or '').strip(),
+        'assigned_sale_staff_id': str(lead.get('assigned_sale_staff_id') or '').strip(),
+        'assigned_sale_at': str(lead.get('assigned_sale_at') or '').strip(),
+        'follow_ups': lead.get('follow_ups') if isinstance(lead.get('follow_ups'), list) else [],
         'crm_status': str(lead.get('crm_status') or '').strip(),
         'processed_at': str(lead.get('processed_at') or '').strip(),
         'processed_by': str(lead.get('processed_by') or lead.get('processed_by_staff_name') or '').strip(),
@@ -3541,7 +3598,18 @@ def _normalise_lead(lead: dict, post_id: str = '') -> dict:
     else:
         _, score_fields = _score_lead(base)
         score_val = int(score_val)
-    level_id, level_label = _lead_level_from_score(int(score_val))
+    matched_level = _match_lead_level(_lead_text_blob(base)) if lead_source == 'group_scan' else None
+    saved_level_id = str(lead.get('lead_level') or '') if lead_source == 'group_scan' else ''
+    if matched_level:
+        level_id, level_label = matched_level[0], matched_level[1]
+        base['matched_keyword'] = matched_level[2]
+    elif saved_level_id in {'hot', 'warm', 'interest', 'cold'}:
+        level_id, level_label = next(
+            ((str(item['id']), str(item['label'])) for item in _lead_hunter_config()['levels'] if item['id'] == saved_level_id),
+            _lead_level_from_score(int(score_val)),
+        )
+    else:
+        level_id, level_label = _lead_level_from_score(int(score_val))
     crm_status = base.get('crm_status') or ('Lead mới' if int(score_val) > 10 else 'Theo dõi')
     return {
         **base,
@@ -4141,6 +4209,14 @@ def _filter_leads_for_current_staff(leads: dict) -> dict:
     for post_id, items in (leads or {}).items():
         owned = []
         for item in items or []:
+            assigned_id = str(item.get('assigned_sale_staff_id') or '').strip()
+            if assigned_id:
+                if assigned_id == staff_id:
+                    owned.append(item)
+                continue
+            if item.get('source') == 'group_scan' and not str(item.get('assigned_sale') or '').strip():
+                owned.append(item)
+                continue
             owner_ids = {
                 str(item.get('processed_by_staff_id') or '').strip(),
                 str(item.get('created_by_staff_id') or '').strip(),
@@ -5728,7 +5804,30 @@ def _merged_public_staff_rows(*, refresh_remote: bool = True) -> tuple[list, str
 
     current = _current_staff()
     if current:
-        merged[current.get('id') or current.get('username') or 'current'] = current
+        current_id = str(current.get('id') or '').strip()
+        current_username = str(current.get('username') or '').strip().lower()
+        current_key = next(
+            (
+                key
+                for key, item in merged.items()
+                if (current_id and str(item.get('id') or '').strip() == current_id)
+                or (
+                    current_username
+                    and str(item.get('username') or '').strip().lower() == current_username
+                )
+            ),
+            _staff_identity_key(current) or 'current',
+        )
+        existing = merged.get(current_key) or {}
+        merged[current_key] = {
+            **existing,
+            **current,
+            'facebook_cookies': _combine_staff_facebook_cookies(existing, current),
+            'managed_groups': _merge_managed_groups(
+                existing.get('managed_groups'),
+                current.get('managed_groups'),
+            ),
+        }
     return [_public_staff_cookie(item) for item in merged.values() if item], warning
 
 
@@ -15527,6 +15626,227 @@ def ai_leads_get():
             merged[post_id] = list(by_key.values())
         return jsonify(_filter_leads_for_current_staff(_public_leads_dict(merged)))
     return jsonify(_filter_leads_for_current_staff(_public_leads_dict(_leads)))
+
+
+@app.route('/api/lead-hunter/config', methods=['GET', 'POST'])
+def lead_hunter_config_api():
+    global _settings
+    staff = _current_staff()
+    if not staff:
+        return jsonify({'ok': False, 'error': 'Chưa đăng nhập'}), 401
+    if request.method == 'GET':
+        return jsonify({'ok': True, 'config': _lead_hunter_config(), 'can_manage': _is_admin()})
+    if not _is_admin():
+        return jsonify({'ok': False, 'error': 'Chỉ quản trị viên được cấu hình nhóm và từ khóa'}), 403
+
+    body = request.get_json(silent=True) or {}
+    defaults = _default_lead_hunter_config()
+    requested_groups = body.get('groupIds') if isinstance(body.get('groupIds'), list) else []
+    available_groups = {str(item.get('id') or '').strip() for item in _merged_facebook_groups()}
+    group_ids = list(dict.fromkeys(
+        str(gid).strip() for gid in requested_groups
+        if str(gid).strip() and str(gid).strip() in available_groups
+    ))[:200]
+    incoming_levels = body.get('levels') if isinstance(body.get('levels'), list) else []
+    incoming_by_id = {str(item.get('id') or ''): item for item in incoming_levels if isinstance(item, dict)}
+    normalized_levels = []
+    for default in defaults['levels']:
+        incoming = incoming_by_id.get(default['id']) or {}
+        try:
+            minimum = max(0, int(incoming.get('min', default['min'])))
+        except (TypeError, ValueError):
+            minimum = default['min']
+        try:
+            maximum = max(minimum, int(incoming.get('max', default['max'])))
+        except (TypeError, ValueError):
+            maximum = max(minimum, default['max'])
+        words = incoming.get('keywords') if isinstance(incoming.get('keywords'), list) else default['keywords']
+        normalized_levels.append({
+            **default,
+            'label': str(incoming.get('label') or default['label']).strip()[:40] or default['label'],
+            'min': minimum,
+            'max': maximum,
+            'keywords': list(dict.fromkeys(str(word).strip().lower()[:100] for word in words if str(word).strip()))[:100],
+        })
+    _settings = dict(_settings or {})
+    _settings['lead_hunter'] = {'groupIds': group_ids, 'levels': normalized_levels}
+    _save_settings()
+    return jsonify({'ok': True, 'config': _lead_hunter_config()})
+
+
+@app.route('/api/leads/scan-groups', methods=['POST'])
+def leads_scan_groups():
+    if not _current_staff():
+        return jsonify({'ok': False, 'error': 'Chưa đăng nhập'}), 401
+    config = _lead_hunter_config()
+    configured_groups = config.get('groupIds') or []
+    group_ids = _filter_group_ids_for_staff(configured_groups)
+    if not group_ids:
+        return jsonify({'ok': False, 'error': 'Chưa cấu hình nhóm cần quét hoặc sale chưa được giao quyền nhóm'}), 400
+
+    # Bring cloud assignments and proof history into memory before refreshing leads.
+    remote, _ = _load_leads_from_supabase(limit=5000)
+    if remote:
+        _merge_leads_into_memory([item for bucket in remote.values() for item in bucket])
+
+    body = request.get_json(silent=True) or {}
+    limit = max(1, min(int(body.get('limit') or 40), 100))
+    report = []
+    posts = []
+    with ThreadPoolExecutor(max_workers=min(8, len(group_ids))) as pool:
+        futures = [pool.submit(copy_current_request_context(_fetch_group_feed), gid, limit) for gid in group_ids]
+        for future in as_completed(futures):
+            fetched, result = future.result()
+            posts.extend(fetched or [])
+            report.append(result)
+
+    candidates = []
+    now = datetime.now(_app_timezone()).isoformat(timespec='seconds')
+    for post in posts:
+        post_id = str(post.get('id') or '').strip()
+        message = str(post.get('message') or '').strip()
+        matched = _match_lead_level(message, config)
+        if not post_id or not message or not matched:
+            continue
+        group_id = str(post.get('_group_id') or post.get('group_id') or '').strip()
+        phones = re.findall(r'(?:0|\+84)[\d.\s-]{8,14}\d', message)
+        lead = _normalise_lead({
+            'platform': 'facebook',
+            'source': 'group_scan',
+            'source_id': post_id,
+            'post_id': post_id,
+            'group_id': group_id,
+            'post_url': str(post.get('permalink_url') or ''),
+            'name': str((post.get('from') or {}).get('name') or 'Ẩn danh'),
+            'need': message[:3000],
+            'evidence': message[:300],
+            'phone': phones[0] if phones else '',
+            'phones': phones,
+            'contact_status': 'has_phone' if phones else 'no_phone',
+            'lead_level': matched[0],
+            'lead_level_label': matched[1],
+            'matched_keyword': matched[2],
+            'created_at': now,
+            'assigned_sale': '',
+            'assigned_sale_staff_id': '',
+            'assigned_sale_at': '',
+            'follow_ups': [],
+        })
+        # Re-scans refresh source text without dropping claim or follow-up history.
+        existing = next((row for row in _leads.get(post_id, []) if row.get('lead_key') == lead.get('lead_key')), None)
+        if existing:
+            for field in ('assigned_sale', 'assigned_sale_staff_id', 'assigned_sale_at', 'follow_ups'):
+                lead[field] = existing.get(field) or lead.get(field)
+        candidates.append(lead)
+
+    new_count = _merge_leads_into_memory(candidates)
+    saved, storage_error = _save_leads_to_supabase(candidates)
+    payload = {
+        'ok': True,
+        'scanned_posts': len(posts),
+        'matched_count': len(candidates),
+        'new_count': new_count,
+        'report': report,
+        'storage': 'supabase' if saved else 'local',
+    }
+    failures = [str(item.get('error') or '') for item in report if not item.get('ok') and item.get('error')]
+    warning = storage_error or ('; '.join(failures[:2]) if failures else '')
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
+
+
+def _lead_for_workflow(lead_key: str, post_id: str = '') -> dict | None:
+    remote, _ = _load_leads_from_supabase(limit=5000)
+    if remote:
+        for bucket in remote.values():
+            for lead in bucket:
+                if str(lead.get('lead_key') or '') == lead_key and (not post_id or str(lead.get('post_id') or '') == post_id):
+                    return lead
+    for current_post_id, bucket in _leads.items():
+        if post_id and current_post_id != post_id:
+            continue
+        for lead in bucket or []:
+            if str(lead.get('lead_key') or _lead_key(lead)) == lead_key:
+                return lead
+    return None
+
+
+@app.route('/api/leads/claim', methods=['POST'])
+def leads_claim():
+    staff = _current_staff()
+    if not staff:
+        return jsonify({'ok': False, 'error': 'Chưa đăng nhập'}), 401
+    body = request.get_json(silent=True) or {}
+    lead_key = str(body.get('lead_key') or '').strip()
+    post_id = str(body.get('post_id') or '').strip()
+    if not lead_key:
+        return jsonify({'ok': False, 'error': 'Thiếu mã lead'}), 400
+    with _lead_workflow_lock:
+        lead = _lead_for_workflow(lead_key, post_id)
+        if not lead:
+            return jsonify({'ok': False, 'error': 'Không tìm thấy lead'}), 404
+        assigned_id = str(lead.get('assigned_sale_staff_id') or '').strip()
+        if assigned_id and assigned_id != str(staff.get('id') or '').strip():
+            return jsonify({'ok': False, 'error': 'Lead này đã được sale khác nhận'}), 409
+        if not assigned_id and str(lead.get('assigned_sale') or '').strip():
+            return jsonify({'ok': False, 'error': 'Lead này đã có sale phụ trách'}), 409
+        updated = {
+            **lead,
+            'assigned_sale': str(staff.get('name') or staff.get('username') or 'Sale'),
+            'assigned_sale_staff_id': str(staff.get('id') or ''),
+            'assigned_sale_at': lead.get('assigned_sale_at') or datetime.now(_app_timezone()).isoformat(timespec='seconds'),
+        }
+        _merge_leads_into_memory([updated])
+        saved, warning = _save_leads_to_supabase([updated])
+    payload = {'ok': True, 'lead': _normalise_lead(updated), 'storage': 'supabase' if saved else 'local'}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
+
+
+@app.route('/api/leads/follow-up', methods=['POST'])
+def leads_follow_up():
+    staff = _current_staff()
+    if not staff:
+        return jsonify({'ok': False, 'error': 'Chưa đăng nhập'}), 401
+    lead_key = str(request.form.get('lead_key') or '').strip()
+    post_id = str(request.form.get('post_id') or '').strip()
+    action_type = str(request.form.get('action_type') or '').strip().lower()
+    image = request.files.get('image')
+    if action_type not in {'message', 'comment'}:
+        return jsonify({'ok': False, 'error': 'Chọn nhắn khách hoặc bình luận'}), 400
+    if not image or not image.filename:
+        return jsonify({'ok': False, 'error': 'Ảnh chụp màn hình là bắt buộc để ghi nhận chăm sóc'}), 400
+    with _lead_workflow_lock:
+        lead = _lead_for_workflow(lead_key, post_id)
+        if not lead:
+            return jsonify({'ok': False, 'error': 'Không tìm thấy lead'}), 404
+        if not _is_admin() and str(lead.get('assigned_sale_staff_id') or '') != str(staff.get('id') or ''):
+            return jsonify({'ok': False, 'error': 'Nhận lead trước khi ghi nhận chăm sóc'}), 403
+        image_url, upload_error = _upload_comment_image_to_supabase(image)
+        if not image_url:
+            return jsonify({'ok': False, 'error': upload_error or 'Không tải được ảnh minh chứng'}), 502
+        follow_up = {
+            'id': uuid.uuid4().hex,
+            'action_type': action_type,
+            'image_url': image_url,
+            'staff_id': str(staff.get('id') or ''),
+            'staff_name': str(staff.get('name') or staff.get('username') or 'Sale'),
+            'created_at': datetime.now(_app_timezone()).isoformat(timespec='seconds'),
+        }
+        updated = {**lead, 'follow_ups': [*(lead.get('follow_ups') or []), follow_up]}
+        _merge_leads_into_memory([updated])
+        saved, warning = _save_leads_to_supabase([updated])
+    payload = {
+        'ok': True,
+        'lead': _normalise_lead(updated),
+        'follow_up': follow_up,
+        'storage': 'supabase' if saved else 'local',
+    }
+    if warning:
+        payload['warning'] = f'Ảnh đã tải lên; lịch sử lead lưu local: {warning}'
+    return jsonify(payload)
 
 
 @app.route('/api/ai/reply-suggestions', methods=['GET'])

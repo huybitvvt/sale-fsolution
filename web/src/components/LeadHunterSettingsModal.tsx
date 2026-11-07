@@ -16,15 +16,17 @@ import {
 
 type Props = {
   open: boolean;
+  groups: { id: string; name: string }[];
   onClose: () => void;
-  onSaved: (config: LeadHunterConfig) => void;
+  onSaved: (config: LeadHunterConfig) => void | Promise<void>;
 };
 
 function linesOf(items: string[]) {
   return items.join('\n');
 }
 
-export function LeadHunterSettingsModal({ open, onClose, onSaved }: Props) {
+export function LeadHunterSettingsModal({ open, groups, onClose, onSaved }: Props) {
+  const [groupIds, setGroupIds] = useState<string[]>([]);
   const [needKeywordsText, setNeedKeywordsText] = useState('');
   const [platformKeywordsText, setPlatformKeywordsText] = useState('');
   const [businessModulesText, setBusinessModulesText] = useState('');
@@ -36,6 +38,7 @@ export function LeadHunterSettingsModal({ open, onClose, onSaved }: Props) {
   useEffect(() => {
     if (!open) return;
     const cfg = loadLeadHunterConfig();
+    setGroupIds(cfg.groupIds || []);
     setNeedKeywordsText(linesOf(cfg.needKeywords));
     setPlatformKeywordsText(linesOf(cfg.platformKeywords));
     setBusinessModulesText(linesOf(cfg.businessModules));
@@ -47,8 +50,9 @@ export function LeadHunterSettingsModal({ open, onClose, onSaved }: Props) {
 
   if (!open) return null;
 
-  function handleSave() {
+  async function handleSave() {
     const config = configFromForm({
+      groupIds,
       needKeywordsText,
       platformKeywordsText,
       businessModulesText,
@@ -64,20 +68,30 @@ export function LeadHunterSettingsModal({ open, onClose, onSaved }: Props) {
       setError('Cần ít nhất một trạng thái CRM');
       return;
     }
-    saveLeadHunterConfig(config);
-    onSaved(config);
-    onClose();
+    try {
+      await onSaved(config);
+      saveLeadHunterConfig(config);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Không lưu được cấu hình');
+    }
   }
 
-  function handleReset() {
+  async function handleReset() {
     const config = resetLeadHunterConfig();
+    setGroupIds(config.groupIds);
     setNeedKeywordsText(linesOf(config.needKeywords));
     setPlatformKeywordsText(linesOf(config.platformKeywords));
     setBusinessModulesText(linesOf(config.businessModules));
     setCrmStatusesText(linesOf(config.crmStatuses));
     setLevels(config.levels);
     setScoreRules(config.scoreRules);
-    onSaved(config);
+    try {
+      await onSaved(config);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Không lưu được cấu hình');
+      return;
+    }
     setError('');
   }
 
@@ -94,9 +108,29 @@ export function LeadHunterSettingsModal({ open, onClose, onSaved }: Props) {
         </div>
 
         <p className="lead-settings-hint">
-          Từ khóa và ngưỡng điểm dùng để <b>chấm điểm</b> và <b>hiển thị trạng thái</b> trên /lead.
-          Mỗi dòng là một mục. Lưu trên trình duyệt này.
+          Chọn nhóm cố định cần quét và từ khóa cho từng mức lead. Cấu hình này dùng chung cho đội sale.
+          Mỗi dòng là một từ hoặc cụm từ.
         </p>
+
+        <div className="lead-settings-groups">
+          <div className="lead-settings-levels-hd">Nhóm Facebook cần quét</div>
+          {groups.length ? (
+            <div className="lead-settings-group-list">
+              {groups.map((group) => (
+                <label key={group.id}>
+                  <input
+                    type="checkbox"
+                    checked={groupIds.includes(group.id)}
+                    onChange={(event) => setGroupIds((current) => event.target.checked
+                      ? [...new Set([...current, group.id])]
+                      : current.filter((id) => id !== group.id))}
+                  />
+                  <span>{group.name || group.id}</span>
+                </label>
+              ))}
+            </div>
+          ) : <p>Chưa có nhóm Facebook được giao quyền.</p>}
+        </div>
 
         <div className="lead-settings-grid">
           <label className="lead-process-field">
@@ -184,6 +218,21 @@ export function LeadHunterSettingsModal({ open, onClose, onSaved }: Props) {
                     }}
                   />
                 </label>
+                <label className="lead-settings-level-keywords">
+                  Từ khóa quét (mỗi dòng một từ/cụm từ)
+                  <textarea
+                    rows={3}
+                    value={(level.keywords || []).join('\n')}
+                    onChange={(e) => {
+                      const next = [...levels];
+                      next[idx] = {
+                        ...level,
+                        keywords: e.target.value.split(/\r?\n/).map((keyword) => keyword.trim().toLowerCase()).filter(Boolean),
+                      };
+                      setLevels(next);
+                    }}
+                  />
+                </label>
               </div>
             ))}
           </div>
@@ -194,7 +243,7 @@ export function LeadHunterSettingsModal({ open, onClose, onSaved }: Props) {
         <div className="modal-actions">
           <button type="button" className="btn-cancel" onClick={handleReset}>Mặc định F-Solution</button>
           <button type="button" className="btn-cancel" onClick={onClose}>Đóng</button>
-          <button type="button" className="btn-submit" onClick={handleSave}>Lưu cài đặt</button>
+          <button type="button" className="btn-submit" onClick={() => void handleSave()}>Lưu cài đặt</button>
         </div>
       </div>
     </div>
